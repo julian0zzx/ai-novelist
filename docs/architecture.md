@@ -83,14 +83,16 @@ src/core/          pure domain — no I/O, no clock, no Cordis
   novel.ts           every state transition as a pure function, the codec, derived views
   plan.ts            what the plan still owes: outline/pitch/world/cast/contract gaps
   metrics.ts         baselines → thresholds → verdicts → iteration rules
-  write.ts           the delivery report: did the prose pay for the plan?
+  write.ts           the delivery report: did the prose pay for the plan? (plus the 去 AI 化 statistics)
+  review.ts          the model-backed rubrics, their request framing, and the tolerant reply parser
   repo.ts            retrospective, assets, and the structural template
   workspace.ts       novel | fresh | plain, from a directory listing
 src/host/          the deployment surface
   store.ts           one project's ctx.fs access: containment, version guard, write queue
   resolver.ts        which novel is this session in; the ctx.novelState service
   prompt.ts          the runtime-context section and the cache it reads
-  tools.ts           the eight model-facing tools (thin adapters over core)
+  llm.ts             the one seam that calls a model: route resolution, one streamed call
+  tools.ts           the nine model-facing tools (thin adapters over core)
 src/client/        the browser surface
   index.tsx          the right-Sidebar tab type + its body
 src/index.ts       the Cordis plugin: Config, resolver construction, tool registration
@@ -149,9 +151,17 @@ rather than by class identity, because the error crosses the `dsh-fs` service bo
 
 ### `host/tools.ts` — the model's vocabulary
 
-Eight tools, one per SOP capability, so the model's vocabulary matches the workflow rather
+Nine tools, one per SOP capability, so the model's vocabulary matches the workflow rather
 than the storage layout. They are deliberately thin: each parses arguments, calls a `core`
 function through the store, and renders a result the model can act on.
+
+**Eight compute; one asks a model.** That split is the load-bearing decision in this file.
+`novel_metrics` comparing a reading against a calibrated median must give the same verdict
+every time, or the SOP's evidence chain (C5, C8) collapses; `novel_review` judging whether a
+chapter reads as machine-written cannot be computed at all, and the SOP assigns it to
+judgement (§1.2). Mixing the two would break both, so the model never touches the ledgers
+(`iterations`, `verifications`) that thresholds act on: a review is recorded as a review,
+with the provider, the model and the rubric version that produced it.
 
 | Tool | SOP phase | Owns |
 |---|---|---|
@@ -159,10 +169,11 @@ function through the store, and renders a result the model can act on.
 | `novel_plan` | 一/二/四 | `competitor` · `pitch` · `world` · `outline` · `volume` · `chapter` · `beat` · `opening` · `naming` |
 | `novel_bible` | 一/四/六 | `character` · `world` · `link` · `review` |
 | `novel_verify` | 三 验证 | `round` (record a validation round) · `assess` |
-| `novel_write` | 五 连载 | `write` · `read` · `check` — prose plus the contract-delivery report |
+| `novel_write` | 五 连载 | `write` · `read` · `check` — prose, the contract-delivery report, and the automatic 去 AI 化 statistics |
 | `novel_metrics` | 五 放大 | `record` · `iterate` · `outcome` · `rules` |
 | `novel_status` | 全流程 | `dashboard` (default) · `bible` · `plan` · `chapter` |
 | `novel_repo` | 六 复盘 | `export` · `retro` · `asset` · `lesson` · `template` |
+| `novel_review` | 五/六 判断 | **model-backed** — `ai-flavor` · `opening` · `competitor` · `retro` |
 
 Design rules the tools follow:
 
@@ -186,6 +197,40 @@ Design rules the tools follow:
 The tool descriptions are part of the product: they are the only place the model learns the
 workflow, so they carry the ordering, the "plan is not prose" distinction, and the
 "send the complete body" rule.
+
+### `host/llm.ts` — the one seam that calls a model
+
+Everything above this line is arithmetic over a JSON document. `novel_review` is the
+deliberate exception, and this module is where the exception is contained: nothing else in
+the plugin touches `ctx.llm`, so the judgement layer has exactly one dependency to fake in a
+spec.
+
+- **Routing is a resolution, not a guess.** A per-call `provider`/`model` wins, then the
+  configured `reviewProvider`/`reviewModel`, then `agentDefaultModel.currentSelection()` —
+  the model the session is already using, so switching models in the GUI switches the
+  reviewer. With none of the three, the tool is **not registered at all** (the plugin
+  injects the capability inside `ctx.inject(['llm'], …)`); a profile with no model keeps
+  eight working tools rather than a ninth that can only fail. That injection is used as a
+  *trigger*, not as the mounting context: a service context exposes the injected dependency
+  and nothing else, so registration happens against the plugin's own ctx, which carries
+  `tools`.
+- **One streamed call per request.** `ctx.llm.stream` is the only call shape the service
+  offers, so a one-shot is assembled with the harness's own `BlockAssembler` — the same
+  interpreter the agent loop uses. A truncated answer (`max-tokens`) is reported as
+  truncated rather than read as complete; a `tool-calls` finish is an error, because no
+  tools were offered.
+- **The judgement is recorded with its provenance.** `ReviewRecord` carries the provider,
+  the model and `REVIEW_PROMPT_VERSION`, which is why the rubric lives in `core/review.ts`
+  as versioned data rather than as a string inside a tool. A second opinion on the same
+  chapter accumulates instead of overwriting the first.
+- **A model draft is not a fact.** Findings, dismantles and lessons are returned for
+  inspection; `save=true` is what writes a dismantle into `competitors` or a lesson into the
+  retrospective, and a rewritten chapter lands in `.novel/reviews/` as a proposal that only
+  `novel_write` can put into the book.
+- **A reply that ignores the JSON contract is still a reply.** Parsing takes the first `{`
+  to the last `}`, tolerates code fences and surrounding prose, drops findings that carry
+  nothing actionable, and — when there is no object at all — keeps the model's text as the
+  summary, warns, and writes the verbatim answer to the transcript.
 
 ### `client/index.tsx` — the browser half
 
@@ -470,7 +515,7 @@ the registered id, the plugin shape, and that nothing unexpected was bundled in.
 `pnpm run check` runs the suite (build → typecheck → test; 122 specs across the two packages
 when this was written, and `pnpm test` prints the current count). It covers:
 
-- the SOP pipeline end to end through the eight tools, using only the tool surface a model
+- the SOP pipeline end to end through the nine tools, using only the tool surface a model
   has (`test/sop-pipeline.test.ts`): the phases in order, the soft gate (a competitor call
   succeeds before a pitch exists *and* says what is missing), the opening-checklist gate, the
   verdict arithmetic plus the two arguments a non-passing round is refused without, the

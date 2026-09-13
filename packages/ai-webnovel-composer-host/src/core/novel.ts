@@ -18,6 +18,7 @@ import {
   CHAPTER_STATUSES,
   CONTRACT_FIELDS,
   NOVEL_SCHEMA_VERSION,
+  REVIEW_SEVERITIES,
   type Chapter,
   type ChapterStatus,
   type Character,
@@ -36,6 +37,10 @@ import {
   type Premise,
   type ProjectStage,
   type Retrospective,
+  type ReviewFinding,
+  type ReviewKind,
+  type ReviewRecord,
+  type ReviewSeverity,
   type StageAssessment,
   type StoryLink,
   type VerificationRound,
@@ -374,6 +379,7 @@ export function emptyNovel(meta: Partial<NovelMeta> = {}, now: Clock = systemClo
     readings: [],
     iterations: [],
     verifications: [],
+    reviews: [],
     createdAt: stamp,
     updatedAt: stamp,
   }
@@ -911,9 +917,65 @@ function readV2(parsed: Record<string, unknown>): NovelState {
     readings: readList(parsed['readings'], readReading),
     iterations: readList(parsed['iterations'], readIteration),
     verifications: readList(parsed['verifications'], readVerification),
+    reviews: readList(parsed['reviews'], readReview),
     ...(isRecord(parsed['retro']) ? { retro: readRetro(parsed['retro']) } : {}),
     createdAt: readString(parsed, 'createdAt', stamp),
     updatedAt: stamp,
+  }
+}
+
+/**
+ * Read one recorded review.
+ *
+ * A review without an id is dropped rather than repaired: the id is how the
+ * transcript on disk is found, so an entry that lost it cannot be used.
+ *
+ * @param value - the decoded entry.
+ * @returns the review, or `undefined` when it is unusable.
+ */
+function readReview(value: Record<string, unknown>): ReviewRecord | undefined {
+  const id = readString(value, 'id', '')
+  if (id === '') return undefined
+  const kind = readString(value, 'kind', 'ai-flavor')
+  const artifact = readString(value, 'artifact', '')
+  return {
+    id,
+    at: readString(value, 'at', new Date(0).toISOString()),
+    kind: (['ai-flavor', 'opening', 'competitor', 'retro'] as const).includes(kind as ReviewKind)
+      ? (kind as ReviewKind)
+      : 'ai-flavor',
+    target: readString(value, 'target', ''),
+    provider: readString(value, 'provider', ''),
+    model: readString(value, 'model', ''),
+    promptVersion: readString(value, 'promptVersion', ''),
+    summary: readString(value, 'summary', ''),
+    findings: readList(value['findings'], readFinding),
+    artifact,
+  }
+}
+
+/**
+ * Read one finding.
+ *
+ * Findings are the point of a review, so one that carries neither a dimension
+ * nor a fix is dropped instead of being shown as an empty bullet.
+ *
+ * @param value - the decoded entry.
+ * @returns the finding, or `undefined` when it carries nothing actionable.
+ */
+function readFinding(value: Record<string, unknown>): ReviewFinding | undefined {
+  const dimension = readString(value, 'dimension', '')
+  const fix = readString(value, 'fix', '')
+  if (dimension === '' && fix === '') return undefined
+  const severity = readString(value, 'severity', 'medium')
+  return {
+    dimension,
+    quote: readString(value, 'quote', ''),
+    why: readString(value, 'why', ''),
+    fix,
+    severity: (REVIEW_SEVERITIES as readonly string[]).includes(severity)
+      ? (severity as ReviewSeverity)
+      : 'medium',
   }
 }
 
@@ -948,6 +1010,7 @@ export function migrateV1(parsed: Record<string, unknown>): NovelState {
     readings: [],
     iterations: [],
     verifications: [],
+    reviews: [],
     createdAt: readString(parsed, 'createdAt', stamp),
     updatedAt: stamp,
   }
@@ -991,6 +1054,7 @@ export function serializeNovel(state: NovelState): string {
     readings: [...state.readings],
     iterations: [...state.iterations],
     verifications: [...state.verifications],
+    reviews: [...state.reviews],
   }
   return `${JSON.stringify(normalized, null, 2)}\n`
 }
@@ -1266,6 +1330,22 @@ export function addReading(state: NovelState, reading: MetricReading, now: Clock
  */
 export function addIteration(state: NovelState, iteration: Iteration, now: Clock = systemClock): NovelState {
   return { ...state, iterations: [...state.iterations, iteration], updatedAt: now() }
+}
+
+/**
+ * Append one recorded review.
+ *
+ * Reviews accumulate rather than replace: a second opinion on the same chapter
+ * after a revision is exactly what makes the revision's effect visible, and the
+ * SOP's evidence chain needs the earlier judgement to still exist.
+ *
+ * @param state - the state to derive from.
+ * @param review - the record to append.
+ * @param now - timestamp for `updatedAt`.
+ * @returns a new state carrying the review.
+ */
+export function addReview(state: NovelState, review: ReviewRecord, now: Clock = systemClock): NovelState {
+  return { ...state, reviews: [...state.reviews, review], updatedAt: now() }
 }
 
 /**

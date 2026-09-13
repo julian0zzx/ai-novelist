@@ -1,5 +1,5 @@
 /**
- * Model-facing tools: the eight surfaces of the SOP.
+ * Model-facing tools: the nine surfaces of the SOP.
  *
  * One tool per capability, each owning one phase or one kind of state, so the
  * model's vocabulary matches the workflow instead of the storage layout:
@@ -36,14 +36,22 @@ import {
   METRIC_KEYS,
   PLATFORM_AUDIENCES,
   PLATFORM_MODES,
+  REVIEW_KINDS,
+  REVIEW_PROMPT_VERSION,
   NovelInputError,
   addIteration,
   addReading,
+  addReview,
   analyzeDelivery,
   assessReading,
   assessStage,
   blockersToFinal,
+  buildAiFlavorRequest,
+  buildCompetitorRequest,
+  buildOpeningRequest,
+  buildRetroRequest,
   buildRetrospective,
+  buildRewriteRequest,
   buildTemplate,
   calibrationAge,
   castGaps,
@@ -58,10 +66,12 @@ import {
   missingContract,
   normalizeId,
   openingPackageGaps,
+  parseReviewOutput,
   progressOf,
   removeChapter,
   removeLink,
   renderManuscript,
+  renderReview,
   resolveChapterId,
   setOpeningCheck,
   stageLabel,
@@ -82,12 +92,17 @@ import {
   verdictFromAssessments,
   worldGaps,
   type Clock,
+  type Lesson,
   type MetricKey,
   type MetricPeriod,
   type NovelState,
+  type ReviewFinding,
+  type ReviewKind,
+  type ReviewRecord,
   type WorkspaceVerdict,
 } from '../core/index.ts'
 import { DEFAULT_MULTIPLIERS } from '../core/metrics.ts'
+import { NovelReviewError, resolveRoute, runReview, type ReviewSettings } from './llm.ts'
 import type { SnapshotCache } from './prompt.ts'
 import type { ProjectResolver } from './resolver.ts'
 import { NOVEL_RELATIVE_PATH } from './store.ts'
@@ -97,6 +112,9 @@ export const DEFAULT_MANUSCRIPT_PATH = '.novel/manuscript.md'
 
 /** Default directory for exported structural templates. */
 export const DEFAULT_TEMPLATE_PATH = '.novel/templates'
+
+/** Default directory for review transcripts and rewritten drafts. */
+export const DEFAULT_REVIEW_PATH = '.novel/reviews'
 
 /** The store type one execution resolves. */
 type SessionStore = ReturnType<ProjectResolver['storeForSession']>
@@ -178,6 +196,26 @@ function envelope(state: NovelState, warnings: readonly string[] = []): Envelope
       overdueLinks: progress.overdueLinks.length,
     },
   }
+}
+
+/**
+ * Append the SOP's 去 AI 化 statistics to a tool body.
+ *
+ * The SOP puts 去 AI 化 immediately after every chapter draft, so every
+ * operation that hands prose back reports the same countable symptoms rather
+ * than waiting to be asked. The header states what the numbers are — statistics,
+ * not a verdict — because the rewrite itself is the author's work: nothing here
+ * edits the prose, and a revised draft goes back through `novel_write`
+ * `operation="write"`.
+ *
+ * @param body - the accumulator the calling tool is building.
+ * @param prose - the chapter text to scan.
+ */
+function pushStyleHints(body: string[], prose: string): void {
+  const observations = styleObservations(prose)
+  if (observations.length === 0) return
+  body.push('', '## 去 AI 化提示（机械统计，不是评价）')
+  for (const observation of observations) body.push(`- ${observation}`)
 }
 
 /**
@@ -1116,8 +1154,11 @@ export function registerTools(
         + 'comparison is the SOP\'s "严格对应细纲" made checkable — it is the only place the workflow notices a chapter '
         + 'that quietly ignored its plan. '
         + 'Marking a chapter final (published) still works but is warned when the contract or the delivery is incomplete. '
+        + 'Both write and check also return the SOP\'s 去 AI 化 statistics — paragraph length, dialogue density, repeated '
+        + 'sentence openings — as countable symptoms and never as a verdict. Nothing here edits the prose: revise the '
+        + 'draft yourself and send it back through operation="write". '
         + 'operation="read" returns one chapter with its contract and prose; operation="check" returns the delivery report '
-        + 'alone.',
+        + 'and the same statistics without writing anything.',
       parameters: {
         operation: { type: 'string', enum: ['write', 'read', 'check'], description: 'write (default) | read | check.' },
         chapterId: { type: 'string', required: true, description: 'Id, slug, or title of the chapter.' },
@@ -1165,6 +1206,7 @@ export function registerTools(
             )
           }
           body.push('', report.summary)
+          pushStyleHints(body, chapter.body)
           return {
             ok: report.missed.length === 0,
             operation: 'check',
@@ -1205,11 +1247,7 @@ export function registerTools(
           }
         }
         if (report.unplanned.length > 0) body.push('', `细纲本身没写：${report.unplanned.join('、')}`)
-        const style = styleObservations(written.body)
-        if (style.length > 0) {
-          body.push('', '## 去 AI 化提示（机械统计，不是评价）')
-          for (const observation of style) body.push(`- ${observation}`)
-        }
+        pushStyleHints(body, written.body)
         if (args.status === 'final') {
           const blockers = blockersToFinal(written)
           if (blockers.length > 0) {
@@ -1474,7 +1512,7 @@ export function registerTools(
         + 'waiting for an outcome. '
         + 'detail="dashboard" (default) is the operating view; "bible" returns cast, world and promises; "plan" returns '
         + 'pitch, outline, volumes, beats, opening checklist and naming candidates; "chapter" with a chapterId returns one '
-        + 'chapter\'s contract, delivery report and prose.',
+        + 'chapter\'s contract, delivery report, the 去 AI 化 statistics and the prose.',
       parameters: {
         detail: {
           type: 'string',
@@ -1544,7 +1582,7 @@ export function registerTools(
           body.push(`## 第 ${String(chapter.number)} 章「${chapter.title || chapter.id}」（${chapter.status}）`)
           for (const row of contractRows(chapter)) body.push(`- ${row.field}：${row.text || '（未写）'}`)
           body.push('', analyzeDelivery(chapter).summary)
-          for (const observation of styleObservations(chapter.body)) body.push(`- ${observation}`)
+          pushStyleHints(body, chapter.body)
           body.push('', chapter.body.trim() === '' ? '（尚无正文）' : chapter.body)
         } else {
           const progress = progressOf(state)
@@ -1597,6 +1635,22 @@ export function registerTools(
             }
             if (last !== undefined && last.verdict === 'fail') {
               body.push('', `⚠ 最近一轮验证不通过：按「${last.fallback || '未写回退目标'}」回退后再验`)
+            }
+          }
+          // Reviews are model judgements, not ledger facts, so the dashboard
+          // reports them as a separate line: something to re-read, never
+          // something a threshold acts on.
+          if (state.reviews.length > 0) {
+            const last = state.reviews.at(-1)
+            body.push(
+              '',
+              `## 模型评审（${String(state.reviews.length)} 次）`,
+              last === undefined
+                ? '—'
+                : `最近：${last.kind}（${last.target || '项目'}）@ ${last.model}，${String(last.findings.length)} 条问题 · ${last.id}`,
+            )
+            if (last !== undefined && last.findings.length > 0) {
+              body.push(...last.findings.slice(0, 3).map((finding) => `- [${finding.severity}] ${finding.dimension}：${finding.fix}`))
             }
           }
           body.push('', `工作区判定：${detected?.kind ?? 'unknown'}（${detected?.reason ?? '—'}）`)
@@ -1784,6 +1838,368 @@ export function registerTools(
       },
     }),
   )
+}
+
+/**
+ * Register `novel_review`: the one tool that asks a model instead of computing.
+ *
+ * It is registered separately from {@link registerTools} because it depends on a
+ * service the rest of the composer does not: without `llm` mounted there is
+ * nothing to review *with*, and a tool that can only fail is worse than an
+ * absent one. The eight deterministic tools therefore stay unconditional, and
+ * this one appears exactly where a model route exists.
+ *
+ * What it will not do is as much of the contract as what it does: it never
+ * writes a chapter, never overwrites published prose, and never lets a model
+ * judgement into `iterations` or `verifications` — the ledger entries that the
+ * SOP's thresholds act on. A review is recorded as a review, with the model and
+ * the rubric version that produced it.
+ *
+ * @param ctx - plugin context carrying the tool registry and a model route.
+ * @param projects - resolves the novel store per calling session.
+ * @param settings - configured review route and timeout.
+ */
+export function registerReviewTool(ctx: Context, projects: ProjectResolver, settings: ReviewSettings): void {
+  const storeFor = (session: { readonly header: { readonly cwd?: string } } | undefined): SessionStore =>
+    projects.storeForSession(session)
+  const now: Clock = () => new Date().toISOString()
+
+  ctx.tools.register(
+    defineTool({
+      name: 'novel_review',
+      description:
+        'Ask a model to judge the prose — the one tool here that does not compute. The other eight are deterministic: '
+        + 'thresholds, gates and arithmetic, identical on every run. Judging whether writing reads as machine-made, '
+        + 'whether an opening holds a reader, what a competitor is doing, and which lessons a finished book actually '
+        + 'taught cannot be computed, and the SOP assigns it to judgement (§1.2). This tool asks for that judgement '
+        + 'under a versioned rubric, and records the answer with the model and rubric version that produced it. '
+        + 'operation="ai-flavor" diagnoses one chapter (add rewrite=true for a rewritten draft); "opening" reviews the '
+        + 'gate chapters against the SOP opening checklist; "competitor" dismantles pasted competitor text; "retro" '
+        + 'distils the project\'s own data into reusable lessons. '
+        + 'It never writes prose: a rewrite is a proposal saved beside the project, and only novel_write replaces a '
+        + 'chapter. competitor/retro results are returned for inspection and are NOT saved unless you pass save=true. '
+        + 'The route follows reviewProvider/reviewModel when configured, otherwise the model this session is using.',
+      parameters: {
+        operation: {
+          type: 'string',
+          required: true,
+          enum: [...REVIEW_KINDS],
+          description: 'ai-flavor | opening | competitor | retro.',
+        },
+        chapterId: { type: 'string', description: 'ai-flavor: the chapter to diagnose.' },
+        focus: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'ai-flavor: limit the rubric to these dimensions, for example ["翻译腔", "整齐句式"].',
+        },
+        rewrite: {
+          type: 'boolean',
+          description: 'ai-flavor: also produce a rewritten draft (a second model call; the file is a proposal only).',
+        },
+        title: { type: 'string', description: 'competitor: the competitor\'s title.' },
+        text: {
+          type: 'string',
+          description: 'competitor: the competitor material to dismantle — blurb, opening chapters, or both.',
+        },
+        save: {
+          type: 'boolean',
+          description:
+            'competitor/retro: write the structured result into the project (competitors / retro lessons). Default false, '
+            + 'so a model draft never enters the ledger unreviewed.',
+        },
+        maxChapters: { type: 'integer', description: 'opening: how many chapters to review. Default: the first gate.' },
+        provider: { type: 'string', description: 'Override the provider for this one call.' },
+        model: { type: 'string', description: 'Override the model for this one call.' },
+      },
+      output: { schema: ENVELOPE_SCHEMA, render: renderTool },
+      execute: async (args, exec) => {
+        const store = storeFor(exec.agent?.session)
+        const state = await store.read()
+        if (state === undefined) {
+          throw new NovelInputError(`no novel project at ${store.documentPath}; call novel_init first`)
+        }
+        const operation = args.operation as ReviewKind
+        const route = resolveRoute(ctx, settings, { provider: args.provider, model: args.model })
+        if (route === undefined) {
+          throw new NovelReviewError(
+            'no model route for novel_review: select a model in this session, or set reviewProvider/reviewModel in the '
+            + 'plugin config. The other eight tools never need one.',
+          )
+        }
+        const warnings: string[] = []
+        const body: string[] = []
+        const id = `review-${String(state.reviews.length + 1)}`
+        const target =
+          operation === 'ai-flavor'
+            ? resolveChapter(state, args.chapterId).id
+            : operation === 'competitor'
+              ? (args.title ?? '').trim()
+              : ''
+        const request = buildRequest(state, operation, args, store)
+        const result = await runReview(ctx, route, request, {
+          signal: exec.signal,
+          timeoutMs: settings.timeoutMs,
+        })
+        const output = parseReviewOutput(result.text)
+        if (!output.parsed) {
+          warnings.push('模型没有按 JSON 约定回复：findings 无法入库，请查看记录文件里的完整回复')
+        }
+        if (result.truncated) {
+          warnings.push(`模型输出被 maxTokens 截断（${String(result.finish)}），结论可能不完整`)
+        }
+        const artifact = await store.writeDerived(
+          `${DEFAULT_REVIEW_PATH}/${id}-${operation}.md`,
+          transcript({ id, operation, target, route: `${route.provider}/${route.model}`, output, model: route.model }),
+        )
+
+        let rewritten = ''
+        if (operation === 'ai-flavor' && args.rewrite === true) {
+          const chapter = resolveChapter(state, args.chapterId)
+          const second = await runReview(
+            ctx,
+            route,
+            buildRewriteRequest({ state, chapter, findings: output.findings }),
+            { signal: exec.signal, timeoutMs: settings.timeoutMs },
+          )
+          rewritten = await store.writeDerived(
+            `${DEFAULT_REVIEW_PATH}/${id}-rewrite.md`,
+            `${second.text.trim()}\n`,
+          )
+        }
+
+        const saved = await persist(state, operation, args, output, store)
+        const review: ReviewRecord = {
+          id,
+          at: now(),
+          kind: operation,
+          target,
+          provider: route.provider,
+          model: route.model,
+          promptVersion: REVIEW_PROMPT_VERSION,
+          summary: output.summary,
+          findings: output.findings,
+          artifact: `${DEFAULT_REVIEW_PATH}/${id}-${operation}.md`,
+        }
+        const next = await store.update((current) => addReview(current, review))
+
+        body.push(`模型：${route.provider}/${route.model}（${route.source === 'call' ? '本次指定' : route.source === 'config' ? '插件配置' : '会话默认'}）`)
+        body.push(...renderReview(output, `${operation} 诊断`))
+        if (output.lessons !== undefined && output.lessons.length > 0) {
+          body.push('', `## 经验（${String(output.lessons.length)} 条）`)
+          for (const lesson of output.lessons) {
+            body.push(`- [${lesson.kind === 'avoid' ? '避雷' : '复用'}] ${lesson.statement}｜证据：${lesson.evidence}`)
+          }
+        }
+        if (saved !== '') body.push('', saved)
+        body.push('', `记录文件：${artifact}`, `评审编号：${id}（prompt ${REVIEW_PROMPT_VERSION}）`)
+        if (rewritten !== '') {
+          body.push('', '## 改写稿（提案，未写入章节）', `文件：${rewritten}`, '')
+          body.push('确认后把正文发给 novel_write 覆盖该章；工具不会自动改稿。')
+        }
+        if (operation === 'ai-flavor' && args.rewrite !== true) {
+          const mechanical = styleObservations(resolveChapter(state, args.chapterId).body)
+          if (mechanical.length > 0) {
+            body.push('', '机械统计（可复现的对照项）：')
+            for (const observation of mechanical) body.push(`- ${observation}`)
+          }
+        }
+        if (operation === 'competitor' && args.save !== true) {
+          body.push('', '尚未入库：确认拆解可用后重跑并加 save=true，或用 novel_plan operation="competitor" 手工录入。')
+        }
+        if (operation === 'retro' && args.save !== true && (output.lessons?.length ?? 0) > 0) {
+          body.push('', '尚未归档：确认后用 save=true 写入复盘经验，或用 novel_repo operation="lesson" 逐条录入。')
+        }
+        return {
+          ok: true,
+          operation,
+          detail: `第 ${String(next.reviews.length)} 次模型评审：${operation}（${route.provider}/${route.model}，`
+            + `${String(output.findings.length)} 条问题${rewritten === '' ? '' : '，附改写稿'}）`,
+          ...envelope(next, warnings),
+          body,
+        }
+      },
+    }),
+  )
+}
+
+/** The arguments `novel_review` accepts, as the tool declares them. */
+type ReviewArgs = Record<string, unknown> & {
+  readonly chapterId?: string | undefined
+  readonly focus?: readonly string[] | undefined
+  readonly title?: string | undefined
+  readonly text?: string | undefined
+  readonly maxChapters?: number | undefined
+}
+
+/**
+ * Build the request for one review operation.
+ *
+ * @param state - the project.
+ * @param operation - which judgement to ask for.
+ * @param args - the tool arguments.
+ * @param store - the store, for error messages that name the document.
+ * @returns the framed request.
+ * @throws {NovelInputError} when the operation's own inputs are missing.
+ */
+function buildRequest(
+  state: NovelState,
+  operation: ReviewKind,
+  args: ReviewArgs,
+  store: SessionStore,
+): ReturnType<typeof buildAiFlavorRequest> {
+  if (operation === 'ai-flavor') {
+    const chapter = resolveChapter(state, args.chapterId)
+    if (chapter.body.trim() === '') {
+      throw new NovelInputError(`第 ${String(chapter.number)} 章还没有正文，无法做去 AI 化诊断`)
+    }
+    return buildAiFlavorRequest({ state, chapter, focus: args.focus })
+  }
+  if (operation === 'opening') {
+    const gates = state.writing.openingGateChapters
+    const gate = gates.length > 0 ? Math.max(...gates) : 3
+    const count = Math.max(1, Math.min(args.maxChapters ?? Math.min(gate, 3), 10))
+    const chapters = Object.values(state.chapters)
+      .sort((a, b) => a.number - b.number)
+      .filter((chapter) => chapter.body.trim() !== '')
+      .slice(0, count)
+    if (chapters.length === 0) {
+      throw new NovelInputError(`没有可体检的正文（${store.documentPath} 里还没有写出任何一章）`)
+    }
+    return buildOpeningRequest({ state, chapters, checks: state.outline.opening, gate })
+  }
+  if (operation === 'competitor') {
+    if (args.text === undefined || args.text.trim() === '') {
+      throw new NovelInputError('operation="competitor" needs the competitor material in `text`')
+    }
+    return buildCompetitorRequest({ state, title: args.title ?? '（未命名竞品）', text: args.text })
+  }
+  return buildRetroRequest({
+    state,
+    progress: progressOf(state),
+    readings: state.readings,
+    iterations: state.iterations,
+    lessons: state.retro?.lessons ?? [],
+  })
+}
+
+/**
+ * Apply a review's structured result to the project, when asked to.
+ *
+ * Kept separate from recording the review itself: the review always lands in
+ * the ledger, while the *content* it produced only lands when the author says
+ * so, because a model draft is not yet a fact about the book.
+ *
+ * @param state - the project as read before the call.
+ * @param operation - which judgement was asked for.
+ * @param args - the tool arguments.
+ * @param output - the parsed reply.
+ * @param store - the store to write through.
+ * @returns a line describing what was saved, or `''` when nothing was.
+ */
+async function persist(
+  state: NovelState,
+  operation: ReviewKind,
+  args: ReviewArgs,
+  output: ReturnType<typeof parseReviewOutput>,
+  store: SessionStore,
+): Promise<string> {
+  const now = (): string => new Date().toISOString()
+  if (operation === 'competitor' && args.save === true && output.dismantle !== undefined) {
+    const draft = output.dismantle
+    const title = draft.title === '' ? (args.title ?? '').trim() : draft.title
+    const id = normalizeId(title) || normalizeId(args.title ?? '') || `competitor-${String(state.competitors.length + 1)}`
+    const next = await store.update((current) => ({
+      ...current,
+      competitors: [...current.competitors.filter((entry) => entry.id !== id), { ...draft, id, title }],
+      updatedAt: now(),
+    }))
+    return `已入库竞品「${title}」（第 ${String(next.competitors.length)} 本）`
+  }
+  if (operation === 'retro' && args.save === true && (output.lessons?.length ?? 0) > 0) {
+    if (state.retro === undefined) {
+      return '未归档经验：还没有复盘记录，先执行 novel_repo operation="retro"'
+    }
+    const lessons: Lesson[] = (output.lessons ?? []).map((lesson, index) => ({
+      id: normalizeId(lesson.statement) || `lesson-review-${String(index + 1)}`,
+      kind: lesson.kind,
+      statement: lesson.statement,
+      evidence: lesson.evidence,
+      area: lesson.area,
+    }))
+    const retro = state.retro
+    const next = await store.update((current) => ({
+      ...current,
+      retro: {
+        ...(current.retro ?? retro),
+        lessons: [
+          ...(current.retro ?? retro).lessons.filter((entry) => !lessons.some((added) => added.id === entry.id)),
+          ...lessons,
+        ],
+      },
+      updatedAt: now(),
+    }))
+    return `已归档经验 ${String(lessons.length)} 条（共 ${String(next.retro?.lessons.length ?? 0)} 条）`
+  }
+  return ''
+}
+
+/**
+ * Render the transcript kept beside the project.
+ *
+ * The raw reply is included on purpose: when a summary disagrees with the
+ * findings, or parsing failed, the verbatim answer is the only way to tell
+ * whether the model misbehaved or the rubric did.
+ *
+ * @param input - the review's identity and its parsed output.
+ * @returns the Markdown document.
+ */
+function transcript(input: {
+  readonly id: string
+  readonly operation: ReviewKind
+  readonly target: string
+  readonly route: string
+  readonly model: string
+  readonly output: ReturnType<typeof parseReviewOutput>
+}): string {
+  const lines = [
+    `# ${input.id} · ${input.operation}`,
+    '',
+    `- 时间：${new Date().toISOString()}`,
+    `- 模型：${input.route}`,
+    `- 提示词版本：${REVIEW_PROMPT_VERSION}`,
+    `- 对象：${input.target === '' ? '（项目）' : input.target}`,
+    `- 结构化解析：${input.output.parsed ? '成功' : '失败'}`,
+    '',
+    '## 总评',
+    '',
+    input.output.summary === '' ? '（无）' : input.output.summary,
+    '',
+    '## 问题',
+    '',
+  ]
+  if (input.output.findings.length === 0) {
+    lines.push('（无）')
+  } else {
+    for (const finding of input.output.findings) {
+      lines.push(
+        `### [${finding.severity}] ${finding.dimension}`,
+        '',
+        finding.quote === '' ? '' : `> ${finding.quote}`,
+        '',
+        `- 原因：${finding.why}`,
+        `- 改法：${finding.fix}`,
+        '',
+      )
+    }
+  }
+  if (input.output.dismantle !== undefined) {
+    lines.push('## 竞品拆解', '', '```json', JSON.stringify(input.output.dismantle, null, 2), '```', '')
+  }
+  if (input.output.lessons !== undefined) {
+    lines.push('## 经验', '', '```json', JSON.stringify(input.output.lessons, null, 2), '```', '')
+  }
+  lines.push('## 模型原始回复', '', '```', input.output.raw.trim(), '```', '')
+  return lines.join('\n')
 }
 
 /**

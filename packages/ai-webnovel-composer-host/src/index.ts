@@ -3,7 +3,8 @@
  *
  * Cordis plugin that gives an agent the vocabulary of novel composition:
  * premise, chapter plan, story bible, prose, and export. It provides one
- * service (`novelState`) and registers the eight SOP tools.
+ * service (`novelState`) and registers the SOP tools — eight that compute, plus the
+ * model-backed reviewer wherever a model route exists.
  *
  * At boot it also decides **what the workspace is**. That decision is the
  * difference between a composer that sits inert until someone happens to call
@@ -23,9 +24,10 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { emptyNovel } from './core/novel.ts'
 import type { WorkspaceKind, WorkspaceVerdict } from './core/workspace.ts'
+import type { ReviewSettings } from './host/llm.ts'
 import { createSnapshotCache, registerWorkspacePrompt } from './host/prompt.ts'
 import { createProjectResolver } from './host/resolver.ts'
-import { registerTools } from './host/tools.ts'
+import { registerReviewTool, registerTools } from './host/tools.ts'
 import { NovelStore, NOVEL_RELATIVE_PATH } from './host/store.ts'
 
 /** Stable Cordis plugin name. */
@@ -63,6 +65,19 @@ export const Config = z.object({
    * novel (or that carries the document) is adopted either way.
    */
   adoptEmptyWorkspace: z.boolean().default(false),
+  /**
+   * Provider the review tool calls, with {@link Config.reviewModel}.
+   *
+   * Empty (the default) means "follow the model this session is using", which is
+   * what makes `novel_review` work with no configuration. Set both to pin
+   * reviews to a specific model — a cheaper one for routine passes, or a
+   * stronger one for an opening that has to land.
+   */
+  reviewProvider: z.string().default(''),
+  /** Model the review tool calls; see {@link Config.reviewProvider}. */
+  reviewModel: z.string().default(''),
+  /** How long one review call may take before it is abandoned. */
+  reviewTimeoutMs: z.number().step(1).min(1000).default(120000),
 })
 
 /** Parsed {@link Config}, derived through Schemastery's global type namespace. */
@@ -152,6 +167,28 @@ export function apply(ctx: Context, config: ComposerConfig): void {
 
   registerTools(ctx, projects, () => state.verdict, cache)
   registerWorkspacePrompt(ctx, store, () => state.verdict, cache)
+
+  // The eight tools compute; `novel_review` asks a model. It is mounted only
+  // where an `llm` service exists, so a profile without one keeps a fully usable
+  // composer instead of a tool that can only fail.
+  //
+  // The injection is a *trigger*, not the mounting context: a service context
+  // exposes the injected dependency and nothing else, so the tool is registered
+  // against this plugin's own ctx — the one that carries `tools`. Mounting is
+  // guarded because an injection callback may run again when services change.
+  const review: ReviewSettings = {
+    provider: config.reviewProvider,
+    model: config.reviewModel,
+    timeoutMs: config.reviewTimeoutMs,
+  }
+  let reviewMounted = false
+  const mountReview = (): void => {
+    if (reviewMounted) return
+    reviewMounted = true
+    registerReviewTool(ctx, projects, review)
+  }
+  if (ctx.reflect.get('llm') !== undefined) mountReview()
+  else ctx.inject(['llm'], mountReview)
 }
 
 /**
@@ -177,6 +214,8 @@ function modeVerdict(mode: WorkspaceMode, detected: WorkspaceVerdict): Workspace
 export { NovelStore, NOVEL_RELATIVE_PATH, NOVEL_SERVICE_NAME } from './host/store.ts'
 export { createProjectResolver } from './host/resolver.ts'
 export type { ProjectResolver, ProjectsView, WorkspaceRef } from './host/resolver.ts'
-export { DEFAULT_MANUSCRIPT_PATH, DEFAULT_TEMPLATE_PATH, registerTools } from './host/tools.ts'
+export { DEFAULT_MANUSCRIPT_PATH, DEFAULT_REVIEW_PATH, DEFAULT_TEMPLATE_PATH, registerReviewTool, registerTools } from './host/tools.ts'
+export { NovelReviewError, resolveRoute, runReview } from './host/llm.ts'
+export type { LlmRoute, ReviewResult, ReviewSettings } from './host/llm.ts'
 export { registerWorkspacePrompt } from './host/prompt.ts'
 export * from './core/index.ts'

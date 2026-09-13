@@ -533,6 +533,72 @@ export interface Lesson {
   readonly area: string
 }
 
+// ── model-backed reviews ──────────────────────────────────────────────────────
+
+/**
+ * The judgements `novel_review` can ask a model for.
+ *
+ * These are the SOP steps whose output is a *reading of language* rather than a
+ * number: the tool layer cannot decide them, and the eight deterministic tools
+ * deliberately do not try. Every one of them is recorded so the recommendation
+ * can be audited against the model and prompt that produced it.
+ */
+export const REVIEW_KINDS = ['ai-flavor', 'opening', 'competitor', 'retro'] as const
+
+/** One entry of {@link REVIEW_KINDS}. */
+export type ReviewKind = (typeof REVIEW_KINDS)[number]
+
+/** How much a finding matters, as judged by the model. */
+export const REVIEW_SEVERITIES = ['high', 'medium', 'low'] as const
+
+/** One entry of {@link REVIEW_SEVERITIES}. */
+export type ReviewSeverity = (typeof REVIEW_SEVERITIES)[number]
+
+/** One thing wrong with the prose, anchored to the text that shows it. */
+export interface ReviewFinding {
+  /** What kind of problem: `翻译腔`, `节奏`, `钩子`, … */
+  readonly dimension: string
+  /** The offending text, quoted so the author can find it. */
+  readonly quote: string
+  /** Why it reads as machine-written or weak. */
+  readonly why: string
+  /** What to do instead. */
+  readonly fix: string
+  /** How much it matters. */
+  readonly severity: ReviewSeverity
+}
+
+/**
+ * One recorded review.
+ *
+ * The model and the prompt version are part of the record, not metadata: a
+ * judgement produced by an unknown model under an unknown rubric cannot be
+ * argued with or reproduced, and the SOP's whole discipline is that a decision
+ * names its evidence.
+ */
+export interface ReviewRecord {
+  /** Stable id, `review-<n>`. */
+  readonly id: string
+  /** ISO-8601 instant of the review. */
+  readonly at: string
+  /** Which judgement was asked for. */
+  readonly kind: ReviewKind
+  /** What was reviewed: a chapter id, or `''` for the whole project. */
+  readonly target: string
+  /** The provider route used. */
+  readonly provider: string
+  /** The model used. */
+  readonly model: string
+  /** Which rubric version was sent, so a later revision is distinguishable. */
+  readonly promptVersion: string
+  /** The model's one-paragraph verdict. */
+  readonly summary: string
+  /** The individual findings. */
+  readonly findings: readonly ReviewFinding[]
+  /** Workspace-relative path of the full transcript, or `''` when none was kept. */
+  readonly artifact: string
+}
+
 /** One IP-ready asset extracted from the finished novel. */
 export interface IpAsset {
   /** Stable id. */
@@ -630,6 +696,15 @@ export interface NovelState {
   readonly iterations: readonly Iteration[]
   /** Validation rounds. */
   readonly verifications: readonly VerificationRound[]
+  /**
+   * Model-backed judgements in the order taken.
+   *
+   * Additive since the first release, so a document written before reviews
+   * existed simply has none; the reader defaults it rather than refusing the
+   * file, because losing a draft to a plugin upgrade is the one outcome the
+   * codec must never allow.
+   */
+  readonly reviews: readonly ReviewRecord[]
   /** Retrospective and reusable material; absent until completion. */
   readonly retro?: Retrospective
   /** ISO-8601 timestamp of project creation. */

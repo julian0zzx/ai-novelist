@@ -16,12 +16,15 @@
 # own node_modules, which is where an out-of-tree plugin lands.
 
 - insert:
-    # The host half: provides the `novelState` service and registers the six
-    # `novel_*` tools on `ctx.tools`. `workspaceRoot` defaults to the agent's
-    # working directory; set it here to pin one project directory instead:
+    # The host half: provides the `novelState` service and registers the eight
+    # computing `novel_*` tools on `ctx.tools`, plus `novel_review` when the
+    # profile has a model route. `workspaceRoot` defaults to the agent's working
+    # directory; set it here to pin one project directory instead:
     #
     #   config:
     #     workspaceRoot: /Users/me/novels/qingyun
+    #     reviewProvider: deepseek
+    #     reviewModel: deepseek-chat
     #
     - id: ai-webnovel-composer
       name: '@ai-webnovel/composer-host'

@@ -12,8 +12,11 @@ Built for [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.
 
 ## What it adds
 
-**Eight model-facing tools**, one per capability, matching the phases of the SOP
-(see [The SOP this implements](#the-sop-this-implements) below).
+**Nine model-facing tools**, one per capability, matching the phases of the SOP
+(see [The SOP this implements](#the-sop-this-implements) below). Eight of them
+**compute** — thresholds, gates, arithmetic, identical on every run. The ninth,
+`novel_review`, **asks a model** to judge prose, because that is the one thing no
+counter can decide; it is registered only where a model route exists.
 
 | Tool | SOP phase | What it owns |
 |---|---|---|
@@ -21,10 +24,11 @@ Built for [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.
 | `novel_plan` | 一/二/四 | The planning pipeline: `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`. |
 | `novel_bible` | 一/四/六 | Cast, world facts, and reader promises: `character`, `world`, `link`, `review`. A `link` is a promise with a planting point, a due chapter, a payoff and a status; open promises past their due chapter are reported. |
 | `novel_verify` | 三 验证 | The validation gate: `round` records one small-cost test with its metrics and returns the verdict (`pass` / `partial` / `fail`); `assess` compares the latest reading without recording a round. |
-| `novel_write` | 五 连载 | One chapter's prose plus the delivery report: `write`, `read`, `check`. Send the prose with `delivered=[…]` and it reports which planned fields the draft reached, which it missed, which were never planned, and whether the length landed. |
+| `novel_write` | 五 连载 | One chapter's prose plus the delivery report: `write`, `read`, `check`. Send the prose with `delivered=[…]` and it reports which planned fields the draft reached, which it missed, which were never planned, and whether the length landed. Every write and check also returns the 去 AI 化 statistics (paragraph length, dialogue density, repeated sentence openings) — the tool reports symptoms and never edits the prose, so a revision is yours to make and re-send. |
 | `novel_metrics` | 五 放大 | The feedback loop: `record` (a reading → the rules it fires, each with an action *and* a scope), `iterate` (write the decision into the ledger), `outcome` (attach a later reading and report whether it actually worked), `rules` (the thresholds currently in force). |
 | `novel_status` | 全流程 | The dashboard, entirely derived from the project — no second ledger to maintain: `dashboard` (default), `bible`, `plan`, `chapter`. |
 | `novel_repo` | 六 复盘 | The closing phase: `export` (Markdown manuscript), `retro`, `asset`, `lesson`, `template`. |
+| `novel_review` | 五/六 判断 | **The model-backed tool.** `ai-flavor` diagnoses one chapter against a versioned 去 AI 化 rubric (and, with `rewrite=true`, proposes a rewritten draft as a file — never written into the chapter); `opening` reviews the gate chapters against the SOP opening checklist; `competitor` dismantles pasted competitor text into a record `novel_plan` can take; `retro` reads the project's own numbers and proposes reusable/avoid-this lessons. Every call records the provider, the model and the prompt version, and writes its transcript to `.novel/reviews/`. Nothing a model writes enters the ledger unless you pass `save=true`. |
 
 **A `novelState` service** — the single, conflict-checked write path every tool and
 surface shares, resolved per session.
@@ -65,10 +69,13 @@ Stated plainly, because the SOP is explicit that these are human or platform job
   or a human's judgement. The tool records them, compares them with your baselines,
   derives an action and a scope, and warns. If nobody reports a reading, there is no
   reading.
-- **It never judges prose quality.** The delivery report compares a draft with the plan it
-  was written against. The 去 AI 化 hints are countable statistics — paragraph length,
-  dialogue density, repeated sentence openings — not a verdict on voice, and compliance is
-  a checklist you confirm rather than a scanner that reports "clean".
+- **The eight computing tools never judge prose.** The delivery report compares a draft with
+  the plan it was written against; the 去 AI 化 hints are countable statistics — paragraph
+  length, dialogue density, repeated sentence openings — not a verdict on voice; and
+  compliance is a checklist you confirm rather than a scanner that reports "clean".
+  `novel_review` *does* judge, which is why it is a separate tool with a separate record:
+  its findings cite the text, name the model and the rubric version, and enter no ledger a
+  threshold acts on.
 - **It never rewrites published chapters.** It records the intended scope of an iteration
   and reports promises that were due and not paid; the decision and the edit stay with the
   author.
@@ -90,8 +97,8 @@ there with `--workspace-root`.
 
 `dsh plugin add` then reconciles `dsh.profile.bundles`: because `@ai-webnovel/composer`
 declares `dsh.bundle.patch`, it joins the profile's layer stack automatically. Restart
-`dsh web`; the eight tools appear in the next session, and the composer tab appears in the
-sidebar guide.
+`dsh web`; the eight computing tools appear in the next session, `novel_review` joins them
+wherever a model is available, and the composer tab appears in the sidebar guide.
 
 That trailing spec is a **package name, not a command name** — `dsh plugin` forwards
 everything after it to pnpm, so it must be something pnpm resolves. `@ai-webnovel/composer`
@@ -204,15 +211,23 @@ unless you ask for it. To pin a directory regardless of detection:
     workspaceRoot: /Users/me/novels/qingyun   # fallback when a session records no cwd
     workspaceMode: auto                       # auto (default) | novel | off
     adoptEmptyWorkspace: false                # true: create the project in an empty directory at boot
+    reviewProvider: ''                        # empty: reviews follow the session's model
+    reviewModel: ''                           # set both to pin novel_review to one model
+    reviewTimeoutMs: 120000                   # per-call ceiling for a review
 ```
 
 `off` never writes anything at boot — the tools are still registered, and `novel_init`
 works if the user asks for it explicitly.
 
+`novel_review` is the only tool that needs a model, and it resolves its route in this order:
+the `provider`/`model` named on the call itself, then the configured `reviewProvider`/
+`reviewModel`, then whatever model the session is using. With no route at all the tool is not
+registered, so a profile without a model keeps eight working tools instead of nine broken ones.
+
 ## Packaging
 
 `pnpm run dist` builds and then produces two distributions in `dist/`, both carrying the
-same eight tools — the tool code is copied from this checkout, never re-implemented.
+same nine tools — the tool code is copied from this checkout, never re-implemented.
 
 ### 1. DSH plugin distribution — `dist/dsh-plugin/ai-webnovel-composer-<version>.tgz`
 
@@ -220,7 +235,7 @@ same eight tools — the tool code is copied from this checkout, never re-implem
 plugin and the browser half:
 
 - it declares `dsh.bundle.patch`, which is what makes DSH append it to `dsh.profile.bundles`;
-- its root export (and the `./host` alias) is the module that registers the eight tools;
+- its root export (and the `./host` alias) is the module that registers the nine tools;
 - its `./client` export is the Web GUI half, served as a `window.__ModuleLoader__` bundle.
 
 ```sh
@@ -245,7 +260,7 @@ registry, no network install, no build step.
 ### 2. SKILL distribution — `dist/skill/ai-webnovel-composer/`
 
 A portable Agent Skill bundle: `SKILL.md` with the frontmatter DSH's filesystem provider
-parses and a table of all eight tools, `references/` with the workflow, the tool reference
+parses and a table of all nine tools, `references/` with the workflow, the tool reference
 and the generated thresholds, `scripts/` with the installer, and `tools/` carrying the same
 package as distribution 1.
 
@@ -263,7 +278,7 @@ Copy the directory into any scanned skill root to make it discoverable — for a
 > that registers a tool. A tool exists only once a plugin registers it on `ctx.tools`. So
 > the skill bundle carries the code *and* the script that installs it, and `SKILL.md` says
 > so plainly rather than implying the tools come for free. Its `metadata.tools` line and
-> its "The eight tools" table both list all eight.
+> its "The nine tools" table both list all nine.
 
 ## Development
 

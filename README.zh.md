@@ -10,7 +10,9 @@
 
 ## 它带来了什么
 
-**八个面向模型的工具**，一个工具管一件事，与 SOP 的阶段一一对应（见下文「这套工具实现的 SOP」）。
+**九个面向模型的工具**，一个工具管一件事，与 SOP 的阶段一一对应（见下文「这套工具实现的 SOP」）。
+其中**八个是算出来的**——阈值、门禁、算术，每次运行结果完全一致；第九个 `novel_review` 是**问出来的**：
+把文笔判断交给大语言模型，因为那是计数器决定不了的事。它只在存在模型路由的环境里注册。
 
 | 工具 | SOP 阶段 | 负责什么 |
 |---|---|---|
@@ -18,10 +20,11 @@
 | `novel_plan` | 一/二/四 | 策划流水线：`competitor`、`pitch`、`world`、`outline`、`volume`、`chapter`、`beat`、`opening`、`naming`。 |
 | `novel_bible` | 一/四/六 | 人物、世界设定与对读者的承诺：`character`、`world`、`link`、`review`。`link` 是一条带埋点、目标回收章、回收方式与状态的承诺；已到回收章仍未回收的会被报出。 |
 | `novel_verify` | 三 验证 | 验证门禁：`round` 记录一轮小成本测试及其指标，返回裁决（`pass` / `partial` / `fail`）；`assess` 只比对读数（默认最近一次），不新记一轮。 |
-| `novel_write` | 五 连载 | 单章正文与兑现回报：`write`、`read`、`check`。发正文时带上 `delivered=[…]`，它会报出细纲哪些字段已兑现、哪些未兑现、哪些细纲本身没写，以及字数是否落在目标区间。 |
+| `novel_write` | 五 连载 | 单章正文与兑现回报：`write`、`read`、`check`。发正文时带上 `delivered=[…]`，它会报出细纲哪些字段已兑现、哪些未兑现、哪些细纲本身没写，以及字数是否落在目标区间。每次 `write` 与 `check` 还会附上**去 AI 化统计**（段落长度、对话密度、重复句式）——工具只报症状、从不改写正文，改写由你完成后重新发一遍。 |
 | `novel_metrics` | 五 放大 | 数据闭环：`record`（录入一次读数，并报出触发的规则，每条规则都带动作**与范围**）、`iterate`（把决定写入台账）、`outcome`（关联后续读数，回报这次调整是否真的有效）、`rules`（打印当前生效的阈值）。 |
 | `novel_status` | 全流程 | 看板，全部由项目状态派生，不需要维护第二张表：`dashboard`（默认）、`bible`、`plan`、`chapter`。 |
 | `novel_repo` | 六 复盘 | 收尾阶段：`export`（Markdown 成稿）、`retro`、`asset`、`lesson`、`template`。 |
+| `novel_review` | 五/六 判断 | **唯一由模型驱动的工具。** `ai-flavor` 按版本化的去 AI 化 rubric 诊断单章（加 `rewrite=true` 会额外产出改写稿，但只落成旁挂文件，绝不写进章节）；`opening` 用 SOP 开篇清单体检门禁章；`competitor` 把粘进来的竞品原文拆成 `novel_plan` 能接收的结构；`retro` 读项目自己的数据，提出可复用与要避开的经验。每次调用都记录 provider、model 与提示词版本，并把完整对话写到 `.novel/reviews/`。**模型写的内容除非你显式 `save=true`，不会进台账。** |
 
 **一个 `novelState` 服务**——所有工具与界面共用的、带冲突检查的唯一写入通道，按会话解析。
 
@@ -51,8 +54,10 @@ SOP 明确说了哪些事属于人和平台，这里也直说：
 
 - **它不编造指标。** 数字来自平台后台、编辑、试读样本或人的判断；工具只负责登记、比较、给出
   动作与范围、并提醒。没人录入读数，就没有读数。
-- **它不评价文笔。** 兑现回报比较的是「正文与它自己的细纲」，去 AI 化提示是可数的统计（段落长度、
-  对话密度、重复句式），不是对语感的评判；合规是你要逐项确认的清单，不是扫描器报一句「干净」。
+- **八个计算型工具不评价文笔。** 兑现回报比较的是「正文与它自己的细纲」，去 AI 化提示是可数的统计
+  （段落长度、对话密度、重复句式），不是对语感的评判；合规是你要逐项确认的清单，不是扫描器报一句
+  「干净」。`novel_review` **确实会评价**——正因如此它是独立工具、独立记录：结论引用原文、写明所用
+  模型与 rubric 版本，并且不进入任何会被阈值当作依据的台账。
 - **它不改已发布章节。** 它记录一次迭代的范围与理由、报出到期未回收的承诺；改不改、怎么改，始终
   由作者决定。
 - **它自己不测量任何东西。** 没有平台 API、没有爬虫、没有埋点。
@@ -72,7 +77,7 @@ dsh plugin --profile web add -w "$(pwd)/packages/ai-webnovel-composer"
 
 随后 `dsh plugin add` 会对齐 `dsh.profile.bundles`：由于 `@ai-webnovel/composer` 声明了
 `dsh.bundle.patch`，它会自动加入该 profile 的层叠栈。重启 `dsh web` 后，新会话即可看到八个
-工具，侧栏引导页出现创作台标签页。
+计算型工具，有可用模型时 `novel_review` 一并出现，侧栏引导页出现创作台标签页。
 
 结尾这个 spec 是**包名而不是命令名**——`dsh plugin` 把它之后的参数原样转发给 pnpm，所以它
 必须是 pnpm 能解析的包名。`@ai-webnovel/composer` 是 *bundle*（npm scope 为
@@ -175,13 +180,20 @@ DSH 里的 **workspace** 是宿主登记的一个目录；**session** 记录自�
     workspaceRoot: /Users/me/novels/qingyun   # session 未记录 cwd 时的回退
     workspaceMode: auto                       # auto（默认）| novel | off
     adoptEmptyWorkspace: false                # true：启动时就在空目录里建好项目
+    reviewProvider: ''                        # 留空：评审跟随当前会话的模型
+    reviewModel: ''                           # 两项都填：把 novel_review 固定到某个模型
+    reviewTimeoutMs: 120000                   # 单次评审的超时上限
 ```
+
+`novel_review` 是唯一需要模型的工具，路由按此顺序解析：调用参数里的 `provider`/`model`
+→ 配置的 `reviewProvider`/`reviewModel` → 当前会话正在用的模型。三者都没有时它**不注册**，
+于是一个没有模型的环境仍然是八个可用工具，而不是九个坏工具。
 
 `off` 在启动时什么都不写——工具仍然注册，用户明确要求时 `novel_init` 依旧可用。
 
 ## 打包分发
 
-`pnpm run dist` 会先构建、再在 `dist/` 下产出两个分发包，两者携带**同一套八个工具**——工具代码
+`pnpm run dist` 会先构建、再在 `dist/` 下产出两个分发包，两者携带**同一套九个工具**——工具代码
 一律从本仓库构建产物复制，不重写。
 
 ### 一、DSH plugin 分发包 —— `dist/dsh-plugin/ai-webnovel-composer-<版本>.tgz`
@@ -189,7 +201,7 @@ DSH 里的 **workspace** 是宿主登记的一个目录；**session** 记录自�
 **一个 tarball，一个包。** `@ai-webnovel/composer` 同时是 bundle、plugin 与浏览器半边：
 
 - 它声明了 `dsh.bundle.patch`，这正是 DSH 把它追加进 `dsh.profile.bundles` 的依据；
-- 它的根导出（以及 `./host` 别名）就是注册八个工具的那个模块；
+- 它的根导出（以及 `./host` 别名）就是注册九个工具的那个模块；
 - 它的 `./client` 导出是 Web 界面半边，以 `window.__ModuleLoader__` 形式提供。
 
 ```sh
@@ -210,7 +222,7 @@ tarball 里带着构建好的 `lib/`，所以目标机器只需要 Node 和 DSH�
 ### 二、SKILL 标准分发包 —— `dist/skill/ai-webnovel-composer/`
 
 一个可移植的 Agent Skill 目录包：`SKILL.md` 带 DSH 文件系统 provider 会解析的 frontmatter 与
-**全部八个工具的清单表**，`references/` 放工作流、工具参考与由代码生成的阈值，`scripts/` 放安装
+**全部九个工具的清单表**，`references/` 放工作流、工具参考与由代码生成的阈值，`scripts/` 放安装
 脚本，`tools/` 放与分发包一相同的那个包。
 
 ```sh
@@ -224,7 +236,7 @@ node dist/skill/ai-webnovel-composer/scripts/setup.mjs --profile web
 > `name`、`description`、`whenToUse`、`metadata`、`disable-model-invocation`、`user-invocable`，
 > **没有任何字段能注册工具**。工具只有在某个插件把它注册到 `ctx.tools` 之后才存在。所以这个
 > skill 包同时携带代码**和**安装脚本，并在 `SKILL.md` 里把这件事说明白，而不是让人误以为工具
-> 是白来的。它的 `metadata.tools` 与正文的「八个工具」表都把八个工具列全了。
+> 是白来的。它的 `metadata.tools` 与正文的「九个工具」表都把九个工具列全了。
 
 ## 开发
 

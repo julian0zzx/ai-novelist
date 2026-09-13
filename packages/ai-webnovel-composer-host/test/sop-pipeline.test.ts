@@ -349,6 +349,23 @@ describe('phase five: serialization and iteration', () => {
     expect((result['warnings'] as string[]).join(' ')).toMatch(/标记 final/)
   })
 
+  it('reports the 去 AI 化 statistics on every write, and again on check', async () => {
+    await serializing()
+    const prose = `${'甲'.repeat(221)}\n\n${'乙'.repeat(221)}\n\n${'他看向山门。'.repeat(5)}`
+    const written = await call('novel_write', { chapterId: 'chapter-1', body: prose, delivered: ['plotTask'] })
+    const writtenText = String((written['body'] as string[]).join('\n'))
+    expect(writtenText).toContain('去 AI 化提示')
+    expect(writtenText).toContain('超过 220 字')
+    expect(writtenText).toContain('以「他看」开头的句子出现 4 次')
+
+    const before = await readFile(join(root, '.novel/novel.json'), 'utf8')
+    const checked = await callText('novel_write', { operation: 'check', chapterId: 'chapter-1' })
+    expect(checked).toContain('去 AI 化提示')
+    expect(checked).toContain('段落平均')
+    // `check` reports; it does not touch the stored chapter.
+    expect(await readFile(join(root, '.novel/novel.json'), 'utf8')).toBe(before)
+  })
+
   it('fires the SOP iteration rules with an action and a scope', async () => {
     await serializing()
     const result = await call('novel_metrics', {
