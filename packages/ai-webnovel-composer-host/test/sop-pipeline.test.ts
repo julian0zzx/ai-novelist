@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -540,5 +540,85 @@ describe('the workspace the tools read', () => {
     expect(rootStatus).toContain('Root book')
     const otherStatus = String((await call('novel_status', {}, { header: { cwd: other } }))['detail'])
     expect(otherStatus).toContain('Other book')
+  })
+})
+
+describe('the file is the source of truth', () => {
+  it('adopts a hand-edited contract, and the next write judges against it', async () => {
+    await call('novel_init', { title: '青云记', premise: '少年持断剑上山。' })
+    await call('novel_plan', {
+      operation: 'chapter',
+      id: 'chapter-1',
+      title: '山门',
+      number: 1,
+      plotTask: '抵达山门',
+      conflict: '守门弟子拦路',
+      emotionalPayoff: '被接纳的期待',
+      // `infoGap` is deliberately left unanswered: the author edits it in below.
+      beats: ['tension'],
+      hook: '山门后传来一声钟响。',
+    })
+    await call('novel_write', { chapterId: 'chapter-1', body: '山门很高，云雾不散。', delivered: ['plotTask'] })
+
+    // A human edits the chapter-end hook in their own editor. Nothing tells the
+    // plugin; the next read simply finds it.
+    const planPath = join(root, '章节大纲.md')
+    const contractPath = join(root, '章节/第001章-山门.细纲.md')
+    const contract = await readFile(contractPath, 'utf8')
+
+    // The check reports contract completeness, computed from the file — so an
+    // edit that answers a field the author left open changes the verdict.
+    const before = await callText('novel_write', { operation: 'check', chapterId: 'chapter-1' })
+    // `infoGap` was left open when the plan was written, so the check lists it.
+    expect(before).toMatch(/- infoGap：计划=无/u)
+
+    // Two hand edits at once: one answers an open field, one rewrites the hook.
+    const edited = contract
+      .replace('## 信息差\n', '## 信息差\n\n父亲当年为何执意上山。\n')
+      .replace('山门后传来一声钟响。', '钟声之后，后山传来父亲的剑鸣。')
+    await writeFile(contractPath, edited, 'utf8')
+
+    const after = await callText('novel_write', { operation: 'check', chapterId: 'chapter-1' })
+    // The hand edit answered it, so the very same check now plans it.
+    expect(after).toMatch(/- infoGap：计划=有/u)
+    // The hook the author renamed is what the stored chapter carries.
+    const stored = JSON.parse(await readFile(join(root, '.novel/novel.json'), 'utf8')) as {
+      index: { chapters: Record<string, { outlineFile: string }> }
+    }
+    expect(stored.index.chapters['chapter-1']?.outlineFile).toBe('章节/第001章-山门.细纲.md')
+    expect(await readFile(contractPath, 'utf8')).toContain('钟声之后，后山传来父亲的剑鸣。')
+    // The chapter plan file itself is untouched: the edit was in the contract.
+    expect(await readFile(planPath, 'utf8')).toContain('山门')
+  })
+
+  it('reports a hand-broken file by name and refuses to write over it', async () => {
+    await call('novel_init', { title: '青云记' })
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
+    await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。', delivered: ['plotTask'] })
+
+    const bodyPath = join(root, '章节/第001章-山门.md')
+    const corrupt = '---\nid: "chapter-1"\nnumber: 1\n\n# 第 1 章 山门\n\n正文还在。\n'
+    await writeFile(bodyPath, corrupt, 'utf8')
+
+    // The error names the file, and the tool surface does not pretend it succeeded.
+    await expect(call('novel_write', { chapterId: 'chapter-1', body: '新正文。' })).rejects.toThrow(/章节\/第001章-山门\.md/u)
+    expect(await readFile(bodyPath, 'utf8')).toBe(corrupt)
+    await expect(call('novel_status', {})).rejects.toThrow(/章节\/第001章-山门\.md/u)
+    expect(await readFile(bodyPath, 'utf8')).toBe(corrupt)
+  })
+
+  it('renames the chapter files, and the plan, when the title changes', async () => {
+    await call('novel_init', { title: '青云记' })
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1, plotTask: '抵达' })
+    await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。', delivered: ['plotTask'] })
+
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门之下' })
+
+    expect(await readFile(join(root, '章节/第001章-山门之下.md'), 'utf8')).toContain('山门很高。')
+    await expect(readFile(join(root, '章节/第001章-山门.md'), 'utf8')).rejects.toThrow()
+    expect(await readFile(join(root, '章节大纲.md'), 'utf8')).toContain('山门之下')
+    // The chapter is still addressable by its id, which is what did not change.
+    const status = await callText('novel_status', { detail: 'chapter', chapterId: 'chapter-1' })
+    expect(status).toContain('山门之下')
   })
 })

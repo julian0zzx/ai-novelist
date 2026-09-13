@@ -1,11 +1,24 @@
 /**
- * Domain vocabulary of the AI Web Novel Composer, as of schema version 2.
+ * Domain vocabulary of the AI Web Novel Composer, as of schema version 3.
  *
  * Version 2 exists because the SOP this plugin implements is a *pipeline with
  * gates*, not a notebook: the phase you are in, the evidence that let you enter
  * it, the commitments you made to readers, and the numbers you promised to
  * watch all have to be data. Version 1 held a premise, a cast, and chapters;
  * everything else lived in prose and was forgotten.
+ *
+ * Version 3 exists because the novel's **content** moved out of the JSON
+ * document into Markdown files a human can read and edit. `.novel/novel.json`
+ * keeps what has to be atomic — the evidence chain the threshold rules compute
+ * on, the foreshadowing ledger, the project's metadata — plus {@link StorageIndex},
+ * which is the only record of where the content files actually live. The content
+ * itself is assembled from those files on read and diffed back out on write, so
+ * `core/*` still sees exactly the same {@link NovelState} it always did.
+ *
+ * Data has exactly one home; `docs/plan-markdown-storage.md` §4 is that table.
+ * Where the plan's table does not name a home (candidate naming sets, dismantled
+ * competitors, the opening checklist), the field stays in `novel.json`, because
+ * "no home named" must never mean "silently dropped".
  *
  * Conventions used throughout:
  *
@@ -19,7 +32,7 @@
  */
 
 /** On-disk schema version written by this build. */
-export const NOVEL_SCHEMA_VERSION = 2 as const
+export const NOVEL_SCHEMA_VERSION = 3 as const
 
 /** Lifecycle of one chapter from plan to frozen prose. */
 export const CHAPTER_STATUSES = ['planned', 'drafting', 'revised', 'final'] as const
@@ -341,9 +354,83 @@ export interface StoryLink {
 
 // ── the plan ──────────────────────────────────────────────────────────────────
 
+/**
+ * The filenames the five top-level content files use.
+ *
+ * Fixed Chinese names by default, overridable through configuration; the index
+ * is the only thing that records which names are actually in force, so nothing
+ * downstream may hard-code them.
+ */
+export interface StorageLayout {
+  /** Whole-book outline: logline, acts, minimal outline, `fullOutlineDone`. */
+  readonly outlineFile: string
+  /** Cast. */
+  readonly castFile: string
+  /** World facts. */
+  readonly worldFile: string
+  /** Volume plans. */
+  readonly volumeFile: string
+  /** Chapter plan and rhythm table. */
+  readonly chapterPlanFile: string
+  /** Directory holding the per-chapter prose and contract files. */
+  readonly chapterDir: string
+}
+
+/**
+ * Everything `.novel/novel.json` holds at schema version 3.
+ *
+ * Deliberately *not* a {@link NovelState}: this is what is written to the
+ * metadata document, whereas a state is metadata **plus** the content assembled
+ * from the Markdown files. Keeping the two apart is what makes "content files
+ * first, metadata second" implementable without ever writing a half-state.
+ */
+export interface NovelMetadata {
+  /** On-disk schema version. */
+  readonly schemaVersion: number
+  /** Premise and prose conventions. */
+  readonly meta: NovelMeta
+  /** Commercial frame. */
+  readonly platform: PlatformProfile
+  /** The memorable point and its supporting differentiators. */
+  readonly pitch: Premise
+  /** Candidate title/blurb/tag sets, awaiting validation. */
+  readonly naming: readonly NamingCandidate[]
+  /** Leaderboard medians every reading is compared against. */
+  readonly baselines: MetricBaselines
+  /** Comparable titles dismantled for the SOP's competitor step. */
+  readonly competitors: readonly Competitor[]
+  /** Writing parameters. */
+  readonly writing: WritingPlan
+  /** Reader promises: status and recovery chapter feed the volume-end gate. */
+  readonly links: Readonly<Record<string, StoryLink>>
+  /** Metric readings, in the order taken. */
+  readonly readings: readonly MetricReading[]
+  /** Applied changes with their evidence chain. */
+  readonly iterations: readonly Iteration[]
+  /** Validation rounds. */
+  readonly verifications: readonly VerificationRound[]
+  /** Model-backed judgements. */
+  readonly reviews: readonly ReviewRecord[]
+  /**
+   * The opening-engineering checklist.
+   *
+   * Kept here because the plan's ownership table names no home for it, and the
+   * rule for that case is "it stays in the metadata document" rather than
+   * "it is dropped" — its `done` flags gate the move out of `verification-prep`.
+   */
+  readonly opening: Outline['opening']
+  /** Where the content files live, and what they last contained. */
+  readonly index: StorageIndex
+  /** Retrospective and reusable material; absent until completion. */
+  readonly retro?: Retrospective
+  /** ISO-8601 timestamp of project creation. */
+  readonly createdAt: string
+  /** ISO-8601 timestamp of the last accepted write. */
+  readonly updatedAt: string
+}
+
 /** One volume of the outline. */
-export interface VolumePlan {
-  /** 1-based volume number. */
+export interface VolumePlan {  /** 1-based volume number. */
   readonly number: number
   /** Working title. */
   readonly title: string
@@ -658,10 +745,64 @@ export interface Retrospective {
 // ── the document ──────────────────────────────────────────────────────────────
 
 /**
- * The whole persisted novel project: one JSON document, one source of truth.
+ * Where one chapter's two content files live, and what they contained.
  *
- * Chapters, cast, world, plan, feedback, and retrospective move together, so no
- * write can leave the project internally inconsistent.
+ * The hashes are not a lock: the storage policy is "the file wins", so a hash
+ * only distinguishes "byte-identical to what we parsed last time" (skip the
+ * reparse) from "someone edited this" (re-read and adopt).
+ */
+export interface ChapterFileRef {
+  /** 1-based position in reading order, as the chapter plan records it. */
+  readonly number: number
+  /** Working title, as the chapter plan records it; `''` while untitled. */
+  readonly title: string
+  /** Workspace-relative path of the prose file (`章节/第001章-山门.md`). */
+  readonly bodyFile: string
+  /** Workspace-relative path of the contract file (`章节/第001章-山门.细纲.md`). */
+  readonly outlineFile: string
+  /** `sha256:…` of the prose file's text at the last read or write. */
+  readonly bodyHash: string
+  /** `sha256:…` of the contract file's text at the last read or write. */
+  readonly outlineHash: string
+}
+
+/**
+ * The index: the one place that records where content actually lives.
+ *
+ * The five top-level names are fixed Chinese filenames by default and
+ * configurable through `Config.storageLayout`; everything else is keyed by
+ * chapter id so a title change (and the file rename it causes) can be recovered,
+ * because the id travels in the file's own frontmatter.
+ *
+ * `files` is a path→hash map rather than five fields because the reader must not
+ * assume "one file per kind": the plan's own note on a 1000-chapter book says the
+ * chapter plan may later split per volume, and code that reads this map is
+ * already indifferent to that.
+ */
+export interface StorageIndex {
+  /** Workspace-relative path of the whole-book outline file. */
+  readonly outlineFile: string
+  /** Workspace-relative path of the cast file. */
+  readonly castFile: string
+  /** Workspace-relative path of the world file. */
+  readonly worldFile: string
+  /** Workspace-relative path of the volume-outline file. */
+  readonly volumeFile: string
+  /** Workspace-relative path of the chapter-plan file. */
+  readonly chapterPlanFile: string
+  /** One entry per chapter, keyed by {@link Chapter.id}. */
+  readonly chapters: Readonly<Record<string, ChapterFileRef>>
+  /** `sha256:…` of every indexed content file, keyed by workspace-relative path. */
+  readonly files: Readonly<Record<string, string>>
+}
+
+/**
+ * The whole persisted novel project.
+ *
+ * As of schema version 3 this is *assembled*: the metadata fields below come from
+ * `.novel/novel.json`, while `outline`, `characters`, `world`, and the chapters
+ * come from the Markdown files {@link StorageIndex} points at. `core/*` neither
+ * knows nor cares which is which.
  */
 export interface NovelState {
   /** On-disk schema version, checked on read. */
@@ -705,6 +846,15 @@ export interface NovelState {
    * codec must never allow.
    */
   readonly reviews: readonly ReviewRecord[]
+  /**
+   * Where the content files live, and what they last contained.
+   *
+   * Maintained by the store, never a content source: a fact that appears both
+   * here and in a content file is read from the file. Optional only so a state
+   * built in memory (a fixture, a migration input) need not fabricate one; the
+   * store always writes it.
+   */
+  readonly index?: StorageIndex
   /** Retrospective and reusable material; absent until completion. */
   readonly retro?: Retrospective
   /** ISO-8601 timestamp of project creation. */

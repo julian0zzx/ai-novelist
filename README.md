@@ -146,23 +146,42 @@ package cannot insert a row for itself.
 
 The host package has its own developer reference —
 [`packages/ai-webnovel-composer-host/README.md`](packages/ai-webnovel-composer-host/README.md) —
-with the module map, the schema-v2 data model, and the invariants a contributor must keep.
+with the module map, the schema-v3 data model, and the invariants a contributor must keep.
 
 ## Where the novel lives
 
-One JSON document, `<workspace>/.novel/novel.json`, is the single source of truth: premise,
-commercial frame, cast, world facts, promises, the plan, every chapter, the metric readings
-and the iteration ledger move together, so no write can leave the project internally
-inconsistent. It is plain JSON on purpose — you can read it, diff it in git, or edit it by
-hand, and `novel_status` will show the result.
+The novel is **readable Markdown in your workspace**. `.novel/novel.json` holds only what has
+to move atomically — the premise and commercial frame, the metric readings and the iteration
+ledger, the foreshadowing ledger, and an index of where the content files are. Everything an
+author reads and rewrites lives in a file they can open:
 
 ```
 novel-workspace/
+  全书大纲.md            # logline, acts, minimal outline
+  人物设定.md            # one section per character
+  世界观设定.md          # one section per world fact
+  分卷大纲.md            # one section per volume
+  章节大纲.md            # the chapter table + the rhythm table
+  章节/
+    第001章-山门.md      # prose
+    第001章-山门.细纲.md # the six-field contract
   .novel/
-    novel.json             # the project (schemaVersion: 2)
-    manuscript.md          # written by novel_repo operation="export"
-    templates/             # written by novel_repo operation="template"
+    novel.json            # metadata + index (schemaVersion: 3)
+    novel.v2.backup.json  # only after a migration; never overwritten
+    manuscript.md         # written by novel_repo operation="export"
+    templates/            # written by novel_repo operation="template"
+    reviews/              # model transcripts and rewritten drafts
 ```
+
+**The file wins.** Edit any of them by hand and the next read adopts what you wrote and
+refreshes the index. The one guard rail is syntax: if a file cannot be parsed, the tool
+reports the file and the reason and refuses to touch it, because guessing at a broken file is
+how a draft gets destroyed. `wordCount` is the exception to "the file wins" — it is derived,
+so it is recomputed from the prose on every read and back-filled on every write.
+
+Writes go content-files-first and metadata-last, so the index may point at older content for
+the length of one write but never at a file that does not exist. A failed write reports which
+files landed and which did not.
 
 The document is `schemaVersion: 2`. A version-1 document is migrated automatically on read
 and never lost: the old chapter `synopsis` becomes that chapter's task, the old premise,
@@ -181,7 +200,8 @@ The composer classifies each session's workspace and acts on it:
 
 | What it finds | Verdict | What happens |
 |---|---|---|
-| `.novel/novel.json` (the project document) | `novel` | Adopted as-is — never rewritten. Tools and prompt are live. |
+| `.novel/novel.json` (metadata + index) | `novel` | Adopted as-is; the content files beside it are the novel. Tools and prompt are live. |
+| the content `.md` files | `novel` | The file wins: your edit is adopted on the next read. |
 | a `.novel/` directory with no document yet | `novel` | Treated as a novel workspace; the document is left for `novel_init`. |
 | three or more chapter-shaped files (`001-*.md`, `第3章.md`) | `novel` | Recognized as an existing draft; a project document is created beside it. |
 | an empty directory | `fresh` | **Left untouched.** Ask the agent to start a novel here (or set `adoptEmptyWorkspace: true`). |

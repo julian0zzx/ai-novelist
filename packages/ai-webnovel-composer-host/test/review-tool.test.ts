@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -6,13 +6,8 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Config, apply } from '../src/index.ts'
-import {
-  emptyNovel,
-  parseNovel,
-  serializeNovel,
-  upsertChapter,
-  type NovelState,
-} from '../src/core/index.ts'
+import { NovelStore } from '../src/host/store.ts'
+import { emptyNovel, upsertChapter, type NovelState } from '../src/core/index.ts'
 
 /**
  * `novel_review`, driven end to end against a fake model.
@@ -106,20 +101,32 @@ async function callText(name: string, args: Record<string, unknown>): Promise<st
     .join('\n')
 }
 
-/** The stored project, re-read from disk. */
-async function stored(): Promise<NovelState> {
-  return parseNovel(await readFile(join(root, '.novel/novel.json'), 'utf8'))
+/**
+ * The store the mounted plugin uses, for inspecting what landed on disk.
+ *
+ * Built over the same workspace root and filesystem as the plugin's own, which is
+ * the point: the assertion below then reads the project exactly as a second
+ * session would, from the files rather than from any in-memory copy.
+ */
+function store(): NovelStore {
+  return new NovelStore(ctx, { workspaceRoot: root, clock: () => '2026-01-01T00:00:00.000Z' })
 }
 
-/** A project with one written chapter, seeded straight into the document. */
+/** The stored project, re-read from the files. */
+async function stored(): Promise<NovelState> {
+  const state = await store().read()
+  if (state === undefined) throw new Error('no project in the workspace')
+  return state
+}
+
+/** A project with one written chapter, seeded through the store's own write path. */
 async function seed(chapterBody = '山门很高，云雾不散。他握紧断剑，没有回答守门弟子的问题。'): Promise<void> {
   const state = upsertChapter(
     emptyNovel({ title: '青云记', premise: '少年持断剑上山' }, () => '2026-01-01T00:00:00.000Z'),
     { id: 'chapter-1', number: 1, title: '山门', plotTask: '林越抵达山门', hook: '钟响', body: chapterBody },
     () => '2026-01-01T00:00:00.000Z',
   )
-  await mkdir(join(root, '.novel'), { recursive: true })
-  await writeFile(join(root, '.novel/novel.json'), serializeNovel(state), 'utf8')
+  await store().create(state)
 }
 
 const FINDINGS = JSON.stringify({

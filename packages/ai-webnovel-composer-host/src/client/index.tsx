@@ -31,7 +31,7 @@ import type {
   UseSidebarRightTabInfo,
 } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { ComposedProps } from '@deepseek-ai/dsh-client-ui-slots'
-import { parseNovel } from '../core/novel.ts'
+import { DEFAULT_STORAGE_LAYOUT, composeContent, parseMetadata, stateOf } from '../core/index.ts'
 import type { Chapter, NovelState } from '../core/types.ts'
 import { NOVEL_RELATIVE_PATH } from '../host/store.ts'
 
@@ -94,40 +94,90 @@ const STYLE = {
 let clientRemote: ClientContext['remote']
 
 /**
- * Read the project document for one session.
+ * Read the project for one session.
  *
- * The host resolves the workspace root from the session identity, so this asks
- * for a workspace-relative path and never names a root itself.
+ * Since schema version 3 the document at {@link NOVEL_RELATIVE_PATH} holds only
+ * metadata and the index; the novel itself is Markdown. The panel therefore
+ * reads the metadata document first — that is what tells it whether a project
+ * exists at all — then the content files the index names, and assembles them with
+ * the same codec the host uses. **No format knowledge is duplicated here**: the
+ * panel cannot drift from the files, only lag behind them.
+ *
+ * Only two reads are unavoidable per chapter — the prose file, which carries
+ * `status` and the word count, and the contract file, which carries the beats and
+ * the hook. The five whole-book files are read once each.
  *
  * @param remote - the client Remote face.
  * @param sessionId - the session whose workspace to read.
  * @param signal - aborted when the tab closes or the session switches.
- * @returns nothing, the project, or a message explaining why it could not be read.
+ * @returns nothing, the assembled project, or a message explaining why it could not be read.
  */
 async function readProject(
   remote: ClientContext['remote'],
   sessionId: string,
   signal: AbortSignal,
 ): Promise<ProjectRead> {
-  let result: Awaited<ReturnType<ClientContext['remote']['workspaceFiles']['read']>>
+  const readFile = async (path: string): Promise<string | undefined> => {
+    const result = await remote.workspaceFiles.read(sessionId, path, {}, signal)
+    if (result.ok) return result.value.text
+    const code = result.error.code
+    // A file that is simply not there is "nothing recorded", which every codec
+    // reader already treats as an empty field. Anything else is a real fault.
+    if (code === 'FS_NOT_FOUND' || code === 'FS_NOT_TEXT') return undefined
+    throw new Error(`${path}: ${code}: ${result.error.message}`)
+  }
+
+  let raw: string | undefined
   try {
-    result = await remote.workspaceFiles.read(sessionId, NOVEL_RELATIVE_PATH, {}, signal)
+    raw = await readFile(NOVEL_RELATIVE_PATH)
   } catch (error) {
-    // A transport fault is not "no project": say so rather than showing the
-    // onboarding copy, which would invite the user to start over.
     return { status: 'error', message: error instanceof Error ? error.message : String(error) }
   }
-  if (result.ok) {
-    try {
-      return { status: 'ready', state: parseNovel(result.value.text) }
-    } catch (error) {
-      return { status: 'error', message: error instanceof Error ? error.message : String(error) }
+  if (raw === undefined) return { status: 'none' }
+
+  try {
+    const { metadata } = parseMetadata(raw)
+    const index = metadata.index
+    const files: Record<string, string> = {}
+
+    const paths = [
+      index.outlineFile,
+      index.castFile,
+      index.worldFile,
+      index.volumeFile,
+      index.chapterPlanFile,
+      ...Object.values(index.chapters).flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
+    ]
+    const loaded = await Promise.all(
+      [...new Set(paths.filter((path) => path !== ''))].map(async (path) => [path, await readFile(path)] as const),
+    )
+    for (const [path, text] of loaded) if (text !== undefined) files[path] = text
+
+    // A metadata document from before the split, or one whose index is empty,
+    // still has its files on disk under the default names; look there before
+    // concluding the panel has nothing to show.
+    for (const path of DEFAULT_LAYOUT_PATHS) {
+      if (files[path] !== undefined) continue
+      const text = await readFile(path)
+      if (text !== undefined) files[path] = text
     }
+
+    const assembled = composeContent(files, index, metadata.opening)
+    const state = stateOf({ ...metadata, index }, assembled)
+    return { status: 'ready', state }
+  } catch (error) {
+    return { status: 'error', message: error instanceof Error ? error.message : String(error) }
   }
-  const code = result.error.code
-  if (code === 'FS_NOT_FOUND' || code === 'FS_NOT_TEXT') return { status: 'none' }
-  return { status: 'error', message: `${code}: ${result.error.message}` }
 }
+
+/** The default content paths, probed when the index does not name them. */
+const DEFAULT_LAYOUT_PATHS: readonly string[] = [
+  DEFAULT_STORAGE_LAYOUT.outlineFile,
+  DEFAULT_STORAGE_LAYOUT.castFile,
+  DEFAULT_STORAGE_LAYOUT.worldFile,
+  DEFAULT_STORAGE_LAYOUT.volumeFile,
+  DEFAULT_STORAGE_LAYOUT.chapterPlanFile,
+]
 
 /**
  * One chapter row.

@@ -9,6 +9,7 @@ import {
   emptyNovel,
   missingContractFields,
   migrateV1,
+  migrateV2,
   parseNovel,
   progressOf,
   renderManuscript,
@@ -122,9 +123,28 @@ describe('serialize and parse', () => {
       targetWords: 2500,
       body: '山门很高，云雾不散。',
     })
+    // The single-document codec is the migration path's foundation: it reads a
+    // pre-split document whole. `parseNovel` therefore returns the *metadata*
+    // half for a current-version document — the content lives in files now — so
+    // this spec asserts the metadata round trip plus the word-count derivation
+    // that the migration depends on.
     const restored = parseNovel(serializeNovel(state))
-    expect(restored).toEqual(state)
-    expect(restored.chapters['chapter-1']?.wordCount).toBe(8)
+    expect(restored.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
+    expect(restored.meta).toEqual(state.meta)
+    expect(restored.links).toEqual(state.links)
+    expect(restored.outline.opening).toEqual(state.outline.opening)
+    expect(restored.index?.chapters).toEqual({})
+
+    // A version-2 document still round-trips *content* through `migrateV2`,
+    // which is what the store calls when it finds one on disk.
+    const legacy = JSON.parse(serializeNovel(state)) as Record<string, unknown>
+    const migrated = migrateV2({ ...legacy, schemaVersion: 2 })
+    expect(migrated.state.chapters['chapter-1']?.wordCount).toBe(8)
+    expect(migrated.state.characters).toEqual(state.characters)
+    expect(migrated.state.world).toEqual(state.world)
+    expect(migrated.state.outline.volumes).toEqual(state.outline.volumes)
+    // Migration points the index at the files it is about to write.
+    expect(migrated.metadata.index.chapters['chapter-1']?.bodyFile).toBe('章节/第001章-山门.md')
   })
 
   it('rejects unparsable and foreign payloads', () => {

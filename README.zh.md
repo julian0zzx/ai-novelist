@@ -124,25 +124,43 @@ packages/
 
 host 包另有一份开发者参考
 [`packages/ai-webnovel-composer-host/README.md`](packages/ai-webnovel-composer-host/README.md)：
-模块地图、schema v2 数据模型，以及贡献者不能破坏的几条不变量。
+模块地图、schema v3 数据模型，以及贡献者不能破坏的几条不变量。
 
 ## 小说存放在哪里
 
-唯一事实来源是一份 JSON 文档：`<工作区>/.novel/novel.json`。立意、商业框架、人物、世界设定、
-承诺、大纲、每一章、指标读数与迭代台账同进同出，因此任何一次写入都不会让项目自相矛盾。它刻意
-保持为纯 JSON——你可以直接读、放进 git 做 diff、手工修改，`novel_status` 会如实反映结果。
+小说就是**工作区里可读可改的 Markdown**。`.novel/novel.json` 只保留必须原子移动的部分——
+立意与商业框架、指标读数与迭代台账、伏笔台账，以及一份「内容文件在哪」的索引。作者要读、要改的
+东西全都在能直接打开的文件里：
 
 ```
 novel-workspace/
+  全书大纲.md            # 一句话、三幕、最小可行大纲
+  人物设定.md            # 一个条目 = 一个 ## 小节
+  世界观设定.md          # 一个条目 = 一条设定（含代价与限制）
+  分卷大纲.md            # 一卷一个条目
+  章节大纲.md            # 章节表 + 情绪节拍表
+  章节/
+    第001章-山门.md      # 正文
+    第001章-山门.细纲.md # 六字段契约
   .novel/
-    novel.json             # 项目本体（schemaVersion: 2）
-    manuscript.md          # 由 novel_repo operation="export" 写出
-    templates/             # 由 novel_repo operation="template" 写出
+    novel.json            # 元数据 + 索引（schemaVersion: 3）
+    novel.v2.backup.json  # 只在迁移后出现，永不覆盖
+    manuscript.md         # 由 novel_repo operation="export" 写出
+    templates/            # 由 novel_repo operation="template" 写出
+    reviews/              # 模型评审记录与改写稿
 ```
 
-文档版本是 `schemaVersion: 2`。读到 v1 文档时会自动迁移，且**绝不丢稿**：旧的章节 `synopsis`
-成为该章的剧情任务，旧的立意、人物、世界设定与章节全部保留，SOP 需要而 v1 没有建模的记录从空
-开始（于是项目自然落在它数据所支持的阶段）。无法识别的版本会被拒绝，而不是猜着读。
+**以文件为准**：手工改任何一个文件，下次读取就采纳你写的内容并刷新索引。唯一的护栏是语法——
+文件解析不了时，工具**报错并指名文件与原因**，且**绝不改动那个文件**，因为对坏文件瞎猜正是丢稿的
+方式。唯一例外是 `wordCount`：它是派生量，每次读取按正文重算、每次写入回填，人填了错值以重算为准。
+
+写入顺序是**先内容文件、后元数据**：索引在一次写入期间可能短暂指向旧内容，但绝不会指向不存在的
+文件。写入失败时会报告**哪些文件已写、哪些没写**。
+
+文档版本是 `schemaVersion: 3`。读到 v2（内容还在 JSON 里）会先备份原文到
+`.novel/novel.v2.backup.json`（已存在则不覆盖），再生成全部 Markdown 文件并写回 v3 元数据；读到
+v1 会先升到 2 再走同一条路。**备份永远保留**，人的草稿不会因为一次升级消失。无法识别的版本会被
+拒绝，而不是猜着读。
 
 ### 一个目录怎么才算「网文工作区」
 
@@ -154,7 +172,8 @@ DSH 里的 **workspace** 是宿主登记的一个目录；**session** 记录自�
 
 | 发现 | 判定 | 结果 |
 |---|---|---|
-| `.novel/novel.json`（项目文档） | `novel` | 原样采用，**永不改写**。工具与提示词立即生效。 |
+| `.novel/novel.json`（元数据 + 索引） | `novel` | 原样采用；旁边的内容文件才是小说本体。工具与提示词立即生效。 |
+| 内容 `.md` 文件 | `novel` | 以文件为准：你的改动下次读取即被采纳。 |
 | 只有 `.novel/` 目录、还没有文档 | `novel` | 视为网文工作区，文档留给 `novel_init` 去写。 |
 | 三个以上章节形态的文件（`001-*.md`、`第3章.md`） | `novel` | 识别为已有草稿，在旁边补建项目文档。 |
 | 空目录 | `fresh` | **不碰**。让 agent 在这里开一本（或配 `adoptEmptyWorkspace: true`）。 |

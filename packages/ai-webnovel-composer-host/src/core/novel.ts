@@ -14,6 +14,7 @@
  * @module @ai-webnovel/composer-host/core/novel
  */
 
+import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from './paths.ts'
 import {
   CHAPTER_STATUSES,
   CONTRACT_FIELDS,
@@ -30,6 +31,7 @@ import {
   type MetricReading,
   type NamingCandidate,
   type NovelMeta,
+  type NovelMetadata,
   type NovelProgress,
   type NovelState,
   type Outline,
@@ -42,6 +44,8 @@ import {
   type ReviewRecord,
   type ReviewSeverity,
   type StageAssessment,
+  type StorageIndex,
+  type StorageLayout,
   type StoryLink,
   type VerificationRound,
   type VolumePlan,
@@ -56,7 +60,10 @@ export class NovelInputError extends Error {
 
 /** Raised when a stored document is absent, unparsable, or a foreign version. */
 export class NovelStoreError extends Error {
-  override readonly name = 'NovelStoreError'
+  // Declared as `string` rather than the literal: `NovelWriteError` extends this
+  // class to carry the written/not-written lists, and a literal type here would
+  // make its own name unassignable.
+  override readonly name: string = 'NovelStoreError'
 }
 
 /** Clock seam: production passes nothing, tests pass a fixed instant. */
@@ -380,8 +387,31 @@ export function emptyNovel(meta: Partial<NovelMeta> = {}, now: Clock = systemClo
     iterations: [],
     verifications: [],
     reviews: [],
+    index: emptyIndex(),
     createdAt: stamp,
     updatedAt: stamp,
+  }
+}
+
+/**
+ * The empty index for a fresh project, pointing at the default layout.
+ *
+ * Declared here rather than imported from `content.ts`, which imports this
+ * module for `countWords` and the slug helpers: a cycle between the two would
+ * make module evaluation order load-bearing for no benefit.
+ *
+ * @param layout - the filenames the index should point at.
+ * @returns an index with no chapters and no hashes.
+ */
+export function emptyIndex(layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): StorageIndex {
+  return {
+    outlineFile: layout.outlineFile,
+    castFile: layout.castFile,
+    worldFile: layout.worldFile,
+    volumeFile: layout.volumeFile,
+    chapterPlanFile: layout.chapterPlanFile,
+    chapters: {},
+    files: {},
   }
 }
 
@@ -892,14 +922,22 @@ function readRetro(value: Record<string, unknown>): Retrospective {
 // ── reading and writing the document ──────────────────────────────────────────
 
 /**
- * Normalize a current-version document.
+ * Normalize a current-version metadata document.
+ *
+ * The content half — outline, cast, world, chapters — is deliberately **absent**
+ * here. It lives in Markdown files, and the store assembles it onto this
+ * metadata when it builds a {@link NovelState}; a metadata document that still
+ * carries those keys (a hand-edited file, a document written by a build that
+ * lost the split) has them ignored rather than trusted, because the files are
+ * authoritative.
  *
  * @param parsed - the decoded document.
- * @returns the state.
+ * @returns the metadata.
  */
-function readV2(parsed: Record<string, unknown>): NovelState {
+export function readMetadata(parsed: Record<string, unknown>): NovelMetadata {
   const stamp = readString(parsed, 'updatedAt', new Date(0).toISOString())
   const meta = readMeta(parsed['meta'])
+  const index = readIndex(parsed['index'], meta)
   return {
     schemaVersion: NOVEL_SCHEMA_VERSION,
     meta,
@@ -909,19 +947,198 @@ function readV2(parsed: Record<string, unknown>): NovelState {
     baselines: readBaselines(parsed['baselines']),
     competitors: readList(parsed['competitors'], readCompetitor),
     writing: readWriting(parsed['writing'], meta),
-    characters: readMap(parsed, 'characters', readCharacter),
-    world: readMap(parsed, 'world', readWorldEntry),
     links: readMap(parsed, 'links', readLink),
-    outline: readOutline(parsed['outline']),
-    chapters: sortChapters(readMap(parsed, 'chapters', readChapter)),
     readings: readList(parsed['readings'], readReading),
     iterations: readList(parsed['iterations'], readIteration),
     verifications: readList(parsed['verifications'], readVerification),
     reviews: readList(parsed['reviews'], readReview),
+    opening: readOpeningList(parsed['opening']),
+    index,
     ...(isRecord(parsed['retro']) ? { retro: readRetro(parsed['retro']) } : {}),
     createdAt: readString(parsed, 'createdAt', stamp),
     updatedAt: stamp,
   }
+}
+
+/**
+ * Read the storage index, defaulting whatever the document does not say.
+ *
+ * A missing or partial index is recoverable rather than fatal: the store scans
+ * the directory and claims the files it finds, so a document that predates the
+ * index (or lost it) still reads its novel back.
+ *
+ * @param value - the raw `index` field.
+ * @param meta - the project metadata, consulted only for diagnostics.
+ * @returns the normalized index.
+ */
+function readIndex(value: unknown, meta: NovelMeta): StorageIndex {
+  void meta
+  const base = emptyIndex()
+  if (!isRecord(value)) return base
+  const chapters: Record<string, StorageIndex['chapters'][string]> = {}
+  if (isRecord(value['chapters'])) {
+    for (const [id, raw] of Object.entries(value['chapters'])) {
+      if (!isRecord(raw)) continue
+      const bodyFile = readString(raw, 'bodyFile', '')
+      const outlineFile = readString(raw, 'outlineFile', '')
+      if (bodyFile === '' && outlineFile === '') continue
+      chapters[id] = {
+        number: readNumber(raw, 'number', 0),
+        title: readString(raw, 'title', ''),
+        bodyFile,
+        outlineFile,
+        bodyHash: readString(raw, 'bodyHash', ''),
+        outlineHash: readString(raw, 'outlineHash', ''),
+      }
+    }
+  }
+  const files: Record<string, string> = {}
+  if (isRecord(value['files'])) {
+    for (const [path, hash] of Object.entries(value['files'])) {
+      if (typeof hash === 'string') files[path] = hash
+    }
+  }
+  return {
+    outlineFile: readString(value, 'outlineFile', base.outlineFile),
+    castFile: readString(value, 'castFile', base.castFile),
+    worldFile: readString(value, 'worldFile', base.worldFile),
+    volumeFile: readString(value, 'volumeFile', base.volumeFile),
+    chapterPlanFile: readString(value, 'chapterPlanFile', base.chapterPlanFile),
+    chapters,
+    files,
+  }
+}
+
+/**
+ * Read the opening-engineering checklist out of the metadata document.
+ *
+ * @param value - the raw `opening` field.
+ * @returns the checklist, defaulting to the SOP's seven items when absent.
+ */
+function readOpeningList(value: unknown): Outline['opening'] {
+  const opening = readList(value, readOpeningCheck)
+  return opening.length > 0 ? opening : defaultOpeningChecks()
+}
+
+/**
+ * Assemble a full state: metadata plus the content the caller read from files.
+ *
+ * @param metadata - the metadata document.
+ * @param content - the outline, cast, world, and chapters from the content files.
+ * @returns the assembled state.
+ */
+export function stateOf(
+  metadata: NovelMetadata,
+  content: {
+    readonly outline: Outline
+    readonly characters: Readonly<Record<string, Character>>
+    readonly world: Readonly<Record<string, WorldEntry>>
+    readonly chapters: Readonly<Record<string, Chapter>>
+  },
+): NovelState {
+  const { opening, index, ...rest } = metadata
+  void opening
+  return {
+    ...rest,
+    outline: content.outline,
+    characters: content.characters,
+    world: content.world,
+    chapters: sortChapters(content.chapters),
+    index,
+  }
+}
+
+/**
+ * Split a state into the metadata document and the content it owns.
+ *
+ * The opening checklist rides along in the metadata because the plan's ownership
+ * table names no content home for it, and the rule for an unnamed field is that
+ * it stays in `novel.json` rather than being dropped.
+ *
+ * @param state - the state to split.
+ * @param index - the index to record, defaulting to the state's own.
+ * @returns the metadata half.
+ */
+export function metadataOf(state: NovelState, index?: StorageIndex): NovelMetadata {
+  // Spelled out field by field rather than by spreading the state minus a few
+  // keys: a `...rest` taken after destructuring re-adds everything that was
+  // destructured out, which is how the content half of the state (chapters,
+  // cast, world) once leaked back into the metadata document.
+  return {
+    schemaVersion: NOVEL_SCHEMA_VERSION,
+    meta: state.meta,
+    platform: state.platform,
+    pitch: state.pitch,
+    naming: state.naming,
+    baselines: state.baselines,
+    competitors: state.competitors,
+    writing: state.writing,
+    links: state.links,
+    readings: state.readings,
+    iterations: state.iterations,
+    verifications: state.verifications,
+    reviews: state.reviews,
+    // The checklist lives beside the plan it gates, but its home is the metadata
+    // document — see `NovelMetadata.opening`.
+    opening: state.outline.opening,
+    index: index ?? state.index ?? emptyIndex(),
+    ...(state.retro === undefined ? {} : { retro: state.retro }),
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+  }
+}
+
+/**
+ * Migrate a version-2 document.
+ *
+ * Version 2 kept the whole novel in one JSON document; version 3 keeps the
+ * metadata there and the content in Markdown. This function performs the **data**
+ * half of that move — content extracted from the document, metadata returned in
+ * the new shape. Writing the backup, the Markdown files, and the new document is
+ * the store's half, because only it has a filesystem.
+ *
+ * @param parsed - the decoded version-2 document.
+ * @returns the migrated metadata and the content the caller must write out.
+ */
+export function migrateV2(parsed: Record<string, unknown>): { readonly metadata: NovelMetadata; readonly state: NovelState } {
+  const metadata = readMetadata({ ...parsed, schemaVersion: NOVEL_SCHEMA_VERSION })
+  const content = {
+    outline: readOutline(parsed['outline']),
+    characters: readMap(parsed, 'characters', readCharacter),
+    world: readMap(parsed, 'world', readWorldEntry),
+    chapters: sortChapters(readMap(parsed, 'chapters', readChapter)),
+  }
+  const state = stateOf(metadata, content)
+  return {
+    metadata: { ...metadata, index: indexFor(state, metadata.index) },
+    state: { ...state, index: indexFor(state, metadata.index) },
+  }
+}
+
+/**
+ * Point an index at the files a state's content would occupy.
+ *
+ * Used by migration, where the content has never been written and therefore has
+ * no recorded paths yet. Hashes stay empty: the store fills them in as it writes.
+ *
+ * @param state - the state whose chapters need paths.
+ * @param base - the index to extend, providing the five top-level names.
+ * @returns the index with a chapter entry per chapter.
+ */
+function indexFor(state: NovelState, base: StorageIndex): StorageIndex {
+  const chapters: Record<string, StorageIndex['chapters'][string]> = {}
+  for (const chapter of Object.values(state.chapters)) {
+    const paths = chapterPaths(chapter.number, chapter.title)
+    chapters[chapter.id] = {
+      number: chapter.number,
+      title: chapter.title,
+      bodyFile: paths.bodyFile,
+      outlineFile: paths.outlineFile,
+      bodyHash: '',
+      outlineHash: '',
+    }
+  }
+  return { ...base, chapters }
 }
 
 /**
@@ -993,7 +1210,7 @@ function readFinding(value: Record<string, unknown>): ReviewFinding | undefined 
 export function migrateV1(parsed: Record<string, unknown>): NovelState {
   const meta = readMeta(parsed['meta'])
   const stamp = readString(parsed, 'updatedAt', new Date(0).toISOString())
-  return {
+  const base: NovelState = {
     schemaVersion: NOVEL_SCHEMA_VERSION,
     meta,
     platform: { ...emptyPlatform(), genres: meta.genres },
@@ -1011,19 +1228,32 @@ export function migrateV1(parsed: Record<string, unknown>): NovelState {
     iterations: [],
     verifications: [],
     reviews: [],
+    index: emptyIndex(),
     createdAt: readString(parsed, 'createdAt', stamp),
     updatedAt: stamp,
   }
+  return { ...base, index: indexFor(base, emptyIndex()) }
 }
 
 /**
- * Parse and normalize a persisted novel document, migrating version 1.
+ * Parse a persisted metadata document **without** its content.
+ *
+ * Version 2 still carries the content inline; the caller must route that case
+ * through {@link migrateV2}, which is why this function reports the version it
+ * found instead of pretending to have a complete state. Version 1 is upgraded
+ * for the same reason, and lands in the same "content still in the document"
+ * shape as version 2 so one migration path serves both.
  *
  * @param raw - the JSON text read from disk.
- * @returns the normalized state at the current schema version.
+ * @returns the version found, the metadata, and the state when the document
+ *   still held its content.
  * @throws {NovelStoreError} when the payload is not this plugin's document.
  */
-export function parseNovel(raw: string): NovelState {
+export function parseMetadata(raw: string): {
+  readonly version: number
+  readonly metadata: NovelMetadata
+  readonly legacy?: NovelState
+} {
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -1032,17 +1262,65 @@ export function parseNovel(raw: string): NovelState {
   }
   if (!isRecord(parsed)) throw new NovelStoreError('novel store must be a JSON object')
   const version = parsed['schemaVersion']
-  if (version === 1) return migrateV1(parsed)
+  if (version === 1) {
+    const legacy = migrateV1(parsed)
+    return { version: 1, metadata: metadataOf(legacy), legacy }
+  }
+  if (version === 2) {
+    const migrated = migrateV2(parsed)
+    return { version: 2, metadata: migrated.metadata, legacy: migrated.state }
+  }
   if (version !== NOVEL_SCHEMA_VERSION) {
     throw new NovelStoreError(
-      `novel store schemaVersion ${String(version)} is not supported (expected ${String(NOVEL_SCHEMA_VERSION)} or 1)`,
+      `novel store schemaVersion ${String(version)} is not supported (expected ${String(NOVEL_SCHEMA_VERSION)}, 2, or 1)`,
     )
   }
-  return readV2(parsed)
+  return { version: NOVEL_SCHEMA_VERSION, metadata: readMetadata(parsed) }
 }
 
 /**
- * Serialize a state for persistence: stable ordering, trailing newline.
+ * Parse a self-contained novel document.
+ *
+ * Kept for the migration path and for callers that hold a whole document in
+ * memory; {@link parseMetadata} is what the multi-file store uses.
+ *
+ * @param raw - the JSON text read from disk.
+ * @returns the normalized state at the current schema version.
+ * @throws {NovelStoreError} when the payload is not this plugin's document.
+ */
+export function parseNovel(raw: string): NovelState {
+  const { metadata, legacy } = parseMetadata(raw)
+  if (legacy !== undefined) return legacy
+  return stateOf(metadata, {
+    outline: { ...emptyOutline(), opening: metadata.opening },
+    characters: {},
+    world: {},
+    chapters: {},
+  })
+}
+
+/**
+ * Serialize a metadata document for persistence: stable ordering, trailing newline.
+ *
+ * @param metadata - the metadata to write.
+ * @returns pretty-printed JSON.
+ */
+export function serializeMetadata(metadata: NovelMetadata): string {
+  const normalized: NovelMetadata = {
+    ...metadata,
+    readings: [...metadata.readings],
+    iterations: [...metadata.iterations],
+    verifications: [...metadata.verifications],
+    reviews: [...metadata.reviews],
+  }
+  return `${JSON.stringify(normalized, null, 2)}\n`
+}
+
+/**
+ * Serialize a whole state as one document, content included.
+ *
+ * Only used for a document that is not split across files — a migration input,
+ * a test fixture, an export. The store writes {@link serializeMetadata}.
  *
  * @param state - the state to write.
  * @returns pretty-printed JSON.
@@ -1182,7 +1460,7 @@ export function assessStage(state: NovelState): StageAssessment {
 
   // Phase four → five: the full skeleton.
   const outlineBlockers: string[] = []
-  if (!state.outline.fullOutlineDone) outlineBlockers.push('完整大纲未确认（operation="outline" tier="full"）')
+  if (!state.outline.fullOutlineDone) outlineBlockers.push('完整大纲未确认（operation="outline" 且 full=true）')
   if (state.outline.volumes.length === 0) outlineBlockers.push('分卷大纲未写入（operation="volume"）')
   if (state.outline.beats.length === 0) outlineBlockers.push('情绪节拍表为空（operation="beat"）')
   if (outlineBlockers.length > 0) return { stage: 'full-outline', blockers: outlineBlockers, satisfied }

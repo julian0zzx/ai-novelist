@@ -1654,6 +1654,27 @@ export function registerTools(
             }
           }
           body.push('', `工作区判定：${detected?.kind ?? 'unknown'}（${detected?.reason ?? '—'}）`)
+          // Where the novel actually lives, because since the split a human is
+          // expected to open these files in their own editor. Reported, never
+          // prescribed: the files win over anything in memory.
+          const index = state.index
+          if (index !== undefined) {
+            body.push(
+              '',
+              '## 内容文件（可直接编辑；文件为准）',
+              `- 元数据与索引：${NOVEL_RELATIVE_PATH}`,
+              `- 全书大纲：${index.outlineFile}`,
+              `- 人物设定：${index.castFile}`,
+              `- 世界观设定：${index.worldFile}`,
+              `- 分卷大纲：${index.volumeFile}`,
+              `- 章节大纲：${index.chapterPlanFile}`,
+            )
+            for (const chapter of Object.values(state.chapters).sort((a, b) => a.number - b.number)) {
+              const ref = index.chapters[chapter.id]
+              if (ref === undefined) continue
+              body.push(`- 第 ${String(chapter.number)} 章：${ref.bodyFile} · 细纲 ${ref.outlineFile}`)
+            }
+          }
         }
 
         return {

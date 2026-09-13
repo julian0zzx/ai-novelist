@@ -45,21 +45,24 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 
 | Module | Owns |
 |---|---|
-| `types.ts` | The persisted vocabulary: `NovelState` and its records, `NOVEL_SCHEMA_VERSION = 2`, and the closed enums the tools validate against — `PROJECT_STAGES`, `METRIC_KEYS` / `METRIC_PERIODS`, `LINK_STATUSES`, `VERDICT_LEVELS`, `CHANGE_SCOPES`, `CHAPTER_STATUSES`, `BEAT_KINDS`, `CONTRACT_FIELDS`. |
-| `novel.ts` | Every state transition (`emptyNovel`, `update*`, `upsert*`, `remove*`, `addReading`, `addIteration`, `addReview`, `setOpeningCheck`), the document codec (`parseNovel`, `serializeNovel`, `migrateV1`), and the derived views (`progressOf`, `assessStage`, `stageLabel`, `missingContractFields`, `renderManuscript`). Also the small utilities the rest of the core shares: `slugify`, `normalizeId`, `countWords`, `resolveChapterId`, the `read*` coercion helpers, and the `Clock` seam. |
+| `types.ts` | The persisted vocabulary: `NovelState`, `NovelMetadata` (what the document holds), `StorageIndex` (where the content lives), their records, `NOVEL_SCHEMA_VERSION = 3`, and the closed enums the tools validate against — `PROJECT_STAGES`, `METRIC_KEYS` / `METRIC_PERIODS`, `LINK_STATUSES`, `VERDICT_LEVELS`, `CHANGE_SCOPES`, `CHAPTER_STATUSES`, `BEAT_KINDS`, `CONTRACT_FIELDS`. |
+| `novel.ts` | Every state transition (`emptyNovel`, `update*`, `upsert*`, `remove*`, `addReading`, `addIteration`, `addReview`, `setOpeningCheck`), the metadata codec (`parseMetadata`, `serializeMetadata`, `stateOf`, `metadataOf`, `migrateV1`, `migrateV2`) plus the whole-document codec (`parseNovel`, `serializeNovel`), and the derived views (`progressOf`, `assessStage`, `stageLabel`, `missingContractFields`, `renderManuscript`). Also the small utilities the rest of the core shares: `slugify`, `normalizeId`, `countWords`, `resolveChapterId`, the `read*` coercion helpers, and the `Clock` seam. |
+| `markdown.ts` | The restricted Markdown dialect, with no dependency: `splitFrontmatter` / `parseFrontmatter` / `serializeFrontmatter` (scalars, string lists, one level of mapping, both list spellings), `splitSections` / `sectionText` / `sectionList` (fence-aware), `readEntries` / `renderEntry`, `parseTable` / `renderTable` / `escapeCell` (`\|` escapes, wrong-cell-count is an error not a shift), `parseDocument` / `renderDocument`, and `hashContent`. Every failure is a `MarkdownError` carrying the offending line. |
+| `content.ts` | §4's ownership table: `decomposeContent` (state → the files that own each datum) and `composeContent` (files → outline, cast, world, chapters). Per-kind readers and renderers (`parseOutlineFile`, `parseCastFile`, `parseWorldFile`, `parseVolumeFile`, `parseChapterPlanFile`, `parseChapterOutlineFile`, `parseChapterBodyFile`, and their `render*` counterparts), each naming every other home in the same file, and all failures raised as `NovelContentError` naming the file. |
 | `plan.ts` | "What does the plan still owe?" — `missingOutlineFields`, `missingPitchFields`, `worldGaps` (a rule with no cost/limits), `castGaps` (protagonist spine), `contractGaps` / `missingContract`, `contractRows`, `lengthCheck` (target length ±15%), `rhythmExpectation`, `openingPackageGaps`. This is what the soft gate and the delivery report read. |
 | `metrics.ts` | Baselines to decisions: `thresholdFor`, `calibrationAge` (30-day staleness), `assessReading`, `tallyAssessments`, `verdictFromAssessments`, `iterationRules`, `decliningStreak`, `countIneffectiveIterations`, `openIterationsFor`, `judgeIteration`, plus `DEFAULT_MULTIPLIERS`, `SUSTAINED_DECLINE_CHAPTERS`, `INEFFECTIVE_ITERATIONS_FOR_CUT`, `PERIOD_METRICS`. |
 | `write.ts` | The delivery report: `analyzeDelivery` (planned / waived / reached / missed / unplanned, plus the length comparison), `blockersToFinal`, `complianceChecklist`, `styleObservations` (mechanical statistics for the 去 AI 化 step, not a quality verdict). |
 | `review.ts` | The model-backed rubrics as versioned data (`REVIEW_PROMPT_VERSION`, `AI_FLAVOR_DIMENSIONS`), the request builders for all four operations (`buildAiFlavorRequest`, `buildRewriteRequest`, `buildOpeningRequest`, `buildCompetitorRequest`, `buildRetroRequest`), the project brief every request carries, and the tolerant reply parser (`extractReviewJson`, `parseReviewOutput`, `renderReview`). Pure — the model is the only thing it does not own. |
 | `repo.ts` | The closing phase's assembly: `buildTemplate`, `estimateVolumeLength`, `collectHookPatterns` / `classifyHook`, `extractAssets`, `summarizeCompletion`, `buildRetrospective`, `lessonPrompts`. |
 | `workspace.ts` | Conservative classification from a directory listing plus two existence probes: `classifyWorkspace` → `novel` / `fresh` / `plain` with `reason` and `evidence`, `looksLikeChapterFile`, `countDraftFiles`, `describeVerdict`, `NOVEL_DIR`. |
+| `paths.ts` | The storage file tree as path arithmetic: `DEFAULT_STORAGE_LAYOUT`, `topLevelPaths`, `chapterPaths` / `chapterStem` / `sanitizeTitle` / `padChapterNumber`, `numberFromFileName`, `isOutlineFile`, and the migration backup path. Its own module so neither `novel.ts` nor `content.ts` has to import the other to spell a filename. |
 | `index.ts` | Re-exports the above from one specifier, so the host layer has exactly one import shape. |
 
 ### `src/host/` — the deployment surface
 
 | Module | Owns |
 |---|---|
-| `store.ts` | `NovelStore`: the single read/write path for `<workspaceRoot>/.novel/novel.json`. Containment by path arithmetic (`contain`), initialization through the `createIfAbsent` write intent (`adopt`, idempotent), every mutation through `replaceIfVersion` with the version token read under the mutation lock (`update`), writes serialized behind one promise chain, reads uncached, and derived output (`writeDerived`) for the manuscript and templates. Raises `NovelConflictError` on a stale version and `NovelStoreError` on an unreadable or foreign document. `isRegularFile` and `isFsErrorCode` match the `dsh-fs` boundary structurally. |
+| `store.ts` | `NovelStore`: the single read/write path for one project — the metadata document at `<workspaceRoot>/.novel/novel.json` plus the Markdown files its `StorageIndex` names. Containment by path arithmetic (`contain`); initialization through the `createIfAbsent` write intent (`adopt`, idempotent); every mutation through `replaceIfVersion` **on the metadata only**, with the content files written first and the metadata last; writes serialized behind one promise chain; derived output (`writeDerived`) for the manuscript and templates. Reads assemble a `NovelState` from the files, adopt whatever they say, claim unindexed chapter files by their frontmatter `id`, and report orphan files as warnings. Raises `NovelConflictError` on a pure metadata conflict, `NovelWriteError` (with `filesWritten` / `filesNotWritten`) when a multi-file write dies halfway, and `NovelStoreError` on an unreadable, broken, or foreign document. `ensureMigrated` upgrades v1/v2 documents behind a `.novel/novel.v2.backup.json` that is never overwritten. `isRegularFile` and `isFsErrorCode` match the `dsh-fs` boundary structurally. |
 | `resolver.ts` | `createProjectResolver`: which novel is *this session* working on. Caches one `NovelStore` per normalized root; `storeForSession` / `rootForSession` resolve `session.header.cwd` → configured `workspaceRoot` → `process.cwd()`; `verdictFor` classifies a session's root (the store it hands back can also `probeWorkspace`); `listProjects` and `registerWorkspace` expose the optional `@deepseek-ai/dsh-workspace` registry when it is mounted — the current tool set does not call them. Publishes the resolver as `ctx.novelState`. |
 | `prompt.ts` | The runtime-context section (`composer:workspace`): `renderWorkspaceContext` renders the workspace kind, the document path, the project numbers and the per-kind conduct text; `createSnapshotCache` keeps those numbers in a 1.5 s TTL cache because the prompt registry resolves text synchronously; `registerWorkspacePrompt` files it after the sandbox facts. A failed refresh keeps the last good numbers and records why. |
 | `llm.ts` | The only module that talks to a model. `resolveRoute` (call override → configured `reviewProvider`/`reviewModel` → `agentDefaultModel.currentSelection()`), `runReview` (one `ctx.llm.stream` call assembled with the harness's `BlockAssembler`, with timeout, cancellation, truncation and empty-answer diagnosis), and `NovelReviewError`. |
@@ -70,10 +73,12 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 `index.tsx` registers the "Novel Composer" right-Sidebar tab as a page type
 (`ctx.sidebarRightTabs.register`) plus its body in the `sidebar.right.pane.tab` seat, both
 inside one `ctx.effect`. The body reads the project through the composed Remote
-(`ctx.remote.workspaceFiles.read(sessionId, '.novel/novel.json')`) so the host resolves the
-workspace root and the panel never guesses a path, and parses the document with the same
-`parseNovel` the host uses. Only `FS_NOT_FOUND` / `FS_NOT_TEXT` render the onboarding copy;
-anything else is shown as an error with a retry.
+(`ctx.remote.workspaceFiles.read`) so the host resolves the workspace root and the panel never
+guesses a path. It reads the metadata document first — that is what decides whether a project
+exists — then the content files the index names, and assembles them with the same
+`composeContent` the host uses, so the browser holds no format knowledge of its own. Only
+`FS_NOT_FOUND` / `FS_NOT_TEXT` render the onboarding copy; anything else is shown as an error
+with a retry.
 
 ## The tool surface
 
@@ -113,9 +118,12 @@ Neither ever refuses a call — with two deliberate exceptions: `novel_verify` r
 non-passing round without `fallback` / `abandonIf`, and every tool refuses to guess a
 chapter it cannot resolve.
 
-## Schema v2 data model
+## Schema v3 data model
 
-One document, `<workspace>/.novel/novel.json`, holding:
+The novel is split. `.novel/novel.json` holds metadata, the evidence chain, and an index; the
+content lives in the Markdown files that index names, so an author can read and revise it.
+
+**In the document:**
 
 | Group | Fields |
 |---|---|
@@ -123,11 +131,27 @@ One document, `<workspace>/.novel/novel.json`, holding:
 | Pitch | `pitch` (`memorablePoint`, `coreEmotion`, `shuangPoints`, `differentiators`, `kernel`), `naming[]` (candidate title/blurb/tags sets, one `active`) |
 | Research | `competitors[]` (the dismantled leaderboard titles), `baselines` (`medians`, `multipliers`, `calibratedAt`, `source`) |
 | Writing plan | `writing`: `language`, `pov`, `volumes`, `totalChapters`, `targetWords`, `chapterPlanWindow`, `openingGateChapters`, `stockTargetChapters`, `chapterPlanCeiling`, `updateRhythm` |
-| Story data | `characters` (map), `world` (map), `links` (map) |
-| Plan | `outline`: `logline`, `acts`, `minimal`, `volumes[]`, `beats[]`, `opening[]` (checklist), `fullOutlineDone` |
-| Chapters | `chapters` (map): `id`, `number`, `title`, `synopsis`, `status`, the six contract fields (`plotTask`, `conflict`, `emotionalPayoff`, `infoGap`, `beats`, `hook`), `targetWords`, `waived`, `delivered`, `body`, `wordCount`, `volume` |
-| Feedback | `readings[]`, `iterations[]` (with `baselineReadingId` / `outcomeReadingId` / `outcome`), `verifications[]` |
+| Promises | `links` (map) — status and recovery chapter feed the volume-end gate, so this must be atomic |
+| Feedback | `readings[]`, `iterations[]` (with `baselineReadingId` / `outcomeReadingId` / `outcome`), `verifications[]`, `reviews[]` |
+| Checklist | `opening[]`: the opening-engineering items whose `done` flags gate phase two |
+| Index | `index`: `outlineFile`, `castFile`, `worldFile`, `volumeFile`, `chapterPlanFile`, `chapters` (id → number, title, `bodyFile`, `outlineFile`, both hashes), `files` (path → hash) |
 | Closing | `retro?` (dataSummary, highlights, problems, lessons, assets, templates) |
+
+**In the files** (`docs/plan-markdown-storage.md` §4 is the authority):
+
+| File | Holds |
+|---|---|
+| `全书大纲.md` | `logline`, `acts[]`, `minimal`, `fullOutlineDone` |
+| `人物设定.md` | One `##` section per character: `id`, `role`, `goal`, `fear`, `obsession`, `weakness`, `camp`, `growthArc`, `notes`, and the prose `description` |
+| `世界观设定.md` | One `##` section per fact: `id`, `kind`, `name`, `cost`, `limits`, and the prose `detail` |
+| `分卷大纲.md` | One `##` section per volume: `number`, `title`, `goal`, `conflict`, `climax`, `endHook`, `chapters` |
+| `章节大纲.md` | The chapter table (number, title, volume, target words, one-line summary) and the rhythm table — the plan layer's only home for those |
+| `章节/第NNN章-*.md` | `status` and the prose (`wordCount` is derived: recomputed on read, back-filled on write) |
+| `章节/第NNN章-*.细纲.md` | `beats`, `waived`, `delivered`, and the five contract sections |
+
+`title`, `volume`, and `targetWords` live **only** in the chapter plan table; the contract file
+does not repeat them, so a title edited there is a title changed everywhere. `id` is the stable
+key and travels in each file's frontmatter, which is how a rename can be recovered.
 
 Two conventions hold everywhere:
 
@@ -197,13 +221,16 @@ Two places where the code and the SOP's wording differ on purpose, both worth kn
    destroy unstated fields (`upsertChapter(state, { id, body })` keeps the title, contract and
    status), and derived data is never stored. If a rule needs the filesystem or the current
    time, it belongs in `host`.
-2. **All state goes through the version-guarded store.** `NovelStore` is the only writer of
-   `.novel/novel.json`: initialize with the `createIfAbsent` intent, mutate with
-   `replaceIfVersion` carrying the version token read inside the write queue, and write
-   derived output only through `writeDerived` (which `contain`s the path inside the
-   workspace root by path arithmetic). Never compare timestamps or re-read-and-compare by
-   hand — the backend's version token is exact and a hand-rolled guard cannot fire. Reads stay
-   uncached so a document edited with the model's normal file tools is never shadowed.
+2. **All state goes through the store, and content before metadata.** `NovelStore` is the
+   only writer of a project: initialize with the `createIfAbsent` intent, mutate the metadata
+   with `replaceIfVersion` carrying the version token read inside the write queue, and write
+   derived output only through `writeDerived` (which `contain`s the path inside the workspace
+   root by path arithmetic). Content files are written **before** the metadata document, so
+   the index may lag but never dangles. Never compare timestamps or re-read-and-compare by
+   hand — the backend's version token is exact and a hand-rolled guard cannot fire. A file
+   that cannot be parsed is reported and left alone: no write path may overwrite one. Reads
+   are not a source of truth — the files are — so nothing the author edited is ever
+   shadowed.
 3. **The browser bundle stays a `window.__ModuleLoader__.load({...})` CJS factory.** The
    registered `id` must equal the package name (`@ai-webnovel/composer-host`), the emitted
    file must be `lib/client.js` (`outExtensions` overrides rolldown's `.cjs`), and React plus

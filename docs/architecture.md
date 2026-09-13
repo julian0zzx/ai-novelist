@@ -79,8 +79,11 @@ without booting a harness, and so that the file-access rules exist in exactly on
 
 ```
 src/core/          pure domain — no I/O, no clock, no Cordis
-  types.ts           the persisted vocabulary (NovelState, Chapter, StoryLink, …)
-  novel.ts           every state transition as a pure function, the codec, derived views
+  types.ts           the persisted vocabulary (NovelState, NovelMetadata, StorageIndex, Chapter, …)
+  paths.ts           the §2 file tree as path arithmetic and filename sanitizing
+  markdown.ts        the restricted dialect: frontmatter, sections, tables, hashing
+  content.ts         §4's ownership table: state ⇄ Markdown files, per kind
+  novel.ts           every state transition as a pure function, the metadata codec, derived views
   plan.ts            what the plan still owes: outline/pitch/world/cast/contract gaps
   metrics.ts         baselines → thresholds → verdicts → iteration rules
   write.ts           the delivery report: did the prose pay for the plan? (plus the 去 AI 化 statistics)
@@ -122,32 +125,65 @@ Two rules worth knowing:
 `countWords` counts CJK per ideograph and Latin per whitespace-separated token, which is
 what a web-novel author means by 字数.
 
-### `host/store.ts` — atomicity and containment
+### `host/store.ts` — the split storage, its order, and its failure report
 
-`NovelStore` is the single writer of one project document. It is not a Cordis service — the
-resolver is (`ctx.novelState`), because one process serves many workspaces — but it is still
-the only place that decides where the project lives and how a write may land.
+`NovelStore` is the single writer of one project. It is not a Cordis service — the resolver
+is (`ctx.novelState`), because one process serves many workspaces — but it is still the only
+place that decides where a project lives and how a write may land.
 
-- **Containment.** The document is always `<workspaceRoot>/.novel/novel.json`. The model
-  never supplies the path, so it cannot write the project outside the workspace. Derived
-  output (`novel_repo operation="export"` and operation="template") goes through `contain()`,
-  which decides containment with path arithmetic rather than string prefixes — a prefix test
-  would accept a sibling directory whose name merely starts with the root's.
-- **Atomicity comes from the filesystem's own guards, not from comparisons.**
-  Initialization uses the `createIfAbsent` write intent; every mutation reads the target's
-  version token and writes with `replaceIfVersion`. If anything wrote the document in
-  between, the backend rejects the write and the store raises `NovelConflictError`. An
-  earlier draft compared `updatedAt` timestamps by hand; it was wrong — the store re-reads
-  before writing, so the value it compared against was always its own fresh read, and the
-  guard could never fire. The version token is the backend's, so the check is exact.
+**Two kinds of state, two kinds of guarantee.** `.novel/novel.json` holds metadata, the
+evidence chain the threshold rules compute on, the foreshadowing ledger, and the
+`StorageIndex`; the novel's content — outline, cast, world, volumes, chapter plan, and every
+chapter's prose and contract — lives in Markdown files the author can open. `core/*` sees the
+same `NovelState` either way, because `core/content.ts` decomposes a state into files and
+composes a state back out of them. `core/paths.ts` owns the file tree, so neither side has to
+import the other to spell a filename.
+
+- **Containment.** Every path is derived from the workspace root, never supplied by the
+  model, and `contain()` decides containment with path arithmetic rather than a string
+  prefix — a prefix test would accept a sibling directory whose name merely starts with the
+  root's. Derived output (`novel_repo operation="export"` and `operation="template"`) goes
+  through the same `contain()`.
+- **The metadata document is atomic; the content files are not.** `novel.json` still moves
+  in a single `replaceIfVersion` under the version token read. Content is written **first**
+  and metadata **last**, so for the length of one write the index may point at older content
+  but never at a file that does not exist.
+- **A failed write names the files.** `NovelWriteError` carries `filesWritten` and
+  `filesNotWritten`, so a caller that lost the disk halfway can say exactly what landed
+  instead of reporting a clean failure over invisible half-state. A pure metadata conflict,
+  with nothing committed, stays a plain `NovelConflictError`.
+- **The file wins.** Every read adopts whatever the files now say and refreshes the index;
+  a chapter file dropped in by hand is *claimed* by its frontmatter `id`, and a file with no
+  `id` is reported as an orphan and left where it is. The one refusal is syntax: a file that
+  cannot be parsed raises a `NovelStoreError` naming the file and the parser's complaint, and
+  nothing overwrites it.
+- **Writes are a structural diff.** The store renders the state it read and the state it is
+  about to write and writes only the files whose bytes differ, so a one-field change to a
+  1000-chapter book touches one file rather than two thousand. Deletions come last, which is
+  what makes a chapter rename a rename: the new paths land before the old ones go.
 - **Writes serialize** behind one promise chain, and the read→mutate→write window stays
   closed for the whole mutation (a mutation may be async). Concurrent tool calls therefore
   queue instead of losing one another's work.
-- **Reads are uncached.** The document is small, and a cached copy would be a second source
-  of truth for a file the model can also edit with its normal file tools.
+- **Parsed files are cached by content hash.** The cache is keyed by `sha256` of the file's
+  text, so a changed file is reparsed and an unchanged one is not; losing the cache costs
+  time and nothing else, because it is never a source of truth.
 
-Guard rejections are detected by `FsErrorCode` (`FS_STALE_VERSION`, `FS_NOT_OBSERVED`)
-rather than by class identity, because the error crosses the `dsh-fs` service boundary.
+Two `dsh-fs` details are load-bearing. Guard rejections are detected by `FsErrorCode`
+(`FS_STALE_VERSION`, `FS_NOT_OBSERVED`) rather than by class identity, because the error
+crosses the service boundary. And the service deliberately exposes no delete or rename
+primitive, so deleting an orphaned content file asks the backend for the target's
+`processPath` and unlinks it — the same escape hatch `host/resolver.ts` uses for `mkdir`,
+with containment already decided by `contain()`.
+
+### `core/markdown.ts` and `core/content.ts` — the codec
+
+The dialect is deliberately four constructs and nothing else: YAML frontmatter, `##`
+sections, fenced ```yaml blocks, and pipe tables. `markdown.ts` parses and serializes them
+with no dependency, because the promise the store makes — *a broken file is named, never
+silently replaced* — is easier to keep when the parser's exact limits are visible in one
+file. `content.ts` maps those constructs onto the domain: §4's ownership table, one datum in
+one home. `wordCount` is the deliberate exception to "the file wins": it is derived, so it is
+recomputed on every read and back-filled on every write.
 
 ### `host/tools.ts` — the model's vocabulary
 
@@ -234,6 +270,11 @@ spec.
 
 ### `client/index.tsx` — the browser half
 
+Since the split, the panel reads the metadata document first and then the content files the
+index names, assembling them with the same `composeContent` the host uses. No format
+knowledge is duplicated in the browser: the panel cannot drift from the files, only lag
+behind them.
+
 The tab registers through exactly the same two-stage public path the shipped sidebar types
 use, with no privileged access:
 
@@ -292,6 +333,7 @@ Two consequences shaped the code:
 
 ```
 boot → resolver.storeFor(defaultRoot).probeWorkspace()   listDir(root) + stat(.novel/novel.json)
+     → store.read() migration check                      v2/v1 documents are upgraded here
      → classifyWorkspace(entries, …)                     pure: novel | fresh | plain, with evidence
      → modeVerdict(config.workspaceMode)                 operator override: auto | novel | off
      → adopt(…) only for a novel workspace                (or `adoptEmptyWorkspace: true`)
@@ -358,20 +400,28 @@ observation: the SOP's failure modes are *forgotten* things — a memorable poin
 down, a threshold nobody can compare against, a promise nobody closes. The only way a tool
 prevents forgetting is to make each of them a field.
 
-That is why the document is at version 2. It holds, as data: the commercial frame and the
+That is why the document is at version 3. It holds, as data: the commercial frame and the
 calibration medians (`platform`, `baselines`), the commitments made to readers (`links`), the
-per-chapter contract (`plotTask` … `hook`, `targetWords`, `waived`, `delivered`), the readings
-and the iteration ledger (`readings`, `iterations`, `verifications`), and the closing material
-(`retro`). Version 1 held a premise, a cast and chapters; everything else lived in prose and
-was forgotten. What the pipeline deliberately does *not* store is the phase itself:
-`assessStage(state)` derives the stage and the next phase's blockers on every read, so a
-stored stage cannot drift away from the work it claims to describe.
+readings and the iteration ledger (`readings`, `iterations`, `verifications`), the closing
+material (`retro`), the opening checklist whose `done` flags gate phase two, and the index
+that says where the content files are. The per-chapter contract and `targetWords`/`waived`/
+`delivered` moved into the chapter files, because they are things an author reads and revises.
+
+Version 2 kept all of that in one JSON document, and version 1 held only a premise, a cast and
+chapters; everything else lived in prose and was forgotten. What the pipeline deliberately
+does *not* store is the phase itself: `assessStage(state)` derives the stage and the next
+phase's blockers on every read, so a stored stage cannot drift away from the work it claims to
+describe.
 
 ### The migration policy
 
-`parseNovel` accepts version 1 and version 2, and refuses anything else with a
-`NovelStoreError` naming the versions it supports. A version-1 document is migrated on read
-and written back in the new shape by the next store write:
+`parseMetadata` accepts version 1, version 2, and version 3, and refuses anything else with a
+`NovelStoreError` naming the versions it supports. Because content migration needs a
+filesystem, the *store* performs it, not the pure codec: `migrateV2` extracts the content and
+returns both halves, and `NovelStore.ensureMigrated` writes the original document to
+`.novel/novel.v2.backup.json` (with `createIfAbsent`, so an existing backup is never
+overwritten), generates every Markdown file, then writes back version-3 metadata. A version-1
+document takes the same path after `migrateV1`:
 
 - the v1 chapter `synopsis` becomes `plotTask` — a draft must never be emptied by an upgrade;
 - premise, cast, world entries and chapters survive as they are, and `readChapter` fills the
@@ -380,6 +430,10 @@ and written back in the new shape by the next store write:
   plan;
 - the records v1 never modelled (pitch, naming, baselines, competitors, the outline body,
   readings, iterations, verifications) start empty.
+
+**The backup is kept forever.** A human's draft does not disappear because the plugin changed
+its storage layout. Every migration is idempotent too: a second read of a version-3 document
+changes nothing, and the migration report is returned once, by the read that triggered it.
 
 The project therefore lands in whatever stage its data supports — a migrated draft usually
 reports `planning`, with `blockers` naming exactly what the SOP now wants next. Each `read*`

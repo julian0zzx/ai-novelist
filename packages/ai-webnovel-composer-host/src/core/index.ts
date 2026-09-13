@@ -9,6 +9,9 @@
  */
 
 export * from './types.ts'
+export * from './markdown.ts'
+export * from './paths.ts'
+export * from './content.ts'
 export * from './novel.ts'
 export * from './plan.ts'
 export * from './metrics.ts'

@@ -99,6 +99,16 @@ describe('apply', () => {
 
   const projectPath = () => join(root, '.novel', 'novel.json')
 
+  /** The `schemaVersion` recorded in the project document, or `undefined`. */
+  async function readVersion(): Promise<number | undefined> {
+    try {
+      const parsed = JSON.parse(await readFile(projectPath(), 'utf8')) as { schemaVersion?: number }
+      return parsed.schemaVersion
+    } catch {
+      return undefined
+    }
+  }
+
   it('leaves an empty workspace untouched by default', async () => {
     apply(ctx, Config({ workspaceRoot: root }) as never)
     await new Promise((resolve) => setTimeout(resolve, 200))
@@ -134,9 +144,13 @@ describe('apply', () => {
     apply(ctx, Config({ workspaceRoot: root }) as never)
     await new Promise((resolve) => setTimeout(resolve, 100))
     await mkdir(join(root, '.novel'), { recursive: true })
-    const first = '{"schemaVersion":1,"meta":{"title":"Draft","premise":"P"},"characters":{},"world":{},"chapters":{},"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z"}\n'
+    // A pre-split document: reading it migrates it, and the whole point of the
+    // backup is that the author's original bytes survive that upgrade.
+    const first =
+      '{"schemaVersion":1,"meta":{"title":"Draft","premise":"P"},"characters":{},"world":{},"chapters":{},' +
+      '"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z"}\n'
     await writeFile(projectPath(), first, 'utf8')
-    // Re-mounting the plugin (a second session, a reload) must not touch it.
+    // Re-mounting the plugin (a second session, a reload) must not reset it.
     const other = new Context()
     other.plugin(LocalFileSystem, { cwd: root, diffBasisMaxBytes: 64 * 1024 })
     other.plugin(recorder)
@@ -144,8 +158,27 @@ describe('apply', () => {
     // before mounting the composer against it.
     await until(async () => other.get('tools') !== undefined)
     apply(other, Config({ workspaceRoot: root }) as never)
+    // Migration happens on the boot read; poll for it rather than sleeping a
+    // fixed interval, because under a loaded test pool the first read can land
+    // later than any constant would guess.
+    const upgraded = await until(async () => {
+      const version = await readVersion()
+      return version === 3
+    })
+    expect(upgraded).toBe(true)
+    expect(await readFile(join(root, '.novel', 'novel.v2.backup.json'), 'utf8')).toBe(first)
+    const migrated = JSON.parse(await readFile(projectPath(), 'utf8')) as { schemaVersion: number; meta: { title: string } }
+    expect(migrated.schemaVersion).toBe(3)
+    expect(migrated.meta.title).toBe('Draft')
+    // A third mount sees a version-3 document and leaves everything alone: the
+    // migration ran exactly once, and the backup was not overwritten.
+    const third = new Context()
+    third.plugin(LocalFileSystem, { cwd: root, diffBasisMaxBytes: 64 * 1024 })
+    third.plugin(recorder)
+    await until(async () => third.get('tools') !== undefined)
+    apply(third, Config({ workspaceRoot: root }) as never)
     await new Promise((resolve) => setTimeout(resolve, 200))
-    expect(await readFile(projectPath(), 'utf8')).toBe(first)
+    expect(await readFile(join(root, '.novel', 'novel.v2.backup.json'), 'utf8')).toBe(first)
   })
 
   it('honours workspaceMode=off by writing nothing', async () => {
