@@ -1,0 +1,26 @@
+{
+  "name": "ai-webnovel-composer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Plugin-based AI Web Novel Composer",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "check": "pnpm run build && pnpm run typecheck && pnpm run test",
+    "pack": "node scripts/pack.mjs",
+    "dist": "pnpm run build && node scripts/pack.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "~18.3.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  }
+}

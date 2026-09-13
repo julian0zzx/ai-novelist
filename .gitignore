@@ -1,0 +1,23 @@
+# Build outputs
+node_modules/
+lib/
+dist/
+*.tsbuildinfo
+
+# pnpm's store, if a run ever places it here anyway (see .npmrc)
+.pnpm-store/
+
+# Local planning scratch (see .plan/ for the current plan, findings, progress)
+.plan/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# A local novel project created while dogfooding the tools
+/novel-workspace/
+
+# Distributions produced by `pnpm run dist`
+dist/

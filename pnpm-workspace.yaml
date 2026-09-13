@@ -1,0 +1,11 @@
+packages:
+  - packages/*
+
+# The DSH profile that installs this plugin uses the hoisted linker; matching it
+# keeps local resolution close to the installed shape.
+nodeLinker: hoisted
+
+# `@deepseek-ai/*` service packages are peer-provided by the host DSH process at
+# runtime. They are dev dependencies here purely so this repo typechecks against
+# the exact versions the running DSH ships.
+autoInstallPeers: false
