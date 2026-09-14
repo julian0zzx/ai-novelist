@@ -53,6 +53,7 @@ import {
 } from '../core/index.ts'
 import {
   DEFAULT_STORAGE_LAYOUT,
+  METADATA_RELATIVE_PATH,
   MIGRATION_BACKUP_PATH,
   chapterPaths,
   isMarkdownFile,
@@ -61,9 +62,16 @@ import {
 } from '../core/paths.ts'
 import type { NovelMetadata, NovelState, StorageIndex, StorageLayout } from '../core/types.ts'
 import { NOVEL_DIR, classifyWorkspace, type WorkspaceVerdict } from '../core/workspace.ts'
+import { currentSandboxPolicy, type CallSandboxPolicy } from './sandbox.ts'
 
-/** Document path, relative to the session workspace root. */
-export const NOVEL_RELATIVE_PATH = '.novel/novel.json'
+/**
+ * Document path, relative to the session workspace root.
+ *
+ * Re-exported from the core rather than restated: the browser half reads this
+ * path without loading the host, so the constant has to live where both halves
+ * may import it.
+ */
+export const NOVEL_RELATIVE_PATH = METADATA_RELATIVE_PATH
 
 /** Raised when the document changed underneath the caller's read. */
 export class NovelConflictError extends Error {
@@ -280,12 +288,17 @@ export class NovelStore {
   /**
    * Read the project together with the version token a later write must match.
    *
+   * @param policy - sandbox policy for this call. Sampled here, at the entry,
+   *   and carried down as a value: the write queue below crosses async contexts,
+   *   so a queued continuation must never resolve the scope itself.
    * @returns the versioned state, or `undefined` when no project exists yet.
    * @throws {NovelStoreError} when the document or an indexed file is unreadable.
    */
-  async readVersioned(): Promise<VersionedNovel | undefined> {
-    await this.ensureMigrated()
-    const loaded = await this.load()
+  async readVersioned(
+    policy: CallSandboxPolicy | undefined = currentSandboxPolicy(),
+  ): Promise<VersionedNovel | undefined> {
+    await this.ensureMigrated(policy)
+    const loaded = await this.load(policy)
     return loaded === undefined
       ? undefined
       : {
@@ -341,11 +354,14 @@ export class NovelStore {
    * @param state - the state to persist when nothing exists yet.
    * @returns `'created'` when this call wrote the project, `'existing'` otherwise.
    */
-  async adopt(state: NovelState): Promise<'created' | 'existing'> {
+  async adopt(
+    state: NovelState,
+    policy: CallSandboxPolicy | undefined = currentSandboxPolicy(),
+  ): Promise<'created' | 'existing'> {
     return this.enqueue(async () => {
       if (await isRegularFile(this.fs, await this.resolve())) return 'existing'
       try {
-        await this.writeAll(state, undefined)
+        await this.writeAll(state, undefined, policy)
         return 'created'
       } catch (error) {
         // A concurrent boot won the race; the workspace now has a project, which
@@ -362,13 +378,16 @@ export class NovelStore {
    * @param state - the state to persist.
    * @throws {NovelConflictError} when a project already exists.
    */
-  async create(state: NovelState): Promise<void> {
+  async create(
+    state: NovelState,
+    policy: CallSandboxPolicy | undefined = currentSandboxPolicy(),
+  ): Promise<void> {
     await this.enqueue(async () => {
       if (await isRegularFile(this.fs, await this.resolve())) {
         throw new NovelConflictError(`a novel project already exists at ${NOVEL_RELATIVE_PATH}`)
       }
       try {
-        await this.writeAll(state, undefined)
+        await this.writeAll(state, undefined, policy)
       } catch (error) {
         if (isFsErrorCode(error, 'FS_NOT_OBSERVED')) {
           throw new NovelConflictError(`a novel project already exists at ${NOVEL_RELATIVE_PATH}`)
@@ -394,9 +413,12 @@ export class NovelStore {
    * @throws {NovelConflictError} when `.novel/novel.json` changed since the read.
    * @throws {NovelWriteError} when a content file could not be written.
    */
-  async update(mutate: (current: NovelState) => NovelState | Promise<NovelState>): Promise<NovelState> {
+  async update(
+    mutate: (current: NovelState) => NovelState | Promise<NovelState>,
+    policy: CallSandboxPolicy | undefined = currentSandboxPolicy(),
+  ): Promise<NovelState> {
     return this.enqueue(async () => {
-      const loaded = await this.load()
+      const loaded = await this.load(policy)
       if (loaded === undefined) {
         throw new NovelStoreError(`no novel project at ${NOVEL_RELATIVE_PATH}; initialize one first`)
       }
@@ -406,7 +428,7 @@ export class NovelStore {
       // structural diff honest.
       const baseline = loaded.state
       const next = await mutate(baseline)
-      return this.write(next, loaded.version, baseline)
+      return this.write(next, loaded.version, baseline, policy)
     })
   }
 
@@ -420,10 +442,14 @@ export class NovelStore {
    * @returns the absolute display path that was written.
    * @throws {NovelStoreError} when the path escapes the workspace root.
    */
-  async writeDerived(relativePath: string, content: string): Promise<string> {
+  async writeDerived(
+    relativePath: string,
+    content: string,
+    policy: CallSandboxPolicy | undefined = currentSandboxPolicy(),
+  ): Promise<string> {
     const destination = this.contain(relativePath)
     const target = await this.fs.resolve(destination)
-    await this.fs.writeText(target, content)
+    await this.fs.writeText(target, content, undefined, undefined, policy)
     return target.displayPath
   }
 
@@ -456,7 +482,7 @@ export class NovelStore {
    *
    * @returns the assembled state with the metadata's version token, or `undefined`.
    */
-  private async load(): Promise<
+  private async load(policy: CallSandboxPolicy | undefined): Promise<
     | {
         readonly state: NovelState
         readonly version: FsVersion
@@ -518,6 +544,7 @@ export class NovelStore {
       const written = await this.writeMetadataText(
         serializeMetadata(metadataOf(state, refreshed.index)),
         info.version,
+        policy,
       )
       const report = take(this.pendingReport)
       this.pendingReport = undefined
@@ -700,7 +727,7 @@ export class NovelStore {
    * If it already exists, the project was migrated by an earlier session whose
    * content files are the current truth, so there is nothing left to do.
    */
-  private async ensureMigrated(): Promise<void> {
+  private async ensureMigrated(policy: CallSandboxPolicy | undefined): Promise<void> {
     this.migration ??= this.enqueue(async () => {
       const target = await this.resolve()
       const info = await this.fs.stat(target)
@@ -709,9 +736,9 @@ export class NovelStore {
       if (raw.trim() === '') return
       const { version, legacy } = parseMetadata(raw)
       if (version === NOVEL_SCHEMA_VERSION || legacy === undefined) return
-      if (!(await this.backup(raw))) return
+      if (!(await this.backup(raw, policy))) return
       const chapters = Object.keys(legacy.chapters).length
-      await this.writeAll(legacy, info.version, { forceRewrite: true })
+      await this.writeAll(legacy, info.version, policy, { forceRewrite: true })
       this.pendingReport = `novel.json 已升级 v${String(version)} → v${String(NOVEL_SCHEMA_VERSION)}：` +
         `生成 ${String(chapters)} 章的内容文件，原文档备份在 ${MIGRATION_BACKUP_PATH}`
     })
@@ -726,11 +753,11 @@ export class NovelStore {
    * @returns true when the project still needs migrating, false when an earlier
    *   session already kept a backup.
    */
-  private async backup(raw: string): Promise<boolean> {
+  private async backup(raw: string, policy: CallSandboxPolicy | undefined): Promise<boolean> {
     const target = await this.fs.resolve(this.contain(MIGRATION_BACKUP_PATH))
     if ((await this.fs.stat(target)) !== undefined) return false
     try {
-      await this.fs.writeText(target, raw, { kind: 'createIfAbsent' })
+      await this.fs.writeText(target, raw, { kind: 'createIfAbsent' }, undefined, policy)
       return true
     } catch (error) {
       // A concurrent migration won the race and is doing the work; this read
@@ -756,7 +783,12 @@ export class NovelStore {
    * @throws {NovelConflictError} when the metadata document moved on.
    * @throws {NovelWriteError} when a content file could not be written.
    */
-  private async write(next: NovelState, expected: FsVersion, baseline: NovelState): Promise<NovelState> {
+  private async write(
+    next: NovelState,
+    expected: FsVersion,
+    baseline: NovelState,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<NovelState> {
     const stamped: NovelState = { ...next, updatedAt: this.clock() }
     // Order matters: the index decides where a renamed chapter's files go, and
     // only then can the files be rendered at their new paths. Rendering first
@@ -764,10 +796,10 @@ export class NovelStore {
     const index = this.alignIndex(stamped)
     const planned: NovelState = { ...stamped, index }
     const files = this.planFiles(planned, index)
-    await this.writeContent(files, index, baseline)
+    await this.writeContent(files, index, baseline, policy)
     const completed = this.rehash(index, files)
     const persisted: NovelState = { ...planned, index: completed }
-    await this.persistMetadata(persisted, expected, baseline)
+    await this.persistMetadata(persisted, expected, baseline, policy)
     this.remember(persisted)
     return persisted
   }
@@ -787,7 +819,12 @@ export class NovelStore {
    * @param baseline - the state this write derived from.
    * @throws {NovelConflictError} when the metadata document moved on.
    */
-  private async persistMetadata(persisted: NovelState, expected: FsVersion, baseline: NovelState): Promise<void> {
+  private async persistMetadata(
+    persisted: NovelState,
+    expected: FsVersion,
+    baseline: NovelState,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<void> {
     const text = serializeMetadata(metadataOf(persisted, persisted.index ?? emptyIndex(this.layout)))
     const before = baseline.index
     if (
@@ -798,7 +835,7 @@ export class NovelStore {
       return
     }
     try {
-      await this.writeMetadataText(text, expected)
+      await this.writeMetadataText(text, expected, policy)
     } catch (error) {
       if (isFsErrorCode(error, 'FS_STALE_VERSION')) {
         throw new NovelConflictError(
@@ -886,6 +923,7 @@ export class NovelStore {
     files: Readonly<Record<string, string>>,
     index: StorageIndex,
     previous: NovelState,
+    policy: CallSandboxPolicy | undefined,
   ): Promise<string[]> {
     // The structural diff the plan asks for: render the *previous* state with its
     // own timestamp, compare it against what the next state renders to, and write
@@ -909,7 +947,7 @@ export class NovelStore {
     try {
       for (const path of changed) {
         const target = await this.fs.resolve(this.contain(path))
-        await this.writeGuarded(target, files[path] ?? '')
+        await this.writeGuarded(target, files[path] ?? '', policy)
         written.push(path)
         pending.delete(path)
       }
@@ -967,6 +1005,7 @@ export class NovelStore {
   private async writeAll(
     state: NovelState,
     expected: FsVersion | undefined,
+    policy: CallSandboxPolicy | undefined,
     options: { readonly forceRewrite?: boolean } = {},
   ): Promise<NovelState> {
     const stamped: NovelState = { ...state, updatedAt: state.updatedAt || this.clock() }
@@ -983,11 +1022,11 @@ export class NovelStore {
           continue
         }
         const target = await this.fs.resolve(this.contain(path))
-        await this.writeGuarded(target, text)
+        await this.writeGuarded(target, text, policy)
         written.push(path)
         pending.delete(path)
       }
-      await this.writeMetadataText(serializeMetadata(metadataOf(persisted, index)), expected)
+      await this.writeMetadataText(serializeMetadata(metadataOf(persisted, index)), expected, policy)
     } catch (error) {
       if (isFsErrorCode(error, 'FS_NOT_OBSERVED') || isFsErrorCode(error, 'FS_STALE_VERSION')) throw error
       throw new NovelWriteError(
@@ -1105,13 +1144,17 @@ export class NovelStore {
    * @param target - the resolved target.
    * @param text - the full content.
    */
-  private async writeGuarded(target: FsTarget, text: string): Promise<void> {
+  private async writeGuarded(
+    target: FsTarget,
+    text: string,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<void> {
     const info = await this.fs.stat(target)
     if (info === undefined) {
-      await this.fs.writeText(target, text, { kind: 'createIfAbsent' })
+      await this.fs.writeText(target, text, { kind: 'createIfAbsent' }, undefined, policy)
       return
     }
-    await this.fs.writeText(target, text, { kind: 'replaceIfVersion', version: info.version })
+    await this.fs.writeText(target, text, { kind: 'replaceIfVersion', version: info.version }, undefined, policy)
   }
 
   /**
@@ -1154,12 +1197,16 @@ export class NovelStore {
    *   write must match.
    * @throws when the backend rejects the guard.
    */
-  private async writeMetadataText(text: string, expected: FsVersion | undefined): Promise<FsInfo> {
+  private async writeMetadataText(
+    text: string,
+    expected: FsVersion | undefined,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<FsInfo> {
     const target = await this.resolve()
     if (expected === undefined) {
-      await this.fs.writeText(target, text, { kind: 'createIfAbsent' })
+      await this.fs.writeText(target, text, { kind: 'createIfAbsent' }, undefined, policy)
     } else {
-      await this.fs.writeText(target, text, { kind: 'replaceIfVersion', version: expected })
+      await this.fs.writeText(target, text, { kind: 'replaceIfVersion', version: expected }, undefined, policy)
     }
     const info = await this.fs.stat(target)
     if (info === undefined) throw new NovelStoreError(`${NOVEL_RELATIVE_PATH} disappeared immediately after being written`)

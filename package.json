@@ -14,6 +14,7 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
     "check": "pnpm run build && pnpm run typecheck && pnpm run test",
+    "fixture": "node --experimental-strip-types scripts/make-fixture.ts",
     "pack": "node scripts/pack.mjs",
     "dist": "pnpm run build && node scripts/pack.mjs"
   },

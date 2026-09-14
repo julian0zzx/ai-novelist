@@ -57,7 +57,9 @@ describe('plugin manifest surface', () => {
   it('defaults every config field', () => {
     const resolved = Config({}) as { workspaceRoot: string; workspaceMode: string }
     expect(resolved.workspaceRoot).toBe('')
-    expect(resolved.workspaceMode).toBe('auto')
+    // `signal` is the default because the composer's most common first contact
+    // is a folder holding a premise file and a few chapters, not an empty one.
+    expect(resolved.workspaceMode).toBe('signal')
   })
 })
 
@@ -139,6 +141,46 @@ describe('apply', () => {
     await expect(readFile(projectPath(), 'utf8')).rejects.toThrow()
   })
 
+  it('initializes a directory that holds unmistakable novel material', async () => {
+    // The case that motivated `signal`: a folder with a premise file in it and no
+    // other composer marker. Nothing here is a project document, but the folder
+    // is plainly a book, and an empty scaffold is what makes the tools, the
+    // prompt section and the board exist from the first message.
+    await writeFile(join(root, '创意整理.md'), '# 创意整理\n', 'utf8')
+    apply(ctx, Config({ workspaceRoot: root }) as never)
+    const created = await until(async () => {
+      try {
+        await readFile(projectPath(), 'utf8')
+        return true
+      } catch {
+        return false
+      }
+    })
+    expect(created, 'the scaffold should have been written').toBe(true)
+    const state = JSON.parse(await readFile(projectPath(), 'utf8')) as { meta: { title: string; premise: string } }
+    // No story decisions are invented: the title is the folder's name and the
+    // premise stays empty for the agent or the author to fill in.
+    expect(state.meta.title).toBe(root.split('/').at(-1))
+    expect(state.meta.premise).toBe('')
+  })
+
+  it('never initializes a code repository, however much markdown it holds', async () => {
+    // Project markers win: a repo with a premise-shaped file is still a repo.
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8')
+    await writeFile(join(root, '创意整理.md'), '# 创意整理\n', 'utf8')
+    await writeFile(join(root, 'outline.md'), '# outline\n', 'utf8')
+    apply(ctx, Config({ workspaceRoot: root }) as never)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await expect(readFile(projectPath(), 'utf8')).rejects.toThrow()
+  })
+
+  it('keeps the older quiet rule under workspaceMode=auto', async () => {
+    await writeFile(join(root, '创意整理.md'), '# 创意整理\n', 'utf8')
+    apply(ctx, Config({ workspaceRoot: root, workspaceMode: 'auto' }) as never)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await expect(readFile(projectPath(), 'utf8')).rejects.toThrow()
+  })
+
   it('never resets a project that already exists', async () => {
     await writeFile(join(root, 'package.json'), '{}\n', 'utf8') // keep it out of "fresh"
     apply(ctx, Config({ workspaceRoot: root }) as never)
@@ -199,5 +241,88 @@ describe('apply', () => {
       }
     })
     expect(created).toBe(true)
+  })
+
+  /**
+   * Announce a session the way the harness does — structurally, and without
+   * waiting for the listeners, whose work is deliberately asynchronous.
+   */
+  function announceSession(cwd: string): void {
+    const events = ctx as unknown as { emit(name: string, session: unknown): void }
+    events.emit('session/created', { header: { cwd } })
+  }
+
+  /** A directory that already looks like a half-initialized novel project. */
+  async function novelShapedDir(name: string): Promise<string> {
+    const dir = join(root, name)
+    await mkdir(join(dir, '.novel'), { recursive: true })
+    return dir
+  }
+
+  it('classifies and adopts the workspace of the session that appears in it', async () => {
+    // The deployment root stays a software project; the session works elsewhere.
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8')
+    const novelDir = await novelShapedDir('qingyun')
+    apply(ctx, Config({ workspaceRoot: root }) as never)
+
+    announceSession(novelDir)
+
+    const document = join(novelDir, '.novel', 'novel.json')
+    const created = await until(async () => {
+      try {
+        await readFile(document, 'utf8')
+        return true
+      } catch {
+        return false
+      }
+    })
+    expect(created, "the session's own workspace should have been adopted").toBe(true)
+    const state = JSON.parse(await readFile(document, 'utf8')) as { meta: { title: string } }
+    // The folder name is the provisional title; the model records the real one.
+    expect(state.meta.title).toBe('qingyun')
+  })
+
+  it('leaves an empty directory alone when a session appears in it', async () => {
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8')
+    const emptyDir = join(root, 'blank')
+    await mkdir(emptyDir, { recursive: true })
+    apply(ctx, Config({ workspaceRoot: root }) as never)
+
+    announceSession(emptyDir)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // A session's cwd is a directory the user chose, so "empty" is an invitation
+    // to call novel_init — not consent to write files nobody asked for.
+    await expect(readFile(join(emptyDir, '.novel', 'novel.json'), 'utf8')).rejects.toThrow()
+  })
+
+  it('adopts an empty session workspace when the deployment opted in', async () => {
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8')
+    const emptyDir = join(root, 'blank')
+    await mkdir(emptyDir, { recursive: true })
+    apply(ctx, Config({ workspaceRoot: root, adoptEmptyWorkspace: true }) as never)
+
+    announceSession(emptyDir)
+
+    const created = await until(async () => {
+      try {
+        await readFile(join(emptyDir, '.novel', 'novel.json'), 'utf8')
+        return true
+      } catch {
+        return false
+      }
+    })
+    expect(created).toBe(true)
+  })
+
+  it('honours workspaceMode=off for a session that appears in a novel directory', async () => {
+    await writeFile(join(root, 'package.json'), '{}\n', 'utf8')
+    const novelDir = await novelShapedDir('qingyun')
+    apply(ctx, Config({ workspaceRoot: root, workspaceMode: 'off' }) as never)
+
+    announceSession(novelDir)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    await expect(readFile(join(novelDir, '.novel', 'novel.json'), 'utf8')).rejects.toThrow()
   })
 })

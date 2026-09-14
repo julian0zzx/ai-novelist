@@ -13,13 +13,21 @@
  * on the filesystem, and never sees an error: a failed refresh keeps the last
  * known good numbers and records the reason for the next render.
  *
+ * Which workspace the text is about is resolved for **every assembly** from the
+ * agent it belongs to, so a session opened in one directory is never described
+ * with the facts of the directory the server happened to be launched from. The
+ * async half of that answer lives in `host/views.ts`; this module only renders
+ * what it finds there.
+ *
  * @module @ai-webnovel/composer-host/host/prompt
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
 import { assessReading, assessStage, progressOf, stageLabel } from '../core/index.ts'
 import { describeVerdict, type WorkspaceVerdict } from '../core/workspace.ts'
 import type { NovelStore } from './store.ts'
+import type { SessionRef, WorkspaceView, WorkspaceViews } from './views.ts'
 
 /** Stable section name; the sidebar's own domain context cannot collide with it. */
 export const WORKSPACE_CONTEXT_NAME = 'composer:workspace'
@@ -195,26 +203,79 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'pipeline: novel_plan for the pitch and the competitor study, novel_bible for the cast, and only then prose.',
   plain:
     'This workspace is not a novel project, so the composer tools are idle. Do not create a novel project here '
-    + 'unless the user asks you to start one in this directory.',
+    + 'unless the user asks you to start one in this directory. When the user does ask — "write a novel here", '
+    + '"给我 300 字大纲", "整理这本书的创意", "建立小说项目" — call novel_init first and record what they told you '
+    + '(title, premise, platform, mode, audience); the project document is what makes the tools, this section and the '
+    + 'board real. Then plan with novel_plan before writing any prose.',
+}
+
+/**
+ * One workspace as the render sees it: the directory, its classification, and
+ * the numbers behind it.
+ *
+ * Plain data rather than a live view, so the render is a pure function of what
+ * the composer already learned — testable without a filesystem, and incapable of
+ * starting work of its own.
+ */
+export interface WorkspaceContextInput {
+  /** The workspace root the text is about. */
+  readonly root: string
+  /** Absolute path of the project document. */
+  readonly documentPath: string
+  /** The classification, or `undefined` while it is still being made. */
+  readonly verdict: WorkspaceVerdict | undefined
+  /** The project numbers, or `undefined` while they are still being read. */
+  readonly snapshot: NovelSnapshot | undefined
+}
+
+/**
+ * The session behind one prompt assembly, when there is one.
+ *
+ * `@deepseek-ai/dsh-agent` contributes `agent` to {@link AssembleContext} through
+ * a module augmentation. Reading it structurally — the same shape the resolver
+ * already takes for sessions — keeps this package free of a dependency on the
+ * agent loop, and keeps the deployment fallback (`undefined`, an assembly with
+ * no session) working in compositions that have no agent at all.
+ *
+ * @param context - the assembly's context.
+ * @returns the session, or `undefined` for an agentless assembly.
+ */
+function sessionOf(context: AssembleContext): SessionRef | undefined {
+  return (context as AssembleContext & { agent?: { session?: SessionRef } }).agent?.session
+}
+
+/**
+ * The render input for one live view.
+ *
+ * @param view - the view to project.
+ * @returns the plain data {@link renderWorkspaceContext} reads.
+ */
+export function contextInputOf(view: WorkspaceView): WorkspaceContextInput {
+  return {
+    root: view.root,
+    documentPath: view.documentPath,
+    verdict: view.verdict(),
+    snapshot: view.snapshot(),
+  }
 }
 
 /**
  * Render the current orientation for the model. Pure and synchronous.
  *
- * @param store - the novel state service, for the document path.
- * @param verdict - the boot classification, if it has landed yet.
- * @param snapshot - the cached project numbers, if any.
+ * The workspace described is the *session's*, resolved by the caller from the
+ * assembly's agent — never the process directory, which is what made the
+ * composer tell a session opened in an empty novel folder that it was a software
+ * project.
+ *
+ * @param input - the workspace, its classification, and the cached numbers.
  * @returns the context text, or `''` while classification is still pending.
  */
-export function renderWorkspaceContext(
-  store: NovelStore,
-  verdict: WorkspaceVerdict | undefined,
-  snapshot: NovelSnapshot | undefined,
-): string {
+export function renderWorkspaceContext(input: WorkspaceContextInput): string {
+  const { verdict, snapshot } = input
   if (verdict === undefined) return ''
   const lines = [`Composer workspace: ${verdict.kind}. ${describeVerdict(verdict)}`]
   if (verdict.kind !== 'plain') {
-    lines.push(`The novel project lives at ${store.documentPath.replace(/\\/gu, '/')}.`)
+    lines.push(`The novel project lives at ${input.documentPath.replace(/\\/gu, '/')}.`)
   }
   if (verdict.kind === 'novel') {
     if (snapshot === undefined) {
@@ -248,22 +309,23 @@ export function renderWorkspaceContext(
 /**
  * Register the workspace context on the composed system prompt.
  *
+ * The section is registered **globally** and resolves its workspace per
+ * assembly, from the agent the assembly is for. Registering it per agent would
+ * make the same text a different registration for every session and subagent,
+ * while the harness itself reads agent facts the same way (its `cwd`, `provider`
+ * and `model` variables are providers over `context.agent`).
+ *
  * @param ctx - plugin context carrying the prompt registry.
- * @param store - the novel state service.
- * @param verdict - reads the boot classification, which lands asynchronously.
- * @param cache - the project-number cache.
+ * @param views - the per-root views, which own classification and the numbers.
  */
-export function registerWorkspacePrompt(
-  ctx: Context,
-  store: NovelStore,
-  verdict: () => WorkspaceVerdict | undefined,
-  cache: SnapshotCache,
-): void {
+export function registerWorkspacePrompt(ctx: Context, views: WorkspaceViews): void {
   ctx.inject(['systemPrompt'], (promptCtx) => {
     promptCtx.systemPrompt.context({
       name: WORKSPACE_CONTEXT_NAME,
       order: promptCtx.systemPrompt.getContextOrder('SANDBOX_POLICY') + WORKSPACE_CONTEXT_OFFSET,
-      text: () => renderWorkspaceContext(store, verdict(), cache.current()),
+      // `viewForSession` also starts the classification when nothing has yet, so
+      // a session the lifecycle hook never saw still stops being invisible.
+      text: (context) => renderWorkspaceContext(contextInputOf(views.viewForSession(sessionOf(context)))),
     })
   })
 }

@@ -1,18 +1,21 @@
 /**
  * Web UI half of the AI Web Novel Composer.
  *
- * One surface: a right-Sidebar tab that shows the composer's state for the
- * current session. It registers through exactly the two-stage public path every
- * sidebar tab type uses — the type into `ctx.sidebarRightTabs`, the body into
- * the `sidebar.right.pane.tab` seat — so it is an ordinary tab: dockable,
- * splittable, floatable, and closable.
+ * Two surfaces, both reading the same project through the same codec:
  *
- * The tab is a *page* type (it names no resource `patterns`), so it is opened by
- * kind from the sidebar's guide page rather than by opening a file address.
+ * - a right-Sidebar tab that shows the composer's state for the current session.
+ *   It registers through exactly the two-stage public path every sidebar tab
+ *   type uses — the type into `ctx.sidebarRightTabs`, the body into the
+ *   `sidebar.right.pane.tab` seat — so it is an ordinary tab: dockable,
+ *   splittable, floatable, and closable. The tab is a *page* type (it names no
+ *   resource `patterns`), so it is opened by kind from the sidebar's guide page
+ *   rather than by opening a file address.
+ * - a **Kanban** view beside Chat and Trajectory, installed only where the
+ *   session's workspace holds a `.novel/novel.json`. See `./kanban.tsx`.
  *
  * Data arrives through the same read-only remote the file preview uses
  * (`ctx.remote.workspaceFiles`), which resolves the session's workspace root on
- * the host — so the panel never guesses where the project lives.
+ * the host — so neither surface guesses where the project lives.
  *
  * @module @ai-webnovel/composer-host/client
  */
@@ -31,21 +34,33 @@ import type {
   UseSidebarRightTabInfo,
 } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { ComposedProps } from '@deepseek-ai/dsh-client-ui-slots'
-import { DEFAULT_STORAGE_LAYOUT, composeContent, parseMetadata, stateOf } from '../core/index.ts'
-import type { Chapter, NovelState } from '../core/types.ts'
-import { NOVEL_RELATIVE_PATH } from '../host/store.ts'
+import type { Chapter } from '../core/types.ts'
+import { METADATA_RELATIVE_PATH } from '../core/paths.ts'
+import { installKanbanView } from './kanban.tsx'
+import { describe, readProject } from './project.ts'
+import type { ProjectRead } from './project.ts'
 
 /** Stable client plugin name. */
 export const name = 'ai-webnovel-composer-client'
 
 /**
- * Browser services required before the tab can register.
+ * Browser services required before either surface can register.
  *
- * `remote` and `remote.workspaceFiles` carry the read-only file access the panel
- * uses; both are provided by the Remote assembly this bundle declares in
+ * `remote` and `remote.workspaceFiles` carry the read-only file access both use;
+ * `sessions` is the standard session feed both read the current session from;
+ * `locale` carries the dictionaries the Kanban copy is translated through. All
+ * of them are provided by the Web assembly this bundle names in
  * `dsh.client.inject`.
  */
-export const inject = ['slots', 'sidebarRight', 'sidebarRightTabs', 'remote', 'remote.workspaceFiles']
+export const inject = [
+  'slots',
+  'sidebarRight',
+  'sidebarRightTabs',
+  'remote',
+  'remote.workspaceFiles',
+  'sessions',
+  'locale',
+]
 
 /** Unique identity of this tab type within the tab system. */
 export const COMPOSER_TAB_ID = 'ai-webnovel-composer/composer'
@@ -58,13 +73,6 @@ export const COMPOSER_TAB_TITLE = 'Novel Composer'
 
 /** Slot key this tab body registers into. */
 const PANE_TAB_SLOT = 'sidebar.right.pane.tab'
-
-/** What the panel knows about the project it is showing. */
-type ProjectRead =
-  | { status: 'loading' }
-  | { status: 'none' }
-  | { status: 'ready'; state: NovelState }
-  | { status: 'error'; message: string }
 
 /** Palette kept local so the panel carries no dependency on the design system. */
 const STYLE = {
@@ -93,91 +101,6 @@ const STYLE = {
 /** The Remote face captured at activation; the slot props do not carry services. */
 let clientRemote: ClientContext['remote']
 
-/**
- * Read the project for one session.
- *
- * Since schema version 3 the document at {@link NOVEL_RELATIVE_PATH} holds only
- * metadata and the index; the novel itself is Markdown. The panel therefore
- * reads the metadata document first — that is what tells it whether a project
- * exists at all — then the content files the index names, and assembles them with
- * the same codec the host uses. **No format knowledge is duplicated here**: the
- * panel cannot drift from the files, only lag behind them.
- *
- * Only two reads are unavoidable per chapter — the prose file, which carries
- * `status` and the word count, and the contract file, which carries the beats and
- * the hook. The five whole-book files are read once each.
- *
- * @param remote - the client Remote face.
- * @param sessionId - the session whose workspace to read.
- * @param signal - aborted when the tab closes or the session switches.
- * @returns nothing, the assembled project, or a message explaining why it could not be read.
- */
-async function readProject(
-  remote: ClientContext['remote'],
-  sessionId: string,
-  signal: AbortSignal,
-): Promise<ProjectRead> {
-  const readFile = async (path: string): Promise<string | undefined> => {
-    const result = await remote.workspaceFiles.read(sessionId, path, {}, signal)
-    if (result.ok) return result.value.text
-    const code = result.error.code
-    // A file that is simply not there is "nothing recorded", which every codec
-    // reader already treats as an empty field. Anything else is a real fault.
-    if (code === 'FS_NOT_FOUND' || code === 'FS_NOT_TEXT') return undefined
-    throw new Error(`${path}: ${code}: ${result.error.message}`)
-  }
-
-  let raw: string | undefined
-  try {
-    raw = await readFile(NOVEL_RELATIVE_PATH)
-  } catch (error) {
-    return { status: 'error', message: error instanceof Error ? error.message : String(error) }
-  }
-  if (raw === undefined) return { status: 'none' }
-
-  try {
-    const { metadata } = parseMetadata(raw)
-    const index = metadata.index
-    const files: Record<string, string> = {}
-
-    const paths = [
-      index.outlineFile,
-      index.castFile,
-      index.worldFile,
-      index.volumeFile,
-      index.chapterPlanFile,
-      ...Object.values(index.chapters).flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
-    ]
-    const loaded = await Promise.all(
-      [...new Set(paths.filter((path) => path !== ''))].map(async (path) => [path, await readFile(path)] as const),
-    )
-    for (const [path, text] of loaded) if (text !== undefined) files[path] = text
-
-    // A metadata document from before the split, or one whose index is empty,
-    // still has its files on disk under the default names; look there before
-    // concluding the panel has nothing to show.
-    for (const path of DEFAULT_LAYOUT_PATHS) {
-      if (files[path] !== undefined) continue
-      const text = await readFile(path)
-      if (text !== undefined) files[path] = text
-    }
-
-    const assembled = composeContent(files, index, metadata.opening)
-    const state = stateOf({ ...metadata, index }, assembled)
-    return { status: 'ready', state }
-  } catch (error) {
-    return { status: 'error', message: error instanceof Error ? error.message : String(error) }
-  }
-}
-
-/** The default content paths, probed when the index does not name them. */
-const DEFAULT_LAYOUT_PATHS: readonly string[] = [
-  DEFAULT_STORAGE_LAYOUT.outlineFile,
-  DEFAULT_STORAGE_LAYOUT.castFile,
-  DEFAULT_STORAGE_LAYOUT.worldFile,
-  DEFAULT_STORAGE_LAYOUT.volumeFile,
-  DEFAULT_STORAGE_LAYOUT.chapterPlanFile,
-]
 
 /**
  * One chapter row.
@@ -220,8 +143,8 @@ function ProjectBody({ project, onRetry }: { project: ProjectRead; onRetry: () =
     return (
       <div>
         <p style={STYLE.dim}>
-          No novel project in this workspace yet. The composer creates <code>{NOVEL_RELATIVE_PATH}</code> when a session
-          starts in an empty or novel directory. Ask the agent to <em>start a novel here</em> and it will call{' '}
+          No novel project in this workspace yet. The composer creates <code>{METADATA_RELATIVE_PATH}</code> when a
+          session starts in an empty or novel directory. Ask the agent to <em>start a novel here</em> and it will call{' '}
           <code>novel_init</code>.
         </p>
         <button type="button" style={STYLE.button} onClick={onRetry}>
@@ -286,13 +209,13 @@ function ComposerTabBody({
   useEffect(() => {
     const controller = new AbortController()
     setProject({ status: 'loading' })
-    void readProject(clientRemote, sessionId, controller.signal).then(
+    void readProject(clientRemote, sessionId, controller.signal, '').then(
       (next) => {
         if (!controller.signal.aborted) setProject(next)
       },
       (error: unknown) => {
         if (!controller.signal.aborted) {
-          setProject({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+          setProject({ status: 'error', message: describe(error) })
         }
       },
     )
@@ -319,13 +242,16 @@ function ComposerTabBody({
 }
 
 /**
- * Register the composer tab type and its body.
+ * Register both composer surfaces.
  *
- * Both registrations are owned by `ctx.effect`, so unloading the plugin removes
- * the tab type and its seat together — a type without a body would render the
- * sidebar's "nothing can view this" notice.
+ * The sidebar tab's two registrations are owned by `ctx.effect`, so unloading the
+ * plugin removes the tab type and its seat together — a type without a body would
+ * render the sidebar's "nothing can view this" notice. The Kanban view installs
+ * itself, because whether it exists at all depends on the current session's
+ * workspace rather than on this call. See `./kanban.tsx`.
  *
- * @param ctx - client root context carrying the sidebar registries and the Remote face.
+ * @param ctx - client root context carrying the sidebar registries, the session
+ * list, the slot registry, and the Remote face.
  */
 export function apply(ctx: ClientContext): void {
   clientRemote = ctx.remote
@@ -361,4 +287,6 @@ export function apply(ctx: ClientContext): void {
       disposeType()
     }
   })
+
+  installKanbanView(ctx)
 }

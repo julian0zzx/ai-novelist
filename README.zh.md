@@ -28,7 +28,13 @@
 
 **一个 `novelState` 服务**——所有工具与界面共用的、带冲突检查的唯一写入通道，按会话解析。
 
-**一个 Web 界面标签页**——右侧栏中的「Novel Composer」，可从侧栏引导页打开。
+**两个 Web 界面**——同一份项目的两种视图：会话视图行里的 **看板（Kanban）** 标签页，以及右侧栏中可从侧栏引导页打开的「Novel Composer」标签页。
+
+| 界面 | 位置 | 展示内容 |
+|---|---|---|
+| **看板** | 会话的视图标签行，紧邻 Chat 与 Trajectory | 一眼看全项目。四列就是章节生命周期——待写 / 写作中 / 已修订 / 已完成；每张卡片带章节号、标题、所属分卷、字数、节拍，以及细纲还欠什么（缺章末钩子、未答字段）。看板上方是 SOP 阶段与进入下一阶段还缺什么、已写章数、总字数、人物、世界观、未兑现伏笔、候选书名。 |
+
+看板**只在有小说项目的 workspace 里出现**：当会话所在的 workspace 存在 `.novel/novel.json` 时才会加上这个标签页，没有项目的工作区仍旧只有 Chat 与 Trajectory 两个标签页。它用与 host 写入完全相同的编解码器读取项目，因此只可能滞后于文件，不会与文件不一致；agent 写入后点「重新读取」即可刷新。
 
 ## 这套工具实现的 SOP
 
@@ -110,8 +116,10 @@ packages/
   ai-webnovel-composer-host/    # PLUGIN  @ai-webnovel/composer-host
     src/core/                   #   纯领域逻辑：类型、状态、细纲校验、指标规则、
                                 #   兑现回报、复盘组装、工作区判定
-    src/host/                   #   ctx.fs 存储、按会话解析、提示词片段、工具注册
-    src/client/                 #   Web 界面标签页（右侧栏），构建为 lib/client.js
+    src/host/                   #   ctx.fs 存储、按会话解析、工作区视图、
+                                #   提示词片段、工具注册
+    src/client/                 #   Web 界面的两个视图（看板 + 右侧栏标签页），
+                                #   构建为 lib/client.js
     src/index.ts                #   Cordis 插件本体（name / inject / Config / apply）
 ```
 
@@ -174,14 +182,33 @@ DSH 里的 **workspace** 是宿主登记的一个目录；**session** 记录自�
 |---|---|---|
 | `.novel/novel.json`（元数据 + 索引） | `novel` | 原样采用；旁边的内容文件才是小说本体。工具与提示词立即生效。 |
 | 内容 `.md` 文件 | `novel` | 以文件为准：你的改动下次读取即被采纳。 |
-| 只有 `.novel/` 目录、还没有文档 | `novel` | 视为网文工作区，文档留给 `novel_init` 去写。 |
+| 只有 `.novel/` 目录、还没有文档 | `novel` | 视为网文工作区：先建一份空文档，立意留给 `novel_init` 填。 |
 | 三个以上章节形态的文件（`001-*.md`、`第3章.md`） | `novel` | 识别为已有草稿，在旁边补建项目文档。 |
+| 创作类笔记（`创意整理.md`、`人物设定.md`、`story-outline.md` 等） | `novel` | 识别为「一本书的文件夹」：建一份空项目文档，标题取文件夹名。 |
+| 大纲 + 一章，或两个小说形态的文件 | `novel` | 同上。 |
 | 空目录 | `fresh` | **不碰**。让 agent 在这里开一本（或配 `adoptEmptyWorkspace: true`）。 |
-| 代码仓库（`package.json`、`.git` 等） | `plain` | 不碰。工具保持静默，提示词里也会说明。 |
+| 代码仓库（`package.json`、`.git` 等） | `plain` | 不管里面有多少 Markdown 都不碰。工具保持静默，提示词里也会说明。 |
 | 其他 | `plain` | 不碰。 |
 
-`novel` 工作区还会在**每一步的 system prompt 里注入一段运行时上下文**，说明工作区类型并汇报
-当前进度（章节数、字数、未写章节数、设定集规模）。因此打开一本小说不需要任何「发现」回合。
+插件挂载时判定**部署自己的目录**，其余目录在**会话出现时**判定。`novel` 工作区随后会在每一步的
+system prompt 里注入一段运行时上下文，说明工作区类型并汇报当前进度（章节数、字数、未写章节数、
+设定集规模）。因此打开一本小说不需要任何「发现」回合，而在别的目录里开的会话，也绝不会被安上
+服务器启动目录的判定或数字。
+
+#### 「自动初始化」到底写了什么，怎么撤销
+
+自动初始化**只写空脚手架**：`.novel/novel.json`，标题取文件夹名，其余剧情字段全空。不碰你写的任何
+文件，不会覆盖已有内容（写入意图是 `createIfAbsent`），也不会替你编造任何创作决定——立意、中位线、
+卖点、章节都不填。这正是它的意义：脚手架一落盘，工具、提示词段落和看板 tab 从第一条消息起就存在，
+不必等谁想起来调 `novel_init`。
+
+如果它认领了一个你并不想当小说的目录，删掉即可，插件下次判定就回到 `plain`：
+
+```sh
+rm -rf <那个目录>/.novel
+```
+
+想让它别这么主动，把 `workspaceMode` 设成 `auto`（只认已有标记的项目）或 `off`（从不写入）。
 
 ### 一个对话写一部小说
 
@@ -189,15 +216,15 @@ DSH 里的 **workspace** 是宿主登记的一个目录；**session** 记录自�
 它的根目录。会话没有记录 `cwd` 时，才回退到配置的 `workspaceRoot`，最后才是进程目录。
 `novel_status` 汇报的是**当前调用会话**所在工作区的判定，那是关于「我正在改哪一本」的权威答案。
 
-判定刻意保守：带几个 Markdown 的代码仓库**不算**草稿，只认章节形态文件名，而且**不会**往空目录里
-写任何东西，除非你明确要求。若想无视探测、固定某个目录：
+判定刻意保守：带几个 Markdown 的代码仓库**不算**草稿，只认章节形态文件名，单个通用笔记什么都算不上，
+而且**不会**往空目录里写任何东西，除非你明确要求。若想无视探测、固定某个目录：
 
 ```yaml
 # 你的 profile 的 cordis.patch.yml
 - id: ai-webnovel-composer
   config:
     workspaceRoot: /Users/me/novels/qingyun   # session 未记录 cwd 时的回退
-    workspaceMode: auto                       # auto（默认）| novel | off
+    workspaceMode: signal                     # signal（默认）| auto | novel | off
     adoptEmptyWorkspace: false                # true：启动时就在空目录里建好项目
     reviewProvider: ''                        # 留空：评审跟随当前会话的模型
     reviewModel: ''                           # 两项都填：把 novel_review 固定到某个模型
@@ -264,9 +291,15 @@ pnpm install
 pnpm run check        # build → typecheck → test
 pnpm run build        # tsc（host）+ tsdown（浏览器产物）
 pnpm run dist         # 构建，然后产出 dist/dsh-plugin 与 dist/skill
-pnpm test             # vitest：SOP 全流程端到端，外加存储、工作区、提示词
-                      # 与浏览器产物的用例
+pnpm test             # vitest：SOP 全流程端到端，外加存储、工作区、提示词、
+                      # 看板投影与浏览器产物的用例
+pnpm run fixture /tmp/ain-fixture
+                      # 生成一个示例 schema-3 小说项目（四列都有章节），
+                      # 供手工查看界面
 ```
+
+想看到看板：把本 bundle 装进 DSH profile，启动 `dsh web`，然后打开一个**位于该示例目录**的会话
+——看板是会话视图行的一部分，所以它只会在 workspace 里确实有小说项目的会话中出现。
 
 [`docs/sop.md`](docs/sop.md) 是工具所实现的工作流本体——阶段、字段与阈值的权威清单。
 动手改之前请先读 [`docs/architecture.md`](docs/architecture.md)：它讲了这个插件是怎么搭起来的、

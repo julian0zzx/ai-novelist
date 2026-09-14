@@ -24,15 +24,25 @@ The workflow this package implements is [`../../docs/sop.md`](../../docs/sop.md)
 - builds the `ProjectResolver` and publishes it as the `novelState` service through
   `ctx.reflect.provide` **synchronously**, so a tool registered right after `apply` still
   finds it;
-- classifies the deployment root, adopts a `novel` workspace (or a `fresh` one when
-  `adoptEmptyWorkspace` is true, or any workspace under `workspaceMode: 'novel'`), primes
-  the prompt cache, and logs the decision;
+- classifies the deployment root, adopts a `novel` workspace (a marked project, an existing
+  draft, or — under the default `workspaceMode: 'signal'` — unmistakable but unmarked novel
+  material such as a `创意整理.md`), primes the prompt cache, and logs the decision. The
+  scaffold it writes is empty: the folder's name as the title, every story field blank;
+- classifies **every other workspace when a session opens in it** (`session/created`), so the
+  tools, the prompt and adoption all follow the session's `cwd` — see `views.ts` below;
 - registers the eight computing tools, the optional `novel_review`, and the runtime-context prompt section.
   The reviewer is mounted through `ctx.inject(['llm'], …)` and is therefore absent wherever no
   model route exists.
 
-Classification and adoption run inside `ctx.effect` and are contained: a workspace that
-cannot be probed logs a warning and leaves the composer idle rather than failing the mount.
+`workspaceMode` is the deployment's answer to "how eager is this composer": `signal`
+(default) also claims an unmarked book folder, `auto` only a marked or opted-in one, `novel`
+forces the mounted root, and `off` never writes. The `signal` policy is the only thing that
+distinguishes them in `mayAdopt`; classification itself stays pure and mode-blind, and the
+classifier's "project markers win" rule is what keeps a repository from ever being claimed
+however much Markdown it holds.
+
+Classification and adoption are contained: a workspace that cannot be probed logs a warning
+and leaves the composer idle there rather than failing the mount or the session.
 
 ## Module map
 
@@ -54,7 +64,7 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 | `write.ts` | The delivery report: `analyzeDelivery` (planned / waived / reached / missed / unplanned, plus the length comparison), `blockersToFinal`, `complianceChecklist`, `styleObservations` (mechanical statistics for the 去 AI 化 step, not a quality verdict). |
 | `review.ts` | The model-backed rubrics as versioned data (`REVIEW_PROMPT_VERSION`, `AI_FLAVOR_DIMENSIONS`), the request builders for all four operations (`buildAiFlavorRequest`, `buildRewriteRequest`, `buildOpeningRequest`, `buildCompetitorRequest`, `buildRetroRequest`), the project brief every request carries, and the tolerant reply parser (`extractReviewJson`, `parseReviewOutput`, `renderReview`). Pure — the model is the only thing it does not own. |
 | `repo.ts` | The closing phase's assembly: `buildTemplate`, `estimateVolumeLength`, `collectHookPatterns` / `classifyHook`, `extractAssets`, `summarizeCompletion`, `buildRetrospective`, `lessonPrompts`. |
-| `workspace.ts` | Conservative classification from a directory listing plus two existence probes: `classifyWorkspace` → `novel` / `fresh` / `plain` with `reason` and `evidence`, `looksLikeChapterFile`, `countDraftFiles`, `describeVerdict`, `NOVEL_DIR`. |
+| `workspace.ts` | Conservative classification from a directory listing plus two existence probes: `classifyWorkspace` → `novel` / `fresh` / `plain` with `reason` and `evidence`, `looksLikeChapterFile`, `looksLikeCreativeNote`, `countDraftFiles`, `novelSignalCount` (a creative filename weighs two, everything else one, each file counted once by its most specific rule), `hasNovelSignals`, `describeVerdict`, `adoptableVerdict` (whether that verdict justifies writing a project document), `NOVEL_DIR`. |
 | `paths.ts` | The storage file tree as path arithmetic: `DEFAULT_STORAGE_LAYOUT`, `topLevelPaths`, `chapterPaths` / `chapterStem` / `sanitizeTitle` / `padChapterNumber`, `numberFromFileName`, `isOutlineFile`, and the migration backup path. Its own module so neither `novel.ts` nor `content.ts` has to import the other to spell a filename. |
 | `index.ts` | Re-exports the above from one specifier, so the host layer has exactly one import shape. |
 
@@ -64,21 +74,37 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 |---|---|
 | `store.ts` | `NovelStore`: the single read/write path for one project — the metadata document at `<workspaceRoot>/.novel/novel.json` plus the Markdown files its `StorageIndex` names. Containment by path arithmetic (`contain`); initialization through the `createIfAbsent` write intent (`adopt`, idempotent); every mutation through `replaceIfVersion` **on the metadata only**, with the content files written first and the metadata last; writes serialized behind one promise chain; derived output (`writeDerived`) for the manuscript and templates. Reads assemble a `NovelState` from the files, adopt whatever they say, claim unindexed chapter files by their frontmatter `id`, and report orphan files as warnings. Raises `NovelConflictError` on a pure metadata conflict, `NovelWriteError` (with `filesWritten` / `filesNotWritten`) when a multi-file write dies halfway, and `NovelStoreError` on an unreadable, broken, or foreign document. `ensureMigrated` upgrades v1/v2 documents behind a `.novel/novel.v2.backup.json` that is never overwritten. `isRegularFile` and `isFsErrorCode` match the `dsh-fs` boundary structurally. |
 | `resolver.ts` | `createProjectResolver`: which novel is *this session* working on. Caches one `NovelStore` per normalized root; `storeForSession` / `rootForSession` resolve `session.header.cwd` → configured `workspaceRoot` → `process.cwd()`; `verdictFor` classifies a session's root (the store it hands back can also `probeWorkspace`); `listProjects` and `registerWorkspace` expose the optional `@deepseek-ai/dsh-workspace` registry when it is mounted — the current tool set does not call them. Publishes the resolver as `ctx.novelState`. |
-| `prompt.ts` | The runtime-context section (`composer:workspace`): `renderWorkspaceContext` renders the workspace kind, the document path, the project numbers and the per-kind conduct text; `createSnapshotCache` keeps those numbers in a 1.5 s TTL cache because the prompt registry resolves text synchronously; `registerWorkspacePrompt` files it after the sandbox facts. A failed refresh keeps the last good numbers and records why. |
+| `views.ts` | `createWorkspaceViews`: what the composer knows about one workspace, keyed by root. One `WorkspaceView` per directory holds the verdict, whether that classification is the call that wrote the document, and a snapshot cache; `classify()` runs at most once per root and hands concurrent callers the same promise; `viewForSession` routes a session to its own `cwd` and an agentless caller to the deployment root. The deployment's policy arrives as two callbacks (`normalize` for `workspaceMode`, `mayAdopt` for `adoptableVerdict`), so the registry itself knows nothing about profiles. `onSessionCreated` is the `global` lifecycle listener that starts classification when a session appears — global because a session's scope is not the plugin's. |
+| `prompt.ts` | The runtime-context section (`composer:workspace`): `renderWorkspaceContext` renders the workspace kind, the document path, the project numbers and the per-kind conduct text; `createSnapshotCache` keeps those numbers in a 1.5 s TTL cache because the prompt registry resolves text synchronously; `registerWorkspacePrompt` files it after the sandbox facts and resolves *which* workspace per assembly, from the agent that assembly is for. A failed refresh keeps the last good numbers and records why. |
 | `llm.ts` | The only module that talks to a model. `resolveRoute` (call override → configured `reviewProvider`/`reviewModel` → `agentDefaultModel.currentSelection()`), `runReview` (one `ctx.llm.stream` call assembled with the harness's `BlockAssembler`, with timeout, cancellation, truncation and empty-answer diagnosis), and `NovelReviewError`. |
-| `tools.ts` | The nine model-facing tools, their JSON schemas, the shared envelope and its renderer, `DEFAULT_MANUSCRIPT_PATH` / `DEFAULT_TEMPLATE_PATH` / `DEFAULT_REVIEW_PATH`, `registerTools`, and `registerReviewTool` (registered separately, because it needs a model the other eight never do). Each tool body resolves its store from the calling session, mutates through the store, then refreshes the prompt cache. |
+| `tools.ts` | The nine model-facing tools, their JSON schemas, the shared envelope and its renderer, `DEFAULT_MANUSCRIPT_PATH` / `DEFAULT_TEMPLATE_PATH` / `DEFAULT_REVIEW_PATH`, `registerTools`, and `registerReviewTool` (registered separately, because it needs a model the other eight never do). Each tool body resolves its store from the calling session, mutates through the store, then refreshes the view of *that* session's workspace. |
 
 ### `src/client/` — the browser half
 
+Two surfaces over one reader.
+
+`project.ts` is that reader, shared by both. It reads the project through the composed Remote
+(`ctx.remote.workspaceFiles`) so the host resolves the workspace root and neither surface
+guesses a path, and assembles what it reads with the same `composeContent` the host uses, so
+the browser holds no format knowledge of its own. The metadata document decides whether a
+project exists at all; the content paths the index names resolve under `.novel/`, and a path
+that is simply absent is "nothing recorded yet", never an error.
+
 `index.tsx` registers the "Novel Composer" right-Sidebar tab as a page type
 (`ctx.sidebarRightTabs.register`) plus its body in the `sidebar.right.pane.tab` seat, both
-inside one `ctx.effect`. The body reads the project through the composed Remote
-(`ctx.remote.workspaceFiles.read`) so the host resolves the workspace root and the panel never
-guesses a path. It reads the metadata document first — that is what decides whether a project
-exists — then the content files the index names, and assembles them with the same
-`composeContent` the host uses, so the browser holds no format knowledge of its own. Only
-`FS_NOT_FOUND` / `FS_NOT_TEXT` render the onboarding copy; anything else is shown as an error
-with a retry.
+inside one `ctx.effect`.
+
+`kanban.tsx` registers the **Kanban** conversation view beside Chat and Trajectory: one
+`conversation.view` list entry at order 20, carrying a `label` thunk over the `novel-kanban`
+locale namespace. Its component is what decides whether the tab exists — it reads the
+session's workspace root from the standard `useSessions` hook, and returns `null` in exactly
+one case (`status: 'none'`, no document). A view that renders nothing contributes no tab, so
+a workspace without a novel keeps its two tabs; a document that is present but broken is
+shown, because that is the case the user needs to see.
+
+`board.ts` holds the projection as pure data: columns per `CHAPTER_STATUSES`, and per card the
+word count, beats, hook state and unanswered contract fields, plus the derived stage and
+standing. No React, which is what lets `test/board.test.ts` specify it without a browser.
 
 ## The tool surface
 
@@ -251,6 +277,12 @@ Two places where the code and the SOP's wording differ on purpose, both worth kn
    report compares prose with its own plan rather than rating it, and no code path edits a
    published chapter. New behaviour that fabricates data or blocks an authorial decision
    belongs in a warning, not in an enforced write.
+7. **A browser surface decides visibility from data, not from a registry guess.** A
+   `conversation.view` entry has to be registered for its component to run, so "is there a
+   novel here?" is answered *inside* the component (render `null` for `status: 'none'`) and
+   never by registering or disposing the entry as sessions change. The session's workspace
+   root comes from the standard `useSessions` hook, because the shell already resolved it and
+   a second derivation is how two answers start to disagree.
 
 ## Build and test
 

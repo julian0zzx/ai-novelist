@@ -93,11 +93,15 @@ src/core/          pure domain — no I/O, no clock, no Cordis
 src/host/          the deployment surface
   store.ts           one project's ctx.fs access: containment, version guard, write queue
   resolver.ts        which novel is this session in; the ctx.novelState service
+  views.ts           one workspace's view: classification, adoption, and the numbers behind it
   prompt.ts          the runtime-context section and the cache it reads
   llm.ts             the one seam that calls a model: route resolution, one streamed call
   tools.ts           the nine model-facing tools (thin adapters over core)
 src/client/        the browser surface
   index.tsx          the right-Sidebar tab type + its body
+  kanban.tsx         the conversation view beside Chat and Trajectory
+  board.ts           the board a NovelState projects onto, as pure data
+  project.ts         the one project reader both surfaces share
 src/index.ts       the Cordis plugin: Config, resolver construction, tool registration
 ```
 
@@ -270,10 +274,12 @@ spec.
 
 ### `client/index.tsx` — the browser half
 
-Since the split, the panel reads the metadata document first and then the content files the
-index names, assembling them with the same `composeContent` the host uses. No format
-knowledge is duplicated in the browser: the panel cannot drift from the files, only lag
-behind them.
+Both browser surfaces read the project through `client/project.ts`, which reads the metadata
+document first and then the content files the index names, assembling them with the same
+`composeContent` the host uses. No format knowledge is duplicated in the browser: a surface
+cannot drift from the files, only lag behind them. The content paths are resolved under
+`.novel/` (`METADATA_RELATIVE_PATH`'s directory), which is where the store writes them and
+where `novel.json`'s own `index` records them from.
 
 The tab registers through exactly the same two-stage public path the shipped sidebar types
 use, with no privileged access:
@@ -290,6 +296,41 @@ use, with no privileged access:
 Both calls are owned by one `ctx.effect`, so unloading the plugin removes the type and its
 body together — a type without a body would render the sidebar's "nothing can view this"
 notice.
+
+### `client/kanban.tsx` — the third conversation view
+
+Chat and Trajectory are what the shell ships for every session. The composer adds a third —
+**Kanban** — and adds it *only where a novel project is*: a workspace whose
+`.novel/novel.json` identifies one gets the tab, and every other workspace keeps exactly the
+two tabs it always had.
+
+A conversation view is a `conversation.view` **list** entry, so it registers the way the
+shipped two do: one `ctx.slots.inject('conversation.view', () => ctx.slots.register(…))`
+call carrying an `id`, an `order` (20 — after Chat's 0 and Trajectory's 10) and a `label`
+thunk over a registered locale namespace. `ctx.slots.inject` is what covers boot order: the
+Conversation package may declare the slot after this plugin applies, and the callback runs
+when it does.
+
+Visibility is the one place the framework forces a choice, and the choice is documented
+because it looks like a compromise:
+
+* An entry must be **on the ledger** for its component to run at all, so a registry-level
+  decision would have to know the workspace before the view could ask for it.
+* A view that **renders nothing** contributes no tab chip — the shell omits it.
+
+So the entry is registered unconditionally and the *component* answers the question: it
+reads the session's workspace root from the standard `useSessions` hook (not from an
+injected value — the shell already resolved it, and re-deriving it is how two answers
+disagree), reads `.novel/novel.json`, and returns `null` in exactly one case, `status:
+'none'`. Absent document, no tab. Every other state renders — including the error state,
+because a document that is there but broken is precisely what the user needs to be told, and
+hiding the tab would hide the diagnosis with it.
+
+`client/board.ts` holds the projection itself: `boardOf(state)` returns the four
+`CHAPTER_STATUSES` columns, each card's word count, beats, hook state and unanswered
+contract fields, plus the stage `assessStage` derives and the standing `progressOf`
+derives. It is pure data with no React in sight, which is what makes the board specifiable
+in `test/board.test.ts` without a browser.
 
 ## Workspace awareness
 
@@ -328,42 +369,120 @@ Two consequences shaped the code:
 - **Tools resolve per execution, not per mount.** Every tool body asks the resolver for
   the store of the calling session (`exec.agent?.session`), so two sessions in two novel
   directories never share state.
+- **The prompt resolves per assembly, for the same reason.** `dsh-agent` sets
+  `agent` on every prompt assembly, so the runtime-context provider reads *that* agent's
+  `session.header.cwd` and describes the directory the session is actually in. It briefly
+  did not: the section was built once at boot from the deployment root, so a server started
+  in a software repository told every session — including one opened in an empty novel
+  folder — "this workspace is a software project, not a novel workspace. Do not create a
+  novel project here", and the model obeyed. A section that describes the wrong directory
+  is worse than no section at all.
 
 ### Classification and adoption
 
+Classification is per **workspace root**, and there are two moments it starts:
+
 ```
-boot → resolver.storeFor(defaultRoot).probeWorkspace()   listDir(root) + stat(.novel/novel.json)
-     → store.read() migration check                      v2/v1 documents are upgraded here
-     → classifyWorkspace(entries, …)                     pure: novel | fresh | plain, with evidence
-     → modeVerdict(config.workspaceMode)                 operator override: auto | novel | off
-     → adopt(…) only for a novel workspace                (or `adoptEmptyWorkspace: true`)
-     → snapshotCache.refresh()                           primes the numbers the prompt renders
-     → systemPrompt.context('composer:workspace')
+mount    → views.viewFor(deploymentRoot).classify()      the directory the operator mounted on
+session  → views.viewForSession(session).classify()      every session the harness creates
+render   → views.viewForSession(agent.session)           whatever the two above missed
+
+classify → resolver.storeFor(root).probeWorkspace()      listDir(root) + stat(.novel/novel.json)
+         → store.read() migration check                  v2/v1 documents are upgraded here
+         → classifyWorkspace(entries, …)                 pure: novel | fresh | plain, with evidence
+         → policy.normalize(root, …)                     workspaceMode, for the deployment root only
+         → policy.mayAdopt(verdict) → adopt(…)           see "How eager the composer is" below
+         → snapshotCache.refresh()                       primes the numbers the prompt renders
 ```
 
-Three rules make this safe:
+`host/views.ts` owns the registry: one `WorkspaceView` per normalized root, holding the
+verdict, whether this classification is the one that wrote the document, and the snapshot
+cache. Sessions in one directory share a view; the classification runs once, and concurrent
+callers await the same promise. `refresh()` — what every tool calls after a write — re-probes
+the directory as well as the numbers, because a write can change what the directory *is*:
+`novel_init` in an empty workspace is precisely what turns `fresh` into `novel`, and a section
+that kept recommending initialization while quoting the title it had just recorded would be
+contradicting itself. A refresh never adopts; that decision belongs to `classify`.
+
+Four rules make this safe:
 
 - **Conservative classification.** `core/workspace.ts` is pure and takes a directory
   listing, so the whole policy is testable without a filesystem. A repo root
-  (`package.json`, `.git`, …) is `plain` even when it holds Markdown; only
-  chapter-shaped filenames (`001-*.md`, `第3章.md`) count toward "this is a draft"; a
-  single soft signal yields `fresh` (an invitation) rather than `novel` (a claim).
+  (`package.json`, `.git`, …) is `plain` even when it holds Markdown, whatever else is
+  there; only chapter-shaped filenames (`001-*.md`, `第3章.md`) count as chapters; a
+  single soft signal yields `fresh` (an invitation) rather than a claim.
 - **Nothing is written unasked.** An empty directory is `fresh` and is left alone;
-  adoption there requires the deployment to opt in. A directory that already looks like a
-  novel is adopted idempotently through the `createIfAbsent` write intent, so a second
-  boot — or a second session against the same directory — leaves the document
-  byte-identical. `novel_init` is idempotent for the same reason: a recorded premise is
-  never overwritten — the call keeps it and warns that `novel_plan operation="pitch"` is how
-  a premise is revised.
+  adoption there requires the deployment to opt in (`adoptableVerdict`). A directory that
+  already looks like a novel is adopted idempotently through the `createIfAbsent` write
+  intent, so a second boot — or a second session against the same directory — leaves the
+  document byte-identical. `novel_init` is idempotent for the same reason: a recorded
+  premise is never overwritten — the call keeps it and warns that
+  `novel_plan operation="pitch"` is how a premise is revised.
+- **The deployment's mode is about the deployment's directory.** `workspaceMode: novel`
+  forces *the mounted root* to be treated as a project (that is what pinning a profile row
+  to one directory means); a session that opens elsewhere is judged on its own evidence.
+  `workspaceMode: off` is the one global veto: it suppresses adoption for every root, and
+  the section says `plain` for the deployment's own.
 - **Synchronous prompt, asynchronous data.** `SystemPrompt` resolves context text
-  synchronously (`entry.text(context)`, no await), so `host/prompt.ts` reads a small
-  cache that boot primes and every tool write refreshes (`resync`). A step therefore never
-  blocks on the filesystem, a failed refresh keeps the last good numbers and records the
-  error rather than blanking the section, and a workspace that cannot be probed at all
-  leaves the composer idle instead of failing the mount. The prompt section is
-  process-scoped while the tools are session-scoped, so the section describes the
-  deployment's root; `novel_status` reports the *session's* verdict, which is the
-  authoritative answer.
+  synchronously (`entry.text(context)`, no await), so the provider reads the view's cache
+  rather than the filesystem — a step never blocks, and a failed refresh keeps the last good
+  numbers and records the error rather than blanking the section. The classification a
+  session triggers therefore **races the first assembly**, which is why `views.viewFor`
+  starts one on demand and why an unclassified workspace renders nothing (the same silence
+  the boot path always had). In practice the session hook wins: creation is announced before
+  the first turn, and the probe is a `listDir` plus a `stat`. The cost of losing the race is
+  one step without orientation — never a step that describes the wrong directory. The provider
+  itself cannot re-probe (it is synchronous and runs per step), so a workspace edited by hand
+  *while a session is open* keeps the verdict it had until some tool writes through the
+  composer; `novel_status` re-probes on every call and stays the authoritative answer for what
+  the calling session is editing.
+
+### How eager the composer is
+
+The question "when may the composer write?" has more than one defensible answer, so it is
+a deployment setting rather than a constant. `workspaceMode` now has four values, and the
+two that matter are the first two:
+
+| Mode | Writes the scaffold when… | Meant for |
+|---|---|---|
+| `signal` (default) | the directory is a **marked** project (`.novel/`, or a draft the classifier names), **or** it carries unmistakable novel material: a creative note such as `创意整理.md` / `人物设定.md` / `story-outline.md`, two novel-shaped root files, or a few chapters | the ordinary case — someone made a folder for a book and wrote something down in it |
+| `auto` | only a **marked** project, a draft, or an empty directory the deployment opted into | deployments that must never create a file on their own |
+| `novel` | always, for the mounted root | a profile row pinned to one project directory |
+| `off` | never | a shared or managed machine |
+
+The distinction that makes `signal` safe is between two halves of `novel_init`, which the
+earlier policy treated as one thing:
+
+- **The scaffold** is `.novel/novel.json` with the folder's name as the title and every
+  story field empty. It is idempotent (`createIfAbsent`), it destroys nothing, it records
+  no decision the author did not make — and it is what makes the tools, the prompt section
+  and the Kanban board exist at all.
+- **The content** — premise, baselines, pitch, chapter contracts — is what the book *is*,
+  and no heuristic should invent any of it.
+
+`signal` automates only the first. Everything in `novelSignalCount` is about deciding when a
+directory is a book rather than a repository, and the two guards that carry the weight are
+that **project markers win outright** (a repo with `package.json` is `plain` however much
+Markdown it holds) and that **a creative filename is worth two signals while a generic one
+is worth none**, so a lone `README.md` never claims a directory. Each file is weighed by
+the most specific rule that matches it and counted once: `outline.md` is a novel-shaped
+root file, not also a note, which is the kind of double count that would let one file
+claim a folder by itself.
+
+Undoing an unwanted claim is one command, and the plugin is honest about the possibility
+in its README:
+
+```sh
+rm -rf <the-directory>/.novel      # the next classification sees `plain` again
+```
+
+The other half of the same complaint — a model that answers "write me a novel" with prose
+instead of a project — is not something a host plugin can fix, because the user's message
+never passes through it. What it can do is say what to do: `CONDUCT.plain` now names the
+phrasings users actually type (`write a novel here`, `给我 300 字大纲`, `建立小说项目`) and
+tells the model to call `novel_init` first and record what it was told. Mode `signal` and
+that instruction are complementary: the scaffold appears whether or not the model obeys,
+and the instruction is what fills it.
 
 ### Finding and switching novels
 
@@ -568,7 +687,6 @@ the registered id, the plugin shape, and that nothing unexpected was bundled in.
 
 `pnpm run check` runs the suite (build → typecheck → test; 122 specs across the two packages
 when this was written, and `pnpm test` prints the current count). It covers:
-
 - the SOP pipeline end to end through the nine tools, using only the tool surface a model
   has (`test/sop-pipeline.test.ts`): the phases in order, the soft gate (a competitor call
   succeeds before a pitch exists *and* says what is missing), the opening-checklist gate, the
@@ -587,15 +705,31 @@ when this was written, and `pnpm test` prints the current count). It covers:
   (`test/workspace.test.ts`),
 - session-scoped project resolution: each session's own `cwd`, the fallback chain, store
   independence per directory, and the workspace list (`test/resolver.test.ts`),
+- the per-root workspace views against the real backend (`test/views.test.ts`): classification
+  on demand, adoption and its refusal, one shared classification for concurrent callers,
+  routing a session to its own root, the refresh after a write, and a classification that fails
+  staying contained,
 - the prompt section's text and cache policy (`test/prompt.test.ts`), and — through the
   **real `@deepseek-ai/dsh-system-prompt` registry** — that it actually reaches a composed
-  model prompt (`test/prompt-wiring.test.ts`),
+  model prompt, describing the assembly's *own* agent rather than the deployment
+  (`test/prompt-wiring.test.ts`),
 - the plugin entry as a booted tree drives it: the tools it registers, boot-time adoption and
-  the `workspaceMode` switch, and that re-mounting never resets an existing project
-  (`test/entry.test.ts`),
-- the built browser bundle's shape (`test/client-bundle.test.ts`),
+  the `workspaceMode` switch, the workspace of a session announced after boot, and that
+  re-mounting never resets an existing project (`test/entry.test.ts`),
+- the built browser bundle's shape, including that the Kanban view lands in
+  `conversation.view` at order 20 under its own locale namespace
+  (`test/client-bundle.test.ts`),
+- the board projection: columns per lifecycle status in pipeline order, per-column and
+  whole-book prose totals, unwritten cards, unanswered contract fields versus waived ones,
+  and the empty project (`test/board.test.ts`),
 - the patch document, its ids, and that every row it inserts is a declared dependency
   (`packages/ai-webnovel-composer/test/patch.test.ts`).
+
+There is also a fixture generator for looking at the surfaces by hand:
+`pnpm run fixture <dir>` writes a schema-3 project with chapters in all four columns, an
+open promise, a cast, and a world file. It goes through `decomposeContent` and
+`metadataOf` — the same functions the store writes with — so what it produces is what a
+real project looks like on disk, not an approximation of one.
 
 Verified by hand against a booted profile, not by the suite:
 
@@ -605,9 +739,9 @@ Verified by hand against a booted profile, not by the suite:
 - the out-of-tree plugin resolves through the profile's module fallback, and the client
   half appears in `window.__DSH_BOOT__`.
 
-Not covered anywhere, because it needs a human at a browser: that the sidebar tab renders
-its content and that the guide capsule opens it. The registration path is the documented
-public one and the bundle is verified to load, so treat the first launch as the real test —
-if the panel stays empty, open the browser console: a `client-modules` composition error
-names the offending package, and a panel error message is the panel itself reporting a
-failed read rather than a failed load.
+Not covered anywhere, because it needs a human at a browser: that the sidebar tab and the
+Kanban view render their content, and that the guide capsule opens the tab. The registration
+path is the documented public one and the bundle is verified to load, so treat the first
+launch as the real test — if the panel stays empty, open the browser console: a
+`client-modules` composition error names the offending package, and a panel error message is
+the panel itself reporting a failed read rather than a failed load.

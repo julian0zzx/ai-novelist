@@ -22,13 +22,13 @@
 
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
-import { emptyNovel } from './core/novel.ts'
-import type { WorkspaceKind, WorkspaceVerdict } from './core/workspace.ts'
+import { adoptableVerdict, hasNovelSignals, type WorkspaceKind, type WorkspaceVerdict } from './core/workspace.ts'
 import type { ReviewSettings } from './host/llm.ts'
-import { createSnapshotCache, registerWorkspacePrompt } from './host/prompt.ts'
+import { registerWorkspacePrompt } from './host/prompt.ts'
 import { createProjectResolver } from './host/resolver.ts'
 import { registerReviewTool, registerTools } from './host/tools.ts'
-import { NovelStore, NOVEL_RELATIVE_PATH } from './host/store.ts'
+import { createWorkspaceViews, onSessionCreated, type WorkspacePolicy } from './host/views.ts'
+import { NOVEL_RELATIVE_PATH } from './host/store.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'ai-webnovel-composer'
@@ -36,8 +36,22 @@ export const name = 'ai-webnovel-composer'
 /** Services required before the tools can read or write project state. */
 export const inject = ['fs', 'tools']
 
-/** How the composer should treat the directory it is mounted in. */
-export const WORKSPACE_MODES = ['auto', 'novel', 'off'] as const
+/**
+ * Deployment workspace modes, in ascending order of how much they write.
+ *
+ * - `signal` (default) also initializes a directory that carries unmistakable
+ *   novel material — a `创意整理.md`, a cast file next to a premise file, a few
+ *   chapters — even though nothing there is a project document yet. This is the
+ *   common first contact with the composer, and the write is only the empty
+ *   scaffold: the title comes from the folder name and every story decision stays
+ *   unmade, so the tools, the prompt section and the board exist from the first
+ *   message instead of waiting for someone to remember `novel_init`.
+ * - `auto` keeps the older, quieter rule: only a marked novel directory, or an
+ *   empty one the deployment opted into, is claimed.
+ * - `novel` forces the deployment's own directory to be treated as a project.
+ * - `off` never writes anything.
+ */
+export const WORKSPACE_MODES = ['signal', 'auto', 'novel', 'off'] as const
 
 /** One entry of {@link WORKSPACE_MODES}. */
 export type WorkspaceMode = (typeof WORKSPACE_MODES)[number]
@@ -47,17 +61,18 @@ export type WorkspaceMode = (typeof WORKSPACE_MODES)[number]
  *
  * Every field has a working default: a profile that inserts the row with no
  * `config` at all gets a composer rooted at the agent's working directory that
- * adopts novel and empty workspaces and stays quiet everywhere else.
+ * initializes a novel directory it recognizes, and stays quiet everywhere else.
  */
 export const Config = z.object({
   /** Directory the project lives in. Defaults to the process working directory. */
   workspaceRoot: z.string().default(''),
   /**
-   * `auto` (default) adopts a novel or empty workspace and leaves unrelated
-   * directories alone; `novel` forces adoption wherever the plugin is mounted
-   * with a pinned `workspaceRoot`; `off` never writes anything at boot.
+   * How eagerly an unmarked novel directory is initialized; see
+   * {@link WORKSPACE_MODES}. `signal` (default) also claims a directory whose
+   * novel material is unmistakable, `auto` only a marked or opted-in one,
+   * `novel` forces the deployment's own root, and `off` never writes.
    */
-  workspaceMode: z.union([...WORKSPACE_MODES]).default('auto'),
+  workspaceMode: z.union([...WORKSPACE_MODES]).default('signal'),
   /**
    * Whether boot may create the project document in an *empty* directory. Off by
    * default: a workspace is just a directory the user chose, and writing files
@@ -83,16 +98,6 @@ export const Config = z.object({
 /** Parsed {@link Config}, derived through Schemastery's global type namespace. */
 export type ComposerConfig = Schemastery.TypeT<typeof Config>
 
-/** What the composer decided about this workspace, for logging and the prompt. */
-export interface WorkspaceActivation {
-  /** The classification. */
-  readonly verdict: WorkspaceVerdict
-  /** Whether boot wrote the project document. */
-  readonly created: boolean
-  /** The root the decision was made about. */
-  readonly workspaceRoot: string
-}
-
 /**
  * Mount the composer: classify the workspace, provide the state service, register
  * the tools, and publish the verdict to the system prompt.
@@ -113,60 +118,61 @@ export function apply(ctx: Context, config: ComposerConfig): void {
     provide: true,
     ...(config.workspaceRoot === '' ? {} : { configuredRoot: config.workspaceRoot }),
   })
-  const workspaceRoot = projects.defaultRoot
-  const store = projects.storeFor(workspaceRoot)
-  const cache = createSnapshotCache(store)
-  const state: { verdict: WorkspaceVerdict | undefined; created: boolean } = {
-    verdict: undefined,
-    created: false,
-  }
+  const deploymentRoot = projects.defaultRoot
 
-  // Classification and adoption must finish before the first model step, and the
-  // prompt section reads the result — so the async work is owned by the plugin's
-  // effect and the section renders nothing until it lands. `ctx.effect` takes a
-  // synchronous body returning a disposer, so the promise is started here and
-  // contained: a workspace that cannot be probed must not take down the mount.
-  ctx.effect(() => {
-    const activation = (async (): Promise<void> => {
-      const verdict = modeVerdict(config.workspaceMode, await store.probeWorkspace())
-      let created = false
-      // Adoption is opt-in for an empty directory (`adoptEmptyWorkspace`):
-      // creating files in a directory the user only just pointed the harness at
-      // is a surprise, and a workspace is a directory, not necessarily a novel.
-      const adoptable = verdict.kind === 'novel' || (verdict.kind === 'fresh' && config.adoptEmptyWorkspace)
-      if (adoptable) {
-        const outcome = await store.adopt(
-          emptyNovel(
-            { title: workspaceRoot.split(/[/\\]/u).filter(Boolean).at(-1) ?? '', premise: '' },
-            () => new Date().toISOString(),
-          ),
-        )
-        created = outcome === 'created'
-      }
-      state.verdict = verdict
-      state.created = created
-      // Prime the prompt cache now, so the very first model step already carries
-      // the project numbers rather than "still loading".
-      await cache.refresh()
+  // Both decisions belong to the *deployment*, so they stay here rather than in
+  // the views: `workspaceMode` is a statement about the one directory the
+  // operator mounted the composer on (a session elsewhere is judged on its own
+  // evidence, never forced), while `off` vetoes adoption wherever a session
+  // turns up. `adoptEmptyWorkspace` is the same opt-in it always was — an empty
+  // directory is only claimed when the deployment said so.
+  //
+  // The one thing `signal` adds is adoption on *unmarked* novel material, which
+  // is why `auto` has to exclude that case explicitly: the classifier calls such
+  // a directory a novel one, so leaving it in would quietly make `auto` mean
+  // `signal`. Marked projects and existing drafts are adopted by every mode but
+  // `off`, exactly as before.
+  const policy: WorkspacePolicy = {
+    normalize: (root, detected) => (root === deploymentRoot ? modeVerdict(config.workspaceMode, detected) : detected),
+    mayAdopt: (verdict) =>
+      config.workspaceMode !== 'off' &&
+      (adoptableVerdict(verdict, { adoptEmptyWorkspace: config.adoptEmptyWorkspace }) ||
+        (config.workspaceMode === 'signal' && hasNovelSignals(verdict))) &&
+      !(config.workspaceMode === 'auto' && hasNovelSignals(verdict)),
+  }
+  const views = createWorkspaceViews(ctx, projects, policy, {
+    log: (message, detail) => {
       ctx.logger?.info?.(
-        'ai-webnovel-composer: workspace %s (%s)%s — project %s',
-        verdict.kind,
-        verdict.reason,
-        created ? ', project created' : '',
-        `${workspaceRoot}/${NOVEL_RELATIVE_PATH}`,
+        'ai-webnovel-composer: %s%s — project %s',
+        message,
+        detail.created ? ', project created' : '',
+        `${detail.root}/${NOVEL_RELATIVE_PATH}`,
       )
-    })()
-    void activation.catch((error: unknown) => {
-      ctx.logger?.warn?.(
-        'ai-webnovel-composer: workspace classification failed, composer stays idle: %s',
-        error instanceof Error ? error.message : String(error),
-      )
-    })
+    },
+  })
+
+  // The deployment's own directory is classified at mount, so the first model
+  // step of the first session already carries it; `classify` contains its own
+  // failures, because a workspace that cannot be probed must not take down the
+  // mount. `ctx.effect` owns the call so an unload leaves nothing running.
+  ctx.effect(() => {
+    void views.viewFor(deploymentRoot).classify()
     return () => undefined
   })
 
-  registerTools(ctx, projects, () => state.verdict, cache)
-  registerWorkspacePrompt(ctx, store, () => state.verdict, cache)
+  // A *session's* workspace is classified when that session appears. Its `cwd`
+  // is the directory the composer must describe and write to, and session
+  // creation is the earliest moment the harness announces it — the classification
+  // then races the first prompt assembly, which is why the render stays silent
+  // for the step or two it can lose (see `host/views.ts`). The listener is
+  // `global`: a session's scope is not this plugin's, so a scoped listener would
+  // never hear about it.
+  onSessionCreated(ctx, (session) => {
+    void views.viewForSession(session).classify()
+  })
+
+  registerTools(ctx, projects, views)
+  registerWorkspacePrompt(ctx, views)
 
   // The eight tools compute; `novel_review` asks a model. It is mounted only
   // where an `llm` service exists, so a profile without one keeps a fully usable
@@ -196,6 +202,10 @@ export function apply(ctx: Context, config: ComposerConfig): void {
  *
  * `novel` is for a profile row pinned to one project directory: the operator has
  * already said what the directory is, so detection only supplies the evidence.
+ * `off` vetoes both kinds the composer would otherwise act on, leaving only the
+ * inert `plain` verdict. `signal` and `auto` change nothing here — what they
+ * change is {@link WorkspacePolicy.mayAdopt}, because "what is this directory"
+ * and "may I write into it" are separate questions.
  *
  * @param mode - the configured mode.
  * @param detected - what the filesystem said.
@@ -218,4 +228,6 @@ export { DEFAULT_MANUSCRIPT_PATH, DEFAULT_REVIEW_PATH, DEFAULT_TEMPLATE_PATH, re
 export { NovelReviewError, resolveRoute, runReview } from './host/llm.ts'
 export type { LlmRoute, ReviewResult, ReviewSettings } from './host/llm.ts'
 export { registerWorkspacePrompt } from './host/prompt.ts'
+export { createWorkspaceViews, onSessionCreated } from './host/views.ts'
+export type { SessionRef, WorkspacePolicy, WorkspaceView, WorkspaceViews } from './host/views.ts'
 export * from './core/index.ts'

@@ -26,7 +26,7 @@
  * @module @ai-webnovel/composer-host/host/tools
  */
 
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   BEAT_KINDS,
@@ -99,13 +99,13 @@ import {
   type ReviewFinding,
   type ReviewKind,
   type ReviewRecord,
-  type WorkspaceVerdict,
 } from '../core/index.ts'
 import { DEFAULT_MULTIPLIERS } from '../core/metrics.ts'
 import { NovelReviewError, resolveRoute, runReview, type ReviewSettings } from './llm.ts'
-import type { SnapshotCache } from './prompt.ts'
 import type { ProjectResolver } from './resolver.ts'
+import { policyForSession, withSandboxPolicy } from './sandbox.ts'
 import { NOVEL_RELATIVE_PATH } from './store.ts'
+import type { SessionRef, WorkspaceViews } from './views.ts'
 
 /** Default export destination for the rendered manuscript. */
 export const DEFAULT_MANUSCRIPT_PATH = '.novel/manuscript.md'
@@ -118,6 +118,29 @@ export const DEFAULT_REVIEW_PATH = '.novel/reviews'
 
 /** The store type one execution resolves. */
 type SessionStore = ReturnType<ProjectResolver['storeForSession']>
+
+/**
+ * Register one composer tool with the calling session's sandbox policy in scope.
+ *
+ * The composer writes through `ctx.fs` itself rather than through the
+ * model-facing file tools, so it has to carry the same per-call sandbox policy
+ * those tools do. Without it a confining backend fences every mutation against
+ * the *deployment's* root instead of the session workspace — every write denied
+ * while reads keep working, which is exactly the failure this wrapper exists to
+ * make impossible. Wrapping the registration rather than each handler keeps that
+ * guarantee in one place, so a tool added later cannot forget it.
+ *
+ * @param ctx - the plugin context carrying `fs` and `tools`.
+ * @param tool - the definition to register.
+ */
+function registerScoped(ctx: Context, tool: ToolDefinition): void {
+  const execute = tool.execute
+  ctx.tools.register({
+    ...tool,
+    execute: (args, exec) =>
+      withSandboxPolicy(policyForSession(ctx, exec.agent?.session), () => execute(args, exec)),
+  })
+}
 
 /** The envelope fields every tool contributes. */
 interface Envelope {
@@ -269,27 +292,21 @@ interface Body {
  *
  * @param ctx - plugin context carrying the tool registry.
  * @param projects - resolves the novel store per calling session.
- * @param verdict - the boot classification of the composer's own workspace.
- * @param cache - the prompt's project-number cache, refreshed after every write.
+ * @param views - the per-root views whose numbers the prompt renders; a write
+ *   refreshes the view of the *calling session's* workspace, never another one's.
  */
-export function registerTools(
-  ctx: Context,
-  projects: ProjectResolver,
-  verdict: () => WorkspaceVerdict | undefined = () => undefined,
-  cache: SnapshotCache | undefined = undefined,
-): void {
+export function registerTools(ctx: Context, projects: ProjectResolver, views: WorkspaceViews): void {
   /** The store for one execution's session. */
-  const storeFor = (session: { readonly header: { readonly cwd?: string } } | undefined): SessionStore =>
-    projects.storeForSession(session)
-  /** Re-read the project into the prompt cache after a successful write. */
-  const resync = async (): Promise<void> => {
-    await cache?.refresh()
+  const storeFor = (session: SessionRef | undefined): SessionStore => projects.storeForSession(session)
+  /** Re-read the writing session's project into the prompt after a successful write. */
+  const resync = async (session: SessionRef | undefined): Promise<void> => {
+    await views.viewForSession(session).refresh()
   }
   const now: Clock = () => new Date().toISOString()
 
   // ── novel_init ──────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_init',
       description:
@@ -456,7 +473,7 @@ export function registerTools(
         if (next.naming.length > 0 && next.naming.length < 3) {
           warnings.push(`书名/简介/标签备选 ${String(next.naming.length)}/3：SOP 要求至少 3 组，验证阶段要逐个测`)
         }
-        await resync()
+        await resync(exec.agent?.session)
         return {
           ok: true,
           operation: 'init',
@@ -470,7 +487,7 @@ export function registerTools(
 
   // ── novel_plan ──────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_plan',
       description:
@@ -795,7 +812,7 @@ export function registerTools(
         }
 
         const final = (await store.read()) ?? current
-        await resync()
+        await resync(exec.agent?.session)
 
         // The soft gate: report the SOP's own preconditions for wherever the
         // project now stands, without ever refusing the call.
@@ -818,7 +835,7 @@ export function registerTools(
 
   // ── novel_bible ─────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_bible',
       description:
@@ -964,7 +981,7 @@ export function registerTools(
         }
 
         const final = (await store.read()) ?? current
-        await resync()
+        await resync(exec.agent?.session)
         const progress = progressOf(final)
         if (progress.overdueLinks.length > 0) {
           warnings.push(`有 ${String(progress.overdueLinks.length)} 条承诺已到回收章仍未回收：${progress.overdueLinks.join('、')}`)
@@ -982,7 +999,7 @@ export function registerTools(
 
   // ── novel_verify ────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_verify',
       description:
@@ -1129,7 +1146,7 @@ export function registerTools(
           body.push('', `## 建议动作 [${outcome.key}]`, `- ${outcome.action}（范围：${outcome.scope}）`)
         }
 
-        await resync()
+        await resync(exec.agent?.session)
         return {
           ok: true,
           operation: 'round',
@@ -1143,7 +1160,7 @@ export function registerTools(
 
   // ── novel_write ─────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_write',
       description:
@@ -1271,7 +1288,7 @@ export function registerTools(
           )
         }
 
-        await resync()
+        await resync(exec.agent?.session)
         return {
           ok: true,
           operation: 'write',
@@ -1285,7 +1302,7 @@ export function registerTools(
 
   // ── novel_metrics ───────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_metrics',
       description:
@@ -1387,7 +1404,7 @@ export function registerTools(
               ),
           )
           body.push(`基准读数：${baselineReadingId || '（无）'}`, '下一次读数后用 operation="outcome" 回填结果。')
-          await resync()
+          await resync(exec.agent?.session)
           return {
             ok: true,
             operation: 'iterate',
@@ -1435,7 +1452,7 @@ export function registerTools(
             )
           }
           body.push(judged?.note ?? '缺少可比读数，未判定有效性')
-          await resync()
+          await resync(exec.agent?.session)
           return {
             ok: true,
             operation: 'outcome',
@@ -1488,7 +1505,7 @@ export function registerTools(
         if (open.length > 0) {
           body.push('', `待回填结果的迭代：${open.map((iteration) => iteration.id).join('、')}（operation="outcome"）`)
         }
-        await resync()
+        await resync(exec.agent?.session)
         return {
           ok: true,
           operation: 'record',
@@ -1502,7 +1519,7 @@ export function registerTools(
 
   // ── novel_status ────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_status',
       description:
@@ -1690,7 +1707,7 @@ export function registerTools(
 
   // ── novel_repo ──────────────────────────────────────────────────────────────
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_repo',
       description:
@@ -1765,7 +1782,7 @@ export function registerTools(
           if (retro.problems.length > 0) body.push('', '## 问题', ...retro.problems.map((item) => `- ${item}`))
           body.push('', `已归档 IP 素材 ${String(retro.assets.length)} 项，导出结构模板「${retro.templates[0]?.name ?? '—'}」`)
           body.push('', '## 待补的复盘问题（工具不替你回答）', ...lessonPrompts().map((prompt) => `- ${prompt}`))
-          await resync()
+          await resync(exec.agent?.session)
           return {
             ok: true,
             operation: 'retro',
@@ -1885,7 +1902,7 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
     projects.storeForSession(session)
   const now: Clock = () => new Date().toISOString()
 
-  ctx.tools.register(
+  registerScoped(ctx,
     defineTool({
       name: 'novel_review',
       description:

@@ -33,7 +33,18 @@ counter can decide; it is registered only where a model route exists.
 **A `novelState` service** — the single, conflict-checked write path every tool and
 surface shares, resolved per session.
 
-**A Web UI tab** — "Novel Composer" in the right Sidebar, opened from the sidebar guide.
+**A Web UI** — two surfaces over the same project: a **Kanban** tab beside Chat and
+Trajectory, and a "Novel Composer" tab in the right Sidebar opened from the sidebar guide.
+
+| Surface | Where | What it shows |
+|---|---|---|
+| **Kanban** | The session's view tabs, next to Chat and Trajectory | The whole project at a glance. Columns are the chapter lifecycle — 待写 / 写作中 / 已修订 / 已完成 — and each card carries its number, title, volume, 字数, beats, and what its contract still owes (a missing chapter hook, unanswered 细纲 fields). Above the board: the SOP stage and what blocks the next one, chapters written, total 字数, cast, world facts, open promises, and naming candidates. |
+
+The Kanban tab appears **only where there is a novel project**: it is added when the
+session's workspace holds a `.novel/novel.json`, and a workspace without one keeps exactly
+the Chat and Trajectory tabs it always had. It reads the project through the same codec the
+host writes with, so it can lag the files but never disagree with them; press *重新读取* to
+re-read after the agent writes.
 
 ## The SOP this implements
 
@@ -132,8 +143,10 @@ packages/
   ai-webnovel-composer-host/    # PLUGIN  @ai-webnovel/composer-host
     src/core/                   #   pure domain: types, state, plan checks, metric rules,
                                 #   delivery reports, retrospectives, workspace policy
-    src/host/                   #   ctx.fs store, session resolver, prompt section, tools
-    src/client/                 #   Web UI tab (right Sidebar), built to lib/client.js
+    src/host/                   #   ctx.fs store, session resolver, workspace views,
+                                #   prompt section, tools
+    src/client/                 #   the two Web UI surfaces, built to lib/client.js:
+                                #   the Kanban view and the right-Sidebar tab they share
     src/index.ts                #   the Cordis plugin (name / inject / Config / apply)
 ```
 
@@ -202,15 +215,38 @@ The composer classifies each session's workspace and acts on it:
 |---|---|---|
 | `.novel/novel.json` (metadata + index) | `novel` | Adopted as-is; the content files beside it are the novel. Tools and prompt are live. |
 | the content `.md` files | `novel` | The file wins: your edit is adopted on the next read. |
-| a `.novel/` directory with no document yet | `novel` | Treated as a novel workspace; the document is left for `novel_init`. |
+| a `.novel/` directory with no document yet | `novel` | Treated as a novel workspace: the document is created empty and `novel_init` fills in the premise. |
 | three or more chapter-shaped files (`001-*.md`, `第3章.md`) | `novel` | Recognized as an existing draft; a project document is created beside it. |
+| a creative note (`创意整理.md`, `人物设定.md`, `story-outline.md`, …) | `novel` | Recognized as a book folder: an empty project document is created, titled after the folder. |
+| an outline plus a chapter, or two novel-shaped files | `novel` | Same as above. |
 | an empty directory | `fresh` | **Left untouched.** Ask the agent to start a novel here (or set `adoptEmptyWorkspace: true`). |
-| a repo (`package.json`, `.git`, …) | `plain` | Left alone. The tools stay idle and the prompt says so. |
+| a repo (`package.json`, `.git`, …) | `plain` | Left alone, whatever Markdown it holds. The tools stay idle and the prompt says so. |
 | anything else | `plain` | Left alone. |
 
-A novel workspace also gets a **runtime-context section** in the system prompt every
-step, naming the kind and reporting the current standing (chapters, 字数, unwritten
-count, bible size) — so a session opened on a novel needs no discovery turn.
+The deployment's own directory is classified when the plugin mounts; every other directory is
+classified when a session opens in it. A novel workspace then gets a **runtime-context section**
+in the system prompt on every step, naming the kind and reporting the current standing
+(chapters, 字数, unwritten count, bible size) — so a session opened on a novel needs no
+discovery turn, and a session opened somewhere else is never described with the numbers (or the
+verdict) of the directory the server was launched from.
+
+#### What "initialized" means, and how to undo it
+
+Automatic initialization writes **only the empty scaffold**: `.novel/novel.json` with the
+folder's name as the title and every story field blank. Nothing you wrote is touched, nothing
+is overwritten (the write is `createIfAbsent`), and no story decision — premise, medians,
+pitch, chapters — is invented. That is the whole point: the scaffold is what makes the tools,
+the prompt section and the Kanban board exist from your first message instead of waiting for
+someone to remember `novel_init`.
+
+If it claims a directory you did not mean, delete it and the composer forgets:
+
+```sh
+rm -rf <that-directory>/.novel      # the next classification sees `plain` again
+```
+
+To turn the eagerness down, set `workspaceMode: auto` (only marked projects are adopted) or
+`off` (nothing is ever written).
 
 ### One chat, one novel
 
@@ -221,15 +257,16 @@ process directory. `novel_status` reports the verdict for the *calling session's
 workspace, which is the authoritative answer for what you are editing.
 
 All of it is conservative by design: a repo with a few Markdown files is *not* a draft,
-only chapter-shaped filenames count, and nothing is written into an empty directory
-unless you ask for it. To pin a directory regardless of detection:
+only chapter-shaped filenames count as chapters, a single generic note claims nothing, and
+nothing is written into an empty directory unless you ask for it. To pin a directory
+regardless of detection:
 
 ```yaml
 # your profile's cordis.patch.yml
 - id: ai-webnovel-composer
   config:
     workspaceRoot: /Users/me/novels/qingyun   # fallback when a session records no cwd
-    workspaceMode: auto                       # auto (default) | novel | off
+    workspaceMode: signal                     # signal (default) | auto | novel | off
     adoptEmptyWorkspace: false                # true: create the project in an empty directory at boot
     reviewProvider: ''                        # empty: reviews follow the session's model
     reviewModel: ''                           # set both to pin novel_review to one model
@@ -308,8 +345,15 @@ pnpm run check        # build → typecheck → test
 pnpm run build        # tsc (host) + tsdown (browser bundle)
 pnpm run dist         # build, then produce dist/dsh-plugin and dist/skill
 pnpm test             # vitest: the SOP pipeline end to end, plus the store,
-                      # workspace, prompt and bundle specs
+                      # workspace, prompt, board and bundle specs
+pnpm run fixture /tmp/ain-fixture
+                      # write a sample schema-3 novel project (chapters in all
+                      # four columns) to look at the surfaces by hand
 ```
+
+To see the Kanban tab, install the bundle into a DSH profile, start `dsh web`, and open a
+session **in the fixture directory** — the tab is part of the session's view row, so it
+appears for the sessions whose workspace holds a novel project and nowhere else.
 
 [`docs/sop.md`](docs/sop.md) is the workflow the tools implement — the authoritative list
 of phases, fields and thresholds. [`docs/architecture.md`](docs/architecture.md) explains

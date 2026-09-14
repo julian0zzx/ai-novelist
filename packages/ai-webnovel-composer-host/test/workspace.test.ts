@@ -5,7 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { emptyNovel, upsertChapter } from '../src/core/novel.ts'
-import { classifyWorkspace, countDraftFiles, describeVerdict, looksLikeChapterFile } from '../src/core/workspace.ts'
+import {
+  classifyWorkspace,
+  countDraftFiles,
+  describeVerdict,
+  hasNovelSignals,
+  looksLikeChapterFile,
+  novelSignalCount,
+} from '../src/core/workspace.ts'
 import { NOVEL_RELATIVE_PATH, NovelStore } from '../src/host/store.ts'
 
 /** Build a directory listing entry without touching disk. */
@@ -67,10 +74,36 @@ describe('classifyWorkspace', () => {
     expect(verdict.reason).toBe('draft-files')
   })
 
-  it('only invites when the signals are soft', () => {
+  it('reads an outline beside a chapter as the novel it is', () => {
+    // Two independent novel signals — a novel-shaped root file and a chapter —
+    // are what the `signal` mode treats as unmistakable.
     const verdict = classifyWorkspace([entry('outline.md'), entry('chapter-1.md')], false, false)
+    expect(verdict.kind).toBe('novel')
+    expect(verdict.reason).toBe('novel-signals')
+    // The evidence names the files themselves, in listing order, so a user can
+    // see exactly what decided it.
+    expect(verdict.evidence).toEqual(['outline.md', 'chapter-1.md'])
+  })
+
+  it('reads a creative-writing note as unmistakable on its own', () => {
+    // The case that prompted the rule: a folder holding one `创意整理.md`.
+    const verdict = classifyWorkspace([entry('创意整理.md')], false, false)
+    expect(verdict.kind).toBe('novel')
+    expect(verdict.reason).toBe('novel-signals')
+    expect(hasNovelSignals(verdict)).toBe(true)
+  })
+
+  it('only invites when a single soft signal is all there is', () => {
+    const verdict = classifyWorkspace([entry('outline.md')], false, false)
     expect(verdict.kind).toBe('fresh')
     expect(verdict.reason).toBe('soft-signals')
+    expect(hasNovelSignals(verdict)).toBe(false)
+  })
+
+  it('does not let one generic markdown file claim a directory', () => {
+    const verdict = classifyWorkspace([entry('README.md')], false, false)
+    expect(verdict.kind).toBe('plain')
+    expect(hasNovelSignals(verdict)).toBe(false)
   })
 
   it('stays plain when nothing suggests a novel', () => {
@@ -86,6 +119,14 @@ describe('classifyWorkspace', () => {
       false,
     )
     expect(verdict.kind).toBe('plain')
+    expect(hasNovelSignals(verdict)).toBe(false)
+  })
+
+  it('weighs a creative note above a generic one', () => {
+    expect(novelSignalCount([entry('创意整理.md')])).toBe(2)
+    expect(novelSignalCount([entry('outline.md')])).toBe(1)
+    expect(novelSignalCount([entry('README.md')])).toBe(0)
+    expect(novelSignalCount([entry('story-notes.md'), entry('001.md')])).toBe(3)
   })
 })
 

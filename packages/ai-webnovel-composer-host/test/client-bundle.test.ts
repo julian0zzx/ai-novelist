@@ -76,6 +76,8 @@ describe('client bundle', () => {
       'sidebarRightTabs',
       'remote',
       'remote.workspaceFiles',
+      'sessions',
+      'locale',
     ])
     expect(typeof exports['apply']).toBe('function')
   })
@@ -94,15 +96,24 @@ describe('client bundle', () => {
     }
   })
 
-  it('opens the composer page in the sidebar guide when applied', async () => {
+  it('opens the composer page in the sidebar guide and adds the Kanban view', async () => {
     const { exports } = await loadBundle()
     const apply = exports['apply'] as (ctx: unknown) => void
     const disposeCalls: string[] = []
-    const registered: { type?: unknown; key?: unknown; name?: unknown } = {}
+    const localeNamespaces: string[] = []
+    const registered: { type?: unknown; key?: unknown; name?: unknown; view?: unknown } = {}
     const ctx = {
       effect: (body: () => () => void) => {
         const dispose = body()
         disposeCalls.push(typeof dispose === 'function' ? 'effect-disposer' : 'not-a-function')
+      },
+      remote: {},
+      locale: {
+        bind: () => (key: string) => key,
+        register: (ns: string) => {
+          localeNamespaces.push(ns)
+          return () => disposeCalls.push(`locale:${ns}`)
+        },
       },
       sidebarRightTabs: {
         register: (definition: { title: () => string; guide?: unknown[] }) => {
@@ -111,7 +122,17 @@ describe('client bundle', () => {
         },
       },
       slots: {
-        register: (options: { name?: unknown; key?: unknown }) => {
+        // `inject` runs its callback immediately when the slot is already
+        // declared, which is how a late-loading plugin still lands in it.
+        inject: (_name: string, body: () => () => void) => {
+          disposeCalls.push('inject-callback')
+          return body()
+        },
+        register: (options: { name?: unknown; key?: unknown; id?: unknown; order?: unknown }) => {
+          if (options.key === undefined) {
+            registered.view = { id: options.id, name: options.name, order: options.order }
+            return () => disposeCalls.push('view')
+          }
           registered.key = options.key
           registered.name = options.name
           return () => disposeCalls.push('body')
@@ -126,7 +147,11 @@ describe('client bundle', () => {
     expect(type?.guide).toHaveLength(1)
     expect(registered.name).toBe('sidebar.right.pane.tab')
     expect(registered.key).toBe('ai-webnovel-composer/composer')
-    // The disposer returned by `ctx.effect` must tear both stages down together.
+    // The Kanban view joins the conversation's roster, after Chat (0) and
+    // Trajectory (10), under the namespace whose dictionaries were registered.
+    expect(registered.view).toEqual({ id: 'novel-kanban', name: 'conversation.view', order: 20 })
+    expect(localeNamespaces).toContain('novel-kanban')
+    // The disposer returned by `ctx.effect` must tear every stage down together.
     expect(typeof disposeCalls[0]).toBe('string')
   })
 })

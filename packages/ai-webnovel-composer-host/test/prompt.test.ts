@@ -6,7 +6,12 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { emptyNovel, upsertChapter, upsertCharacter } from '../src/core/novel.ts'
 import type { WorkspaceVerdict } from '../src/core/workspace.ts'
-import { createSnapshotCache, renderWorkspaceContext, type NovelSnapshot } from '../src/host/prompt.ts'
+import {
+  createSnapshotCache,
+  renderWorkspaceContext,
+  type NovelSnapshot,
+  type WorkspaceContextInput,
+} from '../src/host/prompt.ts'
 import { NovelStore } from '../src/host/store.ts'
 
 /**
@@ -64,25 +69,42 @@ afterEach(async () => {
 })
 
 describe('renderWorkspaceContext', () => {
+  /**
+   * The render input for this test's workspace.
+   *
+   * The render is a pure function of what the composer already learned, so a
+   * spec hands it the facts instead of a filesystem: `kind` absent is the
+   * "classification has not landed yet" case.
+   */
+  const workspace = (
+    kind?: WorkspaceVerdict['kind'],
+    options: { reason?: WorkspaceVerdict['reason']; snapshot?: NovelSnapshot } = {},
+  ): WorkspaceContextInput => ({
+    root,
+    documentPath: join(root, '.novel', 'novel.json'),
+    verdict: kind === undefined ? undefined : verdict(kind, options.reason),
+    snapshot: options.snapshot,
+  })
+
   it('renders nothing until classification lands', () => {
-    expect(renderWorkspaceContext(store, undefined, undefined)).toBe('')
+    expect(renderWorkspaceContext(workspace())).toBe('')
   })
 
   it('names the workspace kind and where the project lives', () => {
-    const text = renderWorkspaceContext(store, verdict('novel', 'project-document'), undefined)
+    const text = renderWorkspaceContext(workspace('novel', { reason: 'project-document' }))
     expect(text).toContain('Composer workspace: novel')
     expect(text).toContain('.novel/novel.json')
     expect(text).toContain('Follow the SOP pipeline')
   })
 
   it('tells the model to initialize a fresh workspace', () => {
-    const text = renderWorkspaceContext(store, verdict('fresh'), undefined)
+    const text = renderWorkspaceContext(workspace('fresh'))
     expect(text).toContain('Composer workspace: fresh')
     expect(text).toContain('Call novel_init once')
   })
 
   it('keeps the tools idle in an unrelated workspace', () => {
-    const text = renderWorkspaceContext(store, verdict('plain', 'unrelated-project'), undefined)
+    const text = renderWorkspaceContext(workspace('plain', { reason: 'unrelated-project' }))
     expect(text).toContain('Composer workspace: plain')
     expect(text).toContain('Do not create a novel project here')
     expect(text).not.toContain('.novel/novel.json')
@@ -90,19 +112,20 @@ describe('renderWorkspaceContext', () => {
 
   it('reports the project standing when a snapshot exists', () => {
     const text = renderWorkspaceContext(
-      store,
-      verdict('novel', 'project-document'),
-      snapshot({
-        title: '青云记',
-        premise: '少年上山求道',
-        chapters: 3,
-        words: 12000,
-        unwritten: 1,
-        characters: 4,
-        worldFacts: 2,
-        lastNumber: 3,
-        lastTitle: '出宗',
-        lastStatus: 'drafting',
+      workspace('novel', {
+        reason: 'project-document',
+        snapshot: snapshot({
+          title: '青云记',
+          premise: '少年上山求道',
+          chapters: 3,
+          words: 12000,
+          unwritten: 1,
+          characters: 4,
+          worldFacts: 2,
+          lastNumber: 3,
+          lastTitle: '出宗',
+          lastStatus: 'drafting',
+        }),
       }),
     )
     expect(text).toContain('"青云记"')
@@ -111,7 +134,7 @@ describe('renderWorkspaceContext', () => {
   })
 
   it('asks for a plan when the project has no chapters', () => {
-    const text = renderWorkspaceContext(store, verdict('novel', 'project-document'), snapshot())
+    const text = renderWorkspaceContext(workspace('novel', { reason: 'project-document', snapshot: snapshot() }))
     expect(text).toContain('(untitled)')
     expect(text).toContain('(no premise recorded)')
     expect(text).toContain('start with novel_plan operation="chapter"')
@@ -119,9 +142,10 @@ describe('renderWorkspaceContext', () => {
 
   it('surfaces a read failure instead of showing stale numbers as current', () => {
     const text = renderWorkspaceContext(
-      store,
-      verdict('novel', 'project-document'),
-      snapshot({ title: 'X', premise: 'Y', error: 'store is not valid JSON' }),
+      workspace('novel', {
+        reason: 'project-document',
+        snapshot: snapshot({ title: 'X', premise: 'Y', error: 'store is not valid JSON' }),
+      }),
     )
     expect(text).toContain('could not be read: store is not valid JSON')
   })
