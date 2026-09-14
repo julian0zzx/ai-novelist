@@ -23,9 +23,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Side-effect type imports: each contributes the augmentation this module needs —
-// `ctx.slots` / `ctx.remote` on `Context`, the sidebar services and slot map
-// entry, and the session standard props carrying `sessionId`.
-import type {} from '@deepseek-ai/dsh-api-remotes/client'
+// `ctx.slots` on `Context`, the sidebar services and slot map entry, and the
+// session standard props carrying `sessionId`. The Remote face itself is read
+// from `./remote.ts`, which names its own augmentation.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {
@@ -39,6 +39,7 @@ import { METADATA_RELATIVE_PATH } from '../core/paths.ts'
 import { installKanbanView } from './kanban.tsx'
 import { describe, readProject } from './project.ts'
 import type { ProjectRead } from './project.ts'
+import { captureRemote, clientRemote, NO_REMOTE_MESSAGE, releaseRemote } from './remote.ts'
 
 /** Stable client plugin name. */
 export const name = 'ai-webnovel-composer-client'
@@ -97,10 +98,6 @@ const STYLE = {
   },
   error: { color: 'var(--dsh-color-danger, #d9534f)', lineHeight: 1.5, whiteSpace: 'pre-wrap' as const },
 } as const
-
-/** The Remote face captured at activation; the slot props do not carry services. */
-let clientRemote: ClientContext['remote']
-
 
 /**
  * One chapter row.
@@ -209,7 +206,16 @@ function ComposerTabBody({
   useEffect(() => {
     const controller = new AbortController()
     setProject({ status: 'loading' })
-    void readProject(clientRemote, sessionId, controller.signal, '').then(
+    const remote = clientRemote()
+    if (remote === undefined) {
+      setProject({ status: 'error', message: NO_REMOTE_MESSAGE })
+      return () => {
+        controller.abort()
+      }
+    }
+    // An empty root leaves the path relative; the Remote resolves it against the
+    // session's own workspace, which is the root this panel is about.
+    void readProject(remote, sessionId, controller.signal, '').then(
       (next) => {
         if (!controller.signal.aborted) setProject(next)
       },
@@ -250,11 +256,15 @@ function ComposerTabBody({
  * itself, because whether it exists at all depends on the current session's
  * workspace rather than on this call. See `./kanban.tsx`.
  *
+ * The Remote face is captured first and released last, so every registration
+ * below — and the Kanban view with them — reads through one face. See
+ * `./remote.ts`.
+ *
  * @param ctx - client root context carrying the sidebar registries, the session
  * list, the slot registry, and the Remote face.
  */
 export function apply(ctx: ClientContext): void {
-  clientRemote = ctx.remote
+  captureRemote(ctx)
 
   const definition: SidebarRightTabDefinition = {
     id: COMPOSER_TAB_ID,
@@ -285,6 +295,7 @@ export function apply(ctx: ClientContext): void {
     return () => {
       disposeBody()
       disposeType()
+      releaseRemote()
     }
   })
 

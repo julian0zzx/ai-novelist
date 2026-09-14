@@ -83,6 +83,12 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 
 Two surfaces over one reader.
 
+`remote.ts` holds the one thing the framework does not hand a surface through its props: the
+Remote face. `apply` captures `ctx.remote` into it and releases it on unload; both surfaces
+read it back with `clientRemote()`. One capture, so the panel and the view cannot end up with
+different answers to "is there a Remote" — a second capture that nothing fills compiles fine
+and fails at read time.
+
 `project.ts` is that reader, shared by both. It reads the project through the composed Remote
 (`ctx.remote.workspaceFiles`) so the host resolves the workspace root and neither surface
 guesses a path, and assembles what it reads with the same `composeContent` the host uses, so

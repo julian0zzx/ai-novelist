@@ -13,13 +13,15 @@
  *   through `ctx.slots.register` with a label and an order, exactly like Chat
  *   (order 0) and Trajectory (order 10). This one sits at 20.
  * - Whether the tab exists at all is decided **before** it renders, because a
- *   view that renders nothing still shows a tab. {@link installKanbanTab} probes
- *   the session's workspace and registers or disposes the entry as the answer
- *   changes, so a non-novel session has exactly the two tabs it always had.
+ *   view that renders nothing still shows a tab. {@link installKanbanView} keeps
+ *   the entry on the ledger and the component renders nothing where the workspace
+ *   holds no project, so a non-novel session has exactly the two tabs it always
+ *   had.
  *
  * The view owns no state of its own beyond what it read: the board is a pure
  * projection of the project ({@link boardOf}), and the project is read through
- * the same Remote and the same core codec the sidebar panel uses.
+ * the same Remote and the same core codec the sidebar panel uses — the one face
+ * captured at activation in `./remote.ts`.
  *
  * @module @ai-webnovel/composer-host/client/kanban
  */
@@ -27,10 +29,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 // Side-effect type imports: each contributes the augmentation this module needs —
-// `ctx.slots` / `ctx.remote`, the conversation ViewMap and its standard props,
-// the session standard props carrying `sessionId` and the `useSessions` selector,
-// and `ctx.locale` with the namespace table this module's dictionary joins.
-import type {} from '@deepseek-ai/dsh-api-remotes/client'
+// `ctx.slots`, the conversation ViewMap and its standard props, the session
+// standard props carrying `sessionId` and the `useSessions` selector, and
+// `ctx.locale` with the namespace table this module's dictionary joins. The
+// Remote face is read from `./remote.ts`, which names its own augmentation.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
@@ -40,6 +42,7 @@ import { CHAPTER_STATUSES } from '../core/types.ts'
 import type { ChapterStatus } from '../core/types.ts'
 import { describe, readProject } from './project.ts'
 import type { ProjectRead, SessionId } from './project.ts'
+import { clientRemote, NO_REMOTE_MESSAGE } from './remote.ts'
 import { boardOf } from './board.ts'
 import type { BoardCard, KanbanBoard } from './board.ts'
 
@@ -250,9 +253,9 @@ function useProject(sessionId: SessionId, workspaceRoot: string | undefined, att
     if (workspaceRoot === undefined) return
     const controller = new AbortController()
     setProject({ status: 'loading' })
-    const remote = clientRemoteRef.current
+    const remote = clientRemote()
     if (remote === undefined) {
-      setProject({ status: 'error', message: 'the composer client half has no Remote face' })
+      setProject({ status: 'error', message: NO_REMOTE_MESSAGE })
       return () => {
         controller.abort()
       }
@@ -272,9 +275,6 @@ function useProject(sessionId: SessionId, workspaceRoot: string | undefined, att
 
   return project
 }
-
-/** The Remote face captured at activation; the slot props do not carry services. */
-const clientRemoteRef: { current: ClientContext['remote'] | undefined } = { current: undefined }
 
 /**
  * One chapter card.

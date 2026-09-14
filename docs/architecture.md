@@ -102,6 +102,7 @@ src/client/        the browser surface
   kanban.tsx         the conversation view beside Chat and Trajectory
   board.ts           the board a NovelState projects onto, as pure data
   project.ts         the one project reader both surfaces share
+  remote.ts          the Remote face captured at activation, and its release
 src/index.ts       the Cordis plugin: Config, resolver construction, tool registration
 ```
 
@@ -296,6 +297,16 @@ use, with no privileged access:
 Both calls are owned by one `ctx.effect`, so unloading the plugin removes the type and its
 body together — a type without a body would render the sidebar's "nothing can view this"
 notice.
+
+Neither surface is handed the Remote by the framework: slot props carry the session
+identity, store bindings and hooks, and no business service. `apply` therefore captures
+`ctx.remote` once, into `client/remote.ts`, and both the panel and the Kanban view read it
+back through `clientRemote()`. The single capture is the point. A surface that keeps a
+reference of its own does not fail to compile when nothing fills it; it fails at read time
+with "the composer client half has no Remote face" — for that surface while the other one
+works, which is a bug the compiler cannot catch and the browser reports as a project error.
+`releaseRemote()` runs in the same effect's disposer, so a disposed plugin leaves no face
+behind.
 
 ### `client/kanban.tsx` — the third conversation view
 
@@ -719,6 +730,12 @@ when this was written, and `pnpm test` prints the current count). It covers:
 - the built browser bundle's shape, including that the Kanban view lands in
   `conversation.view` at order 20 under its own locale namespace
   (`test/client-bundle.test.ts`),
+- the activation wiring both surfaces depend on: the Remote face is absent before the plugin
+  activates, is the assembly's own face afterwards, and is released on unload
+  (`test/client-remote.test.ts`),
+- the client reader against a **store-written** project: the document plus the Markdown it
+  indexes become the state the board projects, and a workspace with no document answers
+  `status: 'none'` so no tab appears (`test/client-read.test.ts`),
 - the board projection: columns per lifecycle status in pipeline order, per-column and
   whole-book prose totals, unwritten cards, unanswered contract fields versus waived ones,
   and the empty project (`test/board.test.ts`),
