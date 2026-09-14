@@ -1,4 +1,4 @@
-# ai-webnovel-composer
+# ai-novelist
 
 [English](README.md) | 中文
 
@@ -74,64 +74,64 @@ SOP 明确说了哪些事属于人和平台，这里也直说：
 
 ```sh
 pnpm install                      # 在本仓库执行一次
-dsh plugin --profile web add -w "$(pwd)/packages/ai-webnovel-composer"
+dsh plugin --profile web add -w "$(pwd)/packages/novelist-bundle"
 ```
 
 `-w` 不能省。`dsh plugin` 把 `add` 之后的参数原样转发给在 profile 目录里运行的 pnpm，而那个
 目录本身就是一个 pnpm workspace 根（`pnpm-workspace.yaml` 就在它的 `package.json` 旁边），
 所以 pnpm 只接受带 `--workspace-root` 的依赖写入。
 
-随后 `dsh plugin add` 会对齐 `dsh.profile.bundles`：由于 `@ai-webnovel/composer` 声明了
+随后 `dsh plugin add` 会对齐 `dsh.profile.bundles`：由于 `@ai-novelist/novelist-bundle` 声明了
 `dsh.bundle.patch`，它会自动加入该 profile 的层叠栈。重启 `dsh web` 后，新会话即可看到八个
 计算型工具，有可用模型时 `novel_review` 一并出现，侧栏引导页出现创作台标签页。
 
 结尾这个 spec 是**包名而不是命令名**——`dsh plugin` 把它之后的参数原样转发给 pnpm，所以它
-必须是 pnpm 能解析的包名。`@ai-webnovel/composer` 是 *bundle*（npm scope 为
-`@ai-webnovel`、包名为 `composer`）；它拉进来的 *插件* 是 `@ai-webnovel/composer-host`，
-加载时的行 id 为 `ai-webnovel-composer`。
+必须是 pnpm 能解析的包名。`@ai-novelist/novelist-bundle` 是 *bundle*（npm scope 为
+`@ai-novelist`、包名为 `composer`）；它拉进来的 *插件* 是 `@ai-novelist/novelist-skill`，
+加载时的行 id 为 `ai-novelist`。
 
 不启动会话也能确认组合结果：
 
 ```sh
-dsh --profile web --dump-config | grep -A2 ai-webnovel
+dsh --profile web --dump-config | grep -A2 ai-novelist
 ```
 
 卸载：
 
 ```sh
-dsh plugin --profile web remove -w @ai-webnovel/composer
+dsh plugin --profile web remove -w @ai-novelist/novelist-bundle
 ```
 
 > **正在改这个插件？** 改完源码执行 `pnpm run build`（或
-> `pnpm --filter @ai-webnovel/composer-host run build --watch`）。profile 链接的是本仓库，
-> host 半边重新构建即可生效；浏览器半边由 `packages/ai-webnovel-composer-host/lib/client.js` 提供，
+> `pnpm --filter @ai-novelist/novelist-skill run build --watch`）。profile 链接的是本仓库，
+> host 半边重新构建即可生效；浏览器半边由 `packages/novelist-skill/lib/client.js` 提供，
 > 需要刷新页面。profile 加载的是 `lib/`，所以没重新构建前，跑着的 `dsh web` 还是上一版工具。
 
 ## 目录结构
 
 ```
 packages/
-  ai-webnovel-composer/         # BUNDLE  @ai-webnovel/composer
-    cordis.patch.yml            #   把插件行插入 profile 插件树
-  ai-webnovel-composer-host/    # PLUGIN  @ai-webnovel/composer-host
-    src/core/                   #   纯领域逻辑：类型、状态、细纲校验、指标规则、
-                                #   兑现回报、复盘组装、工作区判定
-    src/host/                   #   ctx.fs 存储、按会话解析、工作区视图、
-                                #   提示词片段、工具注册
-    src/client/                 #   Web 界面的两个视图（看板 + 右侧栏标签页），
-                                #   构建为 lib/client.js
-    src/index.ts                #   Cordis 插件本体（name / inject / Config / apply）
+  novelist-bundle/                # BUNDLE  @ai-novelist/novelist-bundle
+    cordis.patch.yml              #   把插件行插入 profile 插件树
+  novelist-skill/                 # PLUGIN  @ai-novelist/novelist-skill
+    src/core/                     #   纯领域逻辑：类型、状态、细纲校验、指标规则、
+                                  #   兑现回报、复盘组装、工作区判定
+    src/host/                     #   ctx.fs 存储、按会话解析、工作区视图、
+                                  #   提示词片段、工具注册
+    src/client/                   #   Web 界面的两个视图（看板 + 右侧栏标签页），
+                                  #   构建为 lib/client.js
+    src/index.ts                  #   Cordis 插件本体（name / inject / Config / apply）
 ```
 
-目录名与包名一一对应：插件是 `@ai-webnovel/composer-host`，所以放在
-`packages/ai-webnovel-composer-host`；bundle 是 `@ai-webnovel/composer`，所以放在
-`packages/ai-webnovel-composer`。
+目录名与包名一一对应：插件是 `@ai-novelist/novelist-skill`，所以放在
+`packages/novelist-skill`；bundle 是 `@ai-novelist/novelist-bundle`，所以放在
+`packages/novelist-bundle`。
 
 之所以拆成两个包：bundle 的 patch 只能「插入一行、行里写着插件包名」，而一个包无法为
 自己插入一行。
 
 host 包另有一份开发者参考
-[`packages/ai-webnovel-composer-host/README.md`](packages/ai-webnovel-composer-host/README.md)：
+[`packages/novelist-skill/README.md`](packages/novelist-skill/README.md)：
 模块地图、schema v3 数据模型，以及贡献者不能破坏的几条不变量。
 
 ## 小说存放在哪里
@@ -221,7 +221,7 @@ rm -rf <那个目录>/.novel
 
 ```yaml
 # 你的 profile 的 cordis.patch.yml
-- id: ai-webnovel-composer
+- id: ai-novelist
   config:
     workspaceRoot: /Users/me/novels/qingyun   # session 未记录 cwd 时的回退
     workspaceMode: signal                     # signal（默认）| auto | novel | off
@@ -242,9 +242,9 @@ rm -rf <那个目录>/.novel
 `pnpm run dist` 会先构建、再在 `dist/` 下产出两个分发包，两者携带**同一套九个工具**——工具代码
 一律从本仓库构建产物复制，不重写。
 
-### 一、DSH plugin 分发包 —— `dist/dsh-plugin/ai-webnovel-composer-<版本>.tgz`
+### 一、DSH plugin 分发包 —— `dist/dsh-plugin/ai-novelist-<版本>.tgz`
 
-**一个 tarball，一个包。** `@ai-webnovel/composer` 同时是 bundle、plugin 与浏览器半边：
+**一个 tarball，一个包。** `@ai-novelist/novelist-bundle` 同时是 bundle、plugin 与浏览器半边：
 
 - 它声明了 `dsh.bundle.patch`，这正是 DSH 把它追加进 `dsh.profile.bundles` 的依据；
 - 它的根导出（以及 `./host` 别名）就是注册九个工具的那个模块；
@@ -252,27 +252,27 @@ rm -rf <那个目录>/.novel
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-webnovel-composer-0.1.0.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.1.0.tgz
 ```
 
 tarball 里带着构建好的 `lib/`，所以目标机器只需要 Node 和 DSH——不用连仓库、不用联网安装、
 也不用现场构建。
 
 > **它满足的两条约束都是实测换来的。** 第一，patch 的行名必须是**裸包名**：客户端扫描器用
-> "精确包名"规则推导包根，行名写成 `@ai-webnovel/composer/host` 虽然能解析插件，却会让浏览器
+> "精确包名"规则推导包根，行名写成 `@ai-novelist/novelist-bundle/host` 虽然能解析插件，却会让浏览器
 > 半边**静默地**不进启动清单。第二，分发包必须是**一个**包：pnpm 的 tarball 安装只认压缩包内的
 > 一个包——嵌套的 `file:./sub` 报 `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`，而并列两个包
 > （`file:../sibling`）实测只解出其中一个。源码仓库保留两个包，因为它们由不同工具构建、面向不同
 > 目标；只有分发时合并，并且打包步骤会重建浏览器半边，让它的注册 id 与出厂的包名一致。
 
-### 二、SKILL 标准分发包 —— `dist/skill/ai-webnovel-composer/`
+### 二、SKILL 标准分发包 —— `dist/skill/ai-novelist/`
 
 一个可移植的 Agent Skill 目录包：`SKILL.md` 带 DSH 文件系统 provider 会解析的 frontmatter 与
 **全部九个工具的清单表**，`references/` 放工作流、工具参考与由代码生成的阈值，`scripts/` 放安装
 脚本，`tools/` 放与分发包一相同的那个包。
 
 ```sh
-node dist/skill/ai-webnovel-composer/scripts/setup.mjs --profile web
+node dist/skill/ai-novelist/scripts/setup.mjs --profile web
 ```
 
 把整个目录放进任一被扫描的 skill 根目录即可被发现——项目级用 `<git 根>/.dsh/skills/` 或

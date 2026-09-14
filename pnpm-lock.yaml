@@ -21,11 +21,11 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.4)(vite@8.3.0(@types/node@24.13.4)(yaml@2.9.1))
 
-  packages/ai-webnovel-composer:
+  packages/novelist-bundle:
     dependencies:
-      '@ai-webnovel/composer-host':
+      '@ai-novelist/novelist-skill':
         specifier: workspace:*
-        version: link:../ai-webnovel-composer-host
+        version: link:../novelist-skill
     devDependencies:
       vitest:
         specifier: 4.1.11
@@ -34,7 +34,7 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
 
-  packages/ai-webnovel-composer-host:
+  packages/novelist-skill:
     dependencies:
       '@deepseek-ai/schemastery':
         specifier: 3.18.2

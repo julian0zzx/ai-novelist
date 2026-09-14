@@ -6,11 +6,11 @@
  * checkout's build, never re-implemented — but they answer different questions:
  *
  * 1. **DSH plugin distribution** (`dist/dsh-plugin/`): one tarball, one package.
- *    `@ai-webnovel/composer` is simultaneously the profile bundle (it declares
+ *    `@ai-novelist/novelist-bundle` is simultaneously the profile bundle (it declares
  *    `dsh.bundle.patch`), the plugin (its root and `./host` exports resolve to
  *    the module that registers the tools) and the browser half (`./client`).
  *
- * 2. **SKILL distribution** (`dist/skill/ai-webnovel-composer/`): the portable
+ * 2. **SKILL distribution** (`dist/skill/ai-novelist/`): the portable
  *    Agent Skill bundle. `SKILL.md` carries the frontmatter DSH's filesystem
  *    provider parses and a table of all nine tools, `references/` holds the
  *    workflow and the generated tool/threshold references, `scripts/` holds the
@@ -39,25 +39,25 @@ const ROOT = resolve(HERE, '..')
 const DIST = join(ROOT, 'dist')
 
 /** Package directories, by the role they play in the build. */
-const BUNDLE_DIR = join(ROOT, 'packages', 'ai-webnovel-composer')
-const HOST_DIR = join(ROOT, 'packages', 'ai-webnovel-composer-host')
+const BUNDLE_DIR = join(ROOT, 'packages', 'novelist-bundle')
+const HOST_DIR = join(ROOT, 'packages', 'novelist-skill')
 
 /**
  * The shipped package name, which is also the patch row's name.
  *
  * The row must name the *bare package*: the client-half scanner derives a
  * package root with `exactPackageSpecifier(row.name)`, which returns `undefined`
- * for anything carrying a subpath, so a row named `@ai-webnovel/composer/host`
+ * for anything carrying a subpath, so a row named `@ai-novelist/novelist-bundle/host`
  * resolves the plugin but leaves the browser half out of the boot graph. The
  * root export is therefore the plugin module, and `./host` remains as an alias.
  */
-const PACKAGE_NAME = '@ai-webnovel/composer'
+const PACKAGE_NAME = '@ai-novelist/novelist-bundle'
 
 /** The staged directory name inside the tarball. */
-const STAGE_NAME = 'ai-webnovel-composer'
+const STAGE_NAME = 'ai-novelist'
 
 /** The development package that builds the plugin, named for the filter. */
-const HOST_PACKAGE_NAME = '@ai-webnovel/composer-host'
+const HOST_PACKAGE_NAME = '@ai-novelist/novelist-skill'
 
 /** The nine tools every distribution must carry. */
 const EXPECTED_TOOLS = [
@@ -245,7 +245,7 @@ async function packPluginDistribution(version) {
   // package exactly like a bare name (verified against Node's resolver).
   const patchSource = await readFile(join(BUNDLE_DIR, 'cordis.patch.yml'), 'utf8')
   const patch = patchSource
-    .replace(/name: '@ai-webnovel\/composer-host'/u, `name: '${PACKAGE_NAME}'`)
+    .replace(/name: '@ai-novelist\/novelist-skill'/u, `name: '${PACKAGE_NAME}'`)
     .replace(/^# The AI Web Novel Composer bundle patch\./mu, '# The AI Web Novel Composer distribution patch.')
   if (!patch.includes(`name: '${PACKAGE_NAME}'`)) {
     throw new Error(`pack: the distribution patch does not name ${PACKAGE_NAME}`)
@@ -259,7 +259,7 @@ async function packPluginDistribution(version) {
   await cp(join(HOST_DIR, 'README.md'), join(stage, 'README.md'))
   await writeFile(join(stage, 'INSTALL.md'), installNotes(version), 'utf8')
 
-  const tarball = join(outDir, `ai-webnovel-composer-${version}.tgz`)
+  const tarball = join(outDir, `ai-novelist-${version}.tgz`)
   execFileSync('tar', ['-czf', tarball, '-C', join(outDir, 'stage'), STAGE_NAME])
   return { tarball, bytes: (await stat(tarball)).size, digest: hashDirectory(stage) }
 }
@@ -311,7 +311,7 @@ function restoreDevelopmentBuild() {
  * @returns the Markdown document.
  */
 function installNotes(version) {
-  return `# ai-webnovel-composer — DSH plugin distribution (v${version})
+  return `# ai-novelist — DSH plugin distribution (v${version})
 
 **One package, both faces.** \`${PACKAGE_NAME}\` is simultaneously:
 
@@ -330,7 +330,7 @@ different tools for different targets; only the distribution merges them.
 ## Install
 
 \`\`\`sh
-dsh plugin --profile web add -w ./ai-webnovel-composer-${version}.tgz
+dsh plugin --profile web add -w ./ai-novelist-${version}.tgz
 \`\`\`
 
 The \`-w\` flag is required: a profile directory is itself a pnpm workspace root,
@@ -351,7 +351,7 @@ your session's model by default; to pin reviews to something cheaper or stronger
 add to the profile's row:
 
 \`\`\`yaml
-- id: ai-webnovel-composer
+- id: ai-novelist
   name: ${PACKAGE_NAME}
   config:
     reviewProvider: deepseek
@@ -365,10 +365,10 @@ writes its full transcript to \`.novel/reviews/\` beside the project.
 ## Verify
 
 \`\`\`sh
-dsh --profile web --dump-config | grep -A2 ai-webnovel
+dsh --profile web --dump-config | grep -A2 ai-novelist
 \`\`\`
 
-Expect a row \`id: ai-webnovel-composer\` naming \`${PACKAGE_NAME}\`.
+Expect a row \`id: ai-novelist\` naming \`${PACKAGE_NAME}\`.
 
 ## Remove
 
@@ -396,7 +396,7 @@ The workflow they implement is \`docs/sop.md\` in the source repository.
  */
 function skillDocument(version) {
   return `---
-name: ai-webnovel-composer
+name: ai-novelist
 description: Plan, validate, write, and iterate a Chinese web novel (网文) with the 爆款网文 SOP — a gated pipeline from premise and competitor study through validation, serialization, metrics-driven iteration, and retrospective. Use when the user wants to start, continue, validate, or troubleshoot a web novel, or asks about 追读/首订/开篇/大纲/伏笔 for one.
 whenToUse: The user mentions a web novel, 网文, 追读/首订/三章读完, 开篇, 细纲, 伏笔, or asks to continue a novel project in this workspace.
 license: MIT
@@ -514,13 +514,13 @@ plugin is not installed in the profile that session runs under.
 }
 
 /**
- * Build `dist/skill/ai-webnovel-composer/`: the portable Agent Skill bundle.
+ * Build `dist/skill/ai-novelist/`: the portable Agent Skill bundle.
  *
  * @param version - the version string.
  * @returns the bundle directory and its content digest.
  */
 async function packSkillDistribution(version) {
-  const target = join(DIST, 'skill', 'ai-webnovel-composer')
+  const target = join(DIST, 'skill', 'ai-novelist')
   await rm(join(DIST, 'skill'), { recursive: true, force: true })
   await mkdir(target, { recursive: true })
 
@@ -597,7 +597,7 @@ try {
 }
 console.log('')
 console.log('setup: installed. Restart the DSH process; the tool set is fixed at boot.')
-console.log(\`setup: verify with  dsh --profile \${profile} --dump-config | grep -A2 ai-webnovel\`)
+console.log(\`setup: verify with  dsh --profile \${profile} --dump-config | grep -A2 ai-novelist\`)
 `
 }
 

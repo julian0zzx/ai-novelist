@@ -19,19 +19,19 @@ different value of that field.
 This repo uses all three, spread over two packages:
 
 ```
-@ai-webnovel/composer        → bundle      (packages/ai-webnovel-composer)
-@ai-webnovel/composer-host   → plugin + client (packages/ai-webnovel-composer-host)
+@ai-novelist/novelist-bundle  → bundle      (packages/novelist-bundle)
+@ai-novelist/novelist-skill   → plugin + client (packages/novelist-skill)
 ```
 
 ### Naming
 
 Three different strings are in play, and conflating them is the easiest mistake to make
-here. The plugin's *name* is `ai-webnovel-composer` — that is the Cordis plugin name and the
-loader row id. The plugin's *package* is `@ai-webnovel/composer-host`. The *bundle* package
-— the one an install command names — is `@ai-webnovel/composer`.
+here. The plugin's *name* is `ai-novelist` — that is the Cordis plugin name and the
+loader row id. The plugin's *package* is `@ai-novelist/novelist-skill`. The *bundle* package
+— the one an install command names — is `@ai-novelist/novelist-bundle`.
 
 ```sh
-dsh plugin --profile web add -w "$(pwd)/packages/ai-webnovel-composer"
+dsh plugin --profile web add -w "$(pwd)/packages/novelist-bundle"
 #                               └── directory of the BUNDLE package
 ```
 
@@ -41,7 +41,7 @@ plugin's name and cannot be shortened to one. `-w` (`--workspace-root`) is requi
 the profile directory is itself a pnpm workspace root — it carries a `pnpm-workspace.yaml`
 next to its `package.json`, and pnpm refuses to add a dependency to a workspace root without
 it. The plugin itself is pulled in as the bundle's dependency and loaded under the row id
-`ai-webnovel-composer`.
+`ai-novelist`.
 
 ### Why the bundle is a separate package
 
@@ -56,15 +56,15 @@ package cannot itself be the bundle: a package cannot depend on itself, and the 
 would not find a row pointing at a package that is not installed.
 
 ```
-profile package.json  dsh.profile.bundles: [… , '@ai-webnovel/composer']
+profile package.json  dsh.profile.bundles: [… , '@ai-novelist/novelist-bundle']
         │
         ▼  compose cordis.patch.yml
    - insert:
-       - id: ai-webnovel-composer
-         name: '@ai-webnovel/composer-host'   ← resolved from the profile's node_modules
+       - id: ai-novelist
+         name: '@ai-novelist/novelist-skill'   ← resolved from the profile's node_modules
         │
         ▼  Loader mounts the row
-   @ai-webnovel/composer-host  →  apply(ctx, config)
+   @ai-novelist/novelist-skill  →  apply(ctx, config)
 ```
 
 The bundle package therefore contains almost nothing: a manifest, a patch document, and a
@@ -74,7 +74,7 @@ it behave.
 
 ## Layering inside the plugin
 
-Inside `composer-host`, the three layers exist so that the interesting rules can be tested
+Inside `novelist-skill`, the three layers exist so that the interesting rules can be tested
 without booting a harness, and so that the file-access rules exist in exactly one place.
 
 ```
@@ -675,7 +675,7 @@ register a CommonJS-style factory, exactly like every shipped `dsh-client-ui-*` 
 
 ```js
 window.__ModuleLoader__.load({
-  id: '@ai-webnovel/composer-host',
+  id: '@ai-novelist/novelist-skill',
   factory: (require) => { var module = {exports:{}}; /* … */ return module.exports },
 })
 ```
@@ -740,7 +740,7 @@ when this was written, and `pnpm test` prints the current count). It covers:
   whole-book prose totals, unwritten cards, unanswered contract fields versus waived ones,
   and the empty project (`test/board.test.ts`),
 - the patch document, its ids, and that every row it inserts is a declared dependency
-  (`packages/ai-webnovel-composer/test/patch.test.ts`).
+  (`packages/novelist-bundle/test/patch.test.ts`).
 
 There is also a fixture generator for looking at the surfaces by hand:
 `pnpm run fixture <dir>` writes a schema-3 project with chapters in all four columns, an

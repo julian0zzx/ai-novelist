@@ -16,12 +16,12 @@
 
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
-import { decomposeContent } from '../packages/ai-webnovel-composer-host/src/core/content.ts'
-import { hashContent } from '../packages/ai-webnovel-composer-host/src/core/markdown.ts'
-import { emptyNovel, serializeMetadata } from '../packages/ai-webnovel-composer-host/src/core/novel.ts'
-import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from '../packages/ai-webnovel-composer-host/src/core/paths.ts'
-import { metadataOf } from '../packages/ai-webnovel-composer-host/src/core/novel.ts'
-import type { Chapter, ChapterStatus, NovelState, StoryLink } from '../packages/ai-webnovel-composer-host/src/core/types.ts'
+import { decomposeContent } from '../packages/novelist-skill/src/core/content.ts'
+import { hashContent } from '../packages/novelist-skill/src/core/markdown.ts'
+import { emptyNovel, serializeMetadata } from '../packages/novelist-skill/src/core/novel.ts'
+import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from '../packages/novelist-skill/src/core/paths.ts'
+import { metadataOf } from '../packages/novelist-skill/src/core/novel.ts'
+import type { Chapter, ChapterStatus, NovelState, StoryLink } from '../packages/novelist-skill/src/core/types.ts'
 
 /** Chapters to place: number, title, status, prose length, and contract answers. */
 const CHAPTERS: readonly {

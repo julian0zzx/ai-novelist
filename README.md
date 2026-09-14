@@ -1,4 +1,4 @@
-# ai-webnovel-composer
+# ai-novelist
 
 English | [中文](README.zh.md)
 
@@ -98,7 +98,7 @@ From the DSH profile you want the composer in (`web` for the browser GUI):
 
 ```sh
 pnpm install                      # in this repo, once
-dsh plugin --profile web add -w "$(pwd)/packages/ai-webnovel-composer"
+dsh plugin --profile web add -w "$(pwd)/packages/novelist-bundle"
 ```
 
 `-w` is not optional. `dsh plugin` forwards everything after `add` verbatim to pnpm running
@@ -106,59 +106,59 @@ in the profile directory, and that directory is itself a pnpm workspace root (it
 `pnpm-workspace.yaml` sits next to its `package.json`), so pnpm only accepts a new dependency
 there with `--workspace-root`.
 
-`dsh plugin add` then reconciles `dsh.profile.bundles`: because `@ai-webnovel/composer`
+`dsh plugin add` then reconciles `dsh.profile.bundles`: because `@ai-novelist/novelist-bundle`
 declares `dsh.bundle.patch`, it joins the profile's layer stack automatically. Restart
 `dsh web`; the eight computing tools appear in the next session, `novel_review` joins them
 wherever a model is available, and the composer tab appears in the sidebar guide.
 
 That trailing spec is a **package name, not a command name** — `dsh plugin` forwards
-everything after it to pnpm, so it must be something pnpm resolves. `@ai-webnovel/composer`
-is the *bundle* (npm scope `@ai-webnovel`, package `composer`); the *plugin* it pulls in is
-`@ai-webnovel/composer-host`, loaded under the row id `ai-webnovel-composer`.
+everything after it to pnpm, so it must be something pnpm resolves. `@ai-novelist/novelist-bundle`
+is the *bundle* (npm scope `@ai-novelist`, package `composer`); the *plugin* it pulls in is
+`@ai-novelist/novelist-skill`, loaded under the row id `ai-novelist`.
 
 Verify the composition without booting a session:
 
 ```sh
-dsh --profile web --dump-config | grep -A2 ai-webnovel
+dsh --profile web --dump-config | grep -A2 ai-novelist
 ```
 
 To remove it again:
 
 ```sh
-dsh plugin --profile web remove -w @ai-webnovel/composer
+dsh plugin --profile web remove -w @ai-novelist/novelist-bundle
 ```
 
 > **Working on the plugin itself?** After editing source, `pnpm run build` (or
-> `pnpm --filter @ai-webnovel/composer-host run build --watch`); the profile links this
+> `pnpm --filter @ai-novelist/novelist-skill run build --watch`); the profile links this
 > checkout, so a rebuild is enough for the host half. The browser half is served from
-> `packages/ai-webnovel-composer-host/lib/client.js` and needs a page refresh. The profile
+> `packages/novelist-skill/lib/client.js` and needs a page refresh. The profile
 > loads `lib/`, so a booted `dsh web` keeps the last built tools until you rebuild.
 
 ## Layout
 
 ```
 packages/
-  ai-webnovel-composer/         # BUNDLE  @ai-webnovel/composer
-    cordis.patch.yml            #   inserts the plugin row into the profile tree
-  ai-webnovel-composer-host/    # PLUGIN  @ai-webnovel/composer-host
-    src/core/                   #   pure domain: types, state, plan checks, metric rules,
-                                #   delivery reports, retrospectives, workspace policy
-    src/host/                   #   ctx.fs store, session resolver, workspace views,
-                                #   prompt section, tools
-    src/client/                 #   the two Web UI surfaces, built to lib/client.js:
-                                #   the Kanban view and the right-Sidebar tab they share
-    src/index.ts                #   the Cordis plugin (name / inject / Config / apply)
+  novelist-bundle/                # BUNDLE  @ai-novelist/novelist-bundle
+    cordis.patch.yml              #   inserts the plugin row into the profile tree
+  novelist-skill/                 # PLUGIN  @ai-novelist/novelist-skill
+    src/core/                     #   pure domain: types, state, plan checks, metric rules,
+                                  #   delivery reports, retrospectives, workspace policy
+    src/host/                     #   ctx.fs store, session resolver, workspace views,
+                                  #   prompt section, tools
+    src/client/                   #   the two Web UI surfaces, built to lib/client.js:
+                                  #   the Kanban view and the right-Sidebar tab they share
+    src/index.ts                  #   the Cordis plugin (name / inject / Config / apply)
 ```
 
-Directory names mirror the package names: the plugin is `@ai-webnovel/composer-host`, so it
-lives in `packages/ai-webnovel-composer-host`; the bundle is `@ai-webnovel/composer`, so it
-lives in `packages/ai-webnovel-composer`.
+Directory names mirror the package names: the plugin is `@ai-novelist/novelist-skill`, so it
+lives in `packages/novelist-skill`; the bundle is `@ai-novelist/novelist-bundle`, so it
+lives in `packages/novelist-bundle`.
 
 Two packages, because a bundle's patch inserts a *row* naming a plugin package and a
 package cannot insert a row for itself.
 
 The host package has its own developer reference —
-[`packages/ai-webnovel-composer-host/README.md`](packages/ai-webnovel-composer-host/README.md) —
+[`packages/novelist-skill/README.md`](packages/novelist-skill/README.md) —
 with the module map, the schema-v3 data model, and the invariants a contributor must keep.
 
 ## Where the novel lives
@@ -263,7 +263,7 @@ regardless of detection:
 
 ```yaml
 # your profile's cordis.patch.yml
-- id: ai-webnovel-composer
+- id: ai-novelist
   config:
     workspaceRoot: /Users/me/novels/qingyun   # fallback when a session records no cwd
     workspaceMode: signal                     # signal (default) | auto | novel | off
@@ -286,9 +286,9 @@ registered, so a profile without a model keeps eight working tools instead of ni
 `pnpm run dist` builds and then produces two distributions in `dist/`, both carrying the
 same nine tools — the tool code is copied from this checkout, never re-implemented.
 
-### 1. DSH plugin distribution — `dist/dsh-plugin/ai-webnovel-composer-<version>.tgz`
+### 1. DSH plugin distribution — `dist/dsh-plugin/ai-novelist-<version>.tgz`
 
-**One tarball, one package.** `@ai-webnovel/composer` is simultaneously the bundle, the
+**One tarball, one package.** `@ai-novelist/novelist-bundle` is simultaneously the bundle, the
 plugin and the browser half:
 
 - it declares `dsh.bundle.patch`, which is what makes DSH append it to `dsh.profile.bundles`;
@@ -297,7 +297,7 @@ plugin and the browser half:
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-webnovel-composer-0.1.0.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.1.0.tgz
 ```
 
 The tarball carries the built `lib/`, so a target machine needs only Node and DSH — no
@@ -305,7 +305,7 @@ registry, no network install, no build step.
 
 > **Two constraints the packaging satisfies, both learned by testing.** First, the patch
 > row must name the **bare package**: the client-half scanner derives a package root with
-> an exact-name rule, so a row named `@ai-webnovel/composer/host` resolves the plugin but
+> an exact-name rule, so a row named `@ai-novelist/novelist-bundle/host` resolves the plugin but
 > silently leaves the browser half out of the boot graph. Second, the distribution has to
 > be **one** package: pnpm's tarball install understands exactly one package per archive,
 > so both a nested `file:./sub` (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`) and two side-by-side
@@ -314,7 +314,7 @@ registry, no network install, no build step.
 > different targets; only the distribution merges them, and the pack step rebuilds the
 > browser half so its registration id matches the shipped package name.
 
-### 2. SKILL distribution — `dist/skill/ai-webnovel-composer/`
+### 2. SKILL distribution — `dist/skill/ai-novelist/`
 
 A portable Agent Skill bundle: `SKILL.md` with the frontmatter DSH's filesystem provider
 parses and a table of all nine tools, `references/` with the workflow, the tool reference
@@ -322,7 +322,7 @@ and the generated thresholds, `scripts/` with the installer, and `tools/` carryi
 package as distribution 1.
 
 ```sh
-node dist/skill/ai-webnovel-composer/scripts/setup.mjs --profile web
+node dist/skill/ai-novelist/scripts/setup.mjs --profile web
 ```
 
 Copy the directory into any scanned skill root to make it discoverable — for a project,
