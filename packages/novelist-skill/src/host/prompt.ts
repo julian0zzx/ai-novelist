@@ -24,7 +24,15 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
-import { assessReading, assessStage, progressOf, stageLabel } from '../core/index.ts'
+import {
+  assessReading,
+  assessStage,
+  describeWritingPlan,
+  emptyWriting,
+  progressOf,
+  stageLabel,
+  writingPlanGaps,
+} from '../core/index.ts'
 import { describeVerdict, type WorkspaceVerdict } from '../core/workspace.ts'
 import type { NovelStore } from './store.ts'
 import type { SessionRef, WorkspaceView, WorkspaceViews } from './views.ts'
@@ -69,6 +77,10 @@ export interface NovelSnapshot {
   readonly overdueLinks: number
   /** The latest metric reading's verdict, one line per failing metric. */
   readonly metricNotes: readonly string[]
+  /** The length plan in one line: 总字数 · 单章字数 · 卷数. */
+  readonly planSummary: string
+  /** Length questions still unanswered, phrased as what to ask the user. */
+  readonly planGaps: readonly string[]
   /** Reading position of the last planned chapter. */
   readonly lastNumber: number
   /** Title of the last planned chapter. */
@@ -133,6 +145,8 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
             : assessReading(latest, state.baselines)
                 .filter((entry) => entry.passed === false)
                 .map((entry) => entry.note),
+        planSummary: describeWritingPlan(state.writing),
+        planGaps: writingPlanGaps(state.writing).map((gap) => gap.requirement),
         lastNumber: last?.number ?? 0,
         lastTitle: last?.title ?? '',
         lastStatus: last?.status ?? 'planned',
@@ -158,6 +172,8 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
           openLinks: 0,
           overdueLinks: 0,
           metricNotes: [],
+          planSummary: describeWritingPlan(emptyWriting()),
+          planGaps: [],
           lastNumber: 0,
           lastTitle: '',
           lastStatus: 'planned',
@@ -196,17 +212,22 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'world and promises with novel_bible, validate with novel_verify before committing to a full outline, write with '
     + 'novel_write (reporting which contract fields the draft delivered), and drive iteration with novel_metrics. '
     + 'A soft gate never blocks you, but when a result carries warnings the SOP and your position disagree — say so '
-    + 'to the user instead of silently proceeding.',
+    + 'to the user instead of silently proceeding. If the length plan (总字数 / 单章字数 / 是否分卷) is still '
+    + 'unanswered, ask the user before planning chapters: those numbers are theirs to give, not yours to assume.',
   fresh:
-    'This workspace is where a novel is being started. Call novel_init once, with the title, premise and platform, and '
-    + 'the same-genre medians you can find — without those medians the SOP thresholds cannot run. Then follow the '
-    + 'pipeline: novel_plan for the pitch and the competitor study, novel_bible for the cast, and only then prose.',
+    'This workspace is where a novel is being started. Before calling novel_init, ask the user for the length plan — '
+    + '总字数, 单章字数, and 是否分卷/分几卷 (offer common tiers as choices; never pick a number for them) — because those '
+    + 'answers are what every later length check is measured against. Call novel_init once, with the title, premise, '
+    + 'platform, those answers and the same-genre medians you can find — without the medians the SOP thresholds cannot '
+    + 'run, and without the length answers no chapter length can be checked. Then follow the pipeline: novel_plan for '
+    + 'the pitch and the competitor study, novel_bible for the cast, and only then prose.',
   plain:
     'This workspace is not a novel project, so the composer tools are idle. Do not create a novel project here '
     + 'unless the user asks you to start one in this directory. When the user does ask — "write a novel here", '
-    + '"给我 300 字大纲", "整理这本书的创意", "建立小说项目" — call novel_init first and record what they told you '
-    + '(title, premise, platform, mode, audience); the project document is what makes the tools, this section and the '
-    + 'board real. Then plan with novel_plan before writing any prose.',
+    + '"给我 300 字大纲", "整理这本书的创意", "建立小说项目" — ask them for the length plan first (总字数、单章字数、'
+    + '是否分卷/分几卷; offer common tiers as choices, never invent the numbers), then call novel_init with what they '
+    + 'told you (title, premise, platform, mode, audience, and the length answers); the project document is what makes '
+    + 'the tools, this section and the board real. Then plan with novel_plan before writing any prose.',
 }
 
 /**
@@ -280,6 +301,10 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
   if (verdict.kind === 'novel') {
     if (snapshot === undefined) {
       lines.push('The project document is present but empty; call novel_init to record the premise.')
+      lines.push(
+        'Ask the user for the length plan (总字数 / 单章字数 / 是否分卷) and pass it to novel_init: those numbers decide '
+        + 'what every later length check is measured against, and the tool never invents them.',
+      )
     } else {
       lines.push(
         `Novel: "${snapshot.title || '(untitled)'}" — ${snapshot.premise || '(no premise recorded)'}`,
@@ -289,9 +314,15 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
           + `${String(snapshot.stock)} in stock); ${String(snapshot.characters)} cast and `
           + `${String(snapshot.worldFacts)} world facts recorded.`,
         `Promises outstanding: ${String(snapshot.openLinks)} (${String(snapshot.overdueLinks)} past their due chapter).`,
+        `Writing plan: ${snapshot.planSummary}.`,
         snapshot.chapters === 0
           ? 'No chapters are planned yet; start with novel_plan operation="chapter".'
           : `Latest chapter: #${String(snapshot.lastNumber)} "${snapshot.lastTitle}" (${snapshot.lastStatus}).`,
+      )
+    }
+    if (snapshot !== undefined && snapshot.planGaps.length > 0) {
+      lines.push(
+        `Length questions still unanswered — ask the user, do not assume: ${snapshot.planGaps.join('；')}`,
       )
     }
     if (snapshot !== undefined && snapshot.blockers.length > 0) {

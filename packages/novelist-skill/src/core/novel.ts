@@ -326,9 +326,12 @@ export function emptyWriting(): WritingPlan {
   return {
     language: 'zh-CN',
     pov: 'third-limited',
-    volumes: 0,
+    // The length questions start unanswered, which is why `volumes` is -1 and
+    // not 0: 0 is the author's "不分卷" answer, a different fact entirely.
+    volumes: -1,
     totalChapters: 0,
     targetWords: 0,
+    chapterWords: 0,
     chapterPlanWindow: 15,
     openingGateChapters: [3, 10],
     stockTargetChapters: 10,
@@ -601,12 +604,19 @@ function readWriting(value: unknown, meta: NovelMeta): WritingPlan {
   const base = emptyWriting()
   if (!isRecord(value)) return { ...base, language: meta.language, pov: meta.pov }
   const gates = readNumberArray(value, 'openingGateChapters')
+  const volumes = readNumber(value, 'volumes', base.volumes)
+  // Documents written before the length questions existed carry `volumes: 0` as
+  // an untouched default that was never an answer. With no `chapterWords` field
+  // at all, a zero there reads as "not asked yet" so the question gets asked
+  // rather than being silently recorded as the author's 不分卷 decision.
+  const legacy = value['chapterWords'] === undefined
   return {
     language: readString(value, 'language', meta.language),
     pov: readString(value, 'pov', meta.pov),
-    volumes: readNumber(value, 'volumes', 0),
+    volumes: legacy && volumes === 0 ? -1 : volumes,
     totalChapters: readNumber(value, 'totalChapters', 0),
     targetWords: readNumber(value, 'targetWords', 0),
+    chapterWords: readNumber(value, 'chapterWords', 0),
     chapterPlanWindow: readNumber(value, 'chapterPlanWindow', base.chapterPlanWindow),
     openingGateChapters: gates.length > 0 ? gates : base.openingGateChapters,
     stockTargetChapters: readNumber(value, 'stockTargetChapters', base.stockTargetChapters),

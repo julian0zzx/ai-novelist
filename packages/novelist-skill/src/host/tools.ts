@@ -32,12 +32,14 @@ import {
   BEAT_KINDS,
   CHAPTER_STATUSES,
   CONTRACT_FIELDS,
+  LENGTH_BENCHMARKS,
   LINK_STATUSES,
   METRIC_KEYS,
   PLATFORM_AUDIENCES,
   PLATFORM_MODES,
   REVIEW_KINDS,
   REVIEW_PROMPT_VERSION,
+  WRITING_PLAN_QUESTIONS,
   NovelInputError,
   addIteration,
   addReading,
@@ -55,16 +57,19 @@ import {
   buildTemplate,
   calibrationAge,
   castGaps,
+  chaptersPerVolume,
   complianceChecklist,
   contractGaps,
   contractRows,
   countIneffectiveIterations,
+  describeWritingPlan,
   emptyNovel,
   iterationRules,
   judgeIteration,
   lessonPrompts,
   missingContract,
   normalizeId,
+  normalizeWritingPlan,
   openingPackageGaps,
   parseReviewOutput,
   progressOf,
@@ -73,6 +78,7 @@ import {
   renderManuscript,
   renderReview,
   resolveChapterId,
+  rhythmExpectation,
   setOpeningCheck,
   stageLabel,
   styleObservations,
@@ -90,7 +96,10 @@ import {
   upsertVolume,
   upsertWorld,
   verdictFromAssessments,
+  volumeLengthNote,
   worldGaps,
+  writingPlanConflicts,
+  writingPlanGaps,
   type Clock,
   type Lesson,
   type MetricKey,
@@ -313,6 +322,11 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         'Establish or complete the novel project in this workspace: premise, commercial frame (platform, mode, audience, '
         + 'genre, target readers, monetization), the calibration medians every later metric is compared against, and the '
         + 'writing parameters (outline window, opening gate chapters, stock target, outline ceiling). '
+        + 'The length numbers — targetWords, chapterWords and volumes — are NOT yours to invent: ask the user for all '
+        + 'three before or while calling this tool (offer LENGTH_BENCHMARKS-style tiers as choices), and pass what they '
+        + 'said. Missing answers are recorded, reported back as a checklist, and repeated by the runtime context every '
+        + 'step until they are settled. totalChapters is derived from targetWords ÷ chapterWords when the user does not '
+        + 'state it. '
         + 'Call it once at the start, and again whenever the commercial frame changes — it never resets recorded work, and '
         + 'it refuses to overwrite a premise that already exists (use novel_plan operation="pitch" for that). '
         + 'The baselines are the load-bearing part: without same-genre medians over the last 30 days, the SOP threshold '
@@ -328,9 +342,30 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         monetization: { type: 'string', description: 'How the novel is expected to earn.' },
         language: { type: 'string', description: 'Prose language, for example zh-CN.' },
         pov: { type: 'string', description: 'Point of view, for example third-limited.' },
-        targetWords: { type: 'integer', description: 'Planned total length in characters.' },
-        totalChapters: { type: 'integer', description: 'Planned total chapters.' },
-        volumes: { type: 'integer', description: 'Planned volumes.' },
+        targetWords: {
+          type: 'integer',
+          description: 'Planned total length in characters. Ask the user; never guess. An unanswered question stays 0.',
+        },
+        chapterWords: {
+          type: 'integer',
+          description:
+            'Target length of one chapter in characters. Ask the user; chapters planned without their own target '
+            + 'inherit this, and novel_write checks the draft against it (±15%).',
+        },
+        totalChapters: {
+          type: 'integer',
+          description: 'Planned total chapters. Optional: derived from targetWords ÷ chapterWords when omitted.',
+        },
+        volumes: {
+          type: 'integer',
+          description:
+            'Planned volumes. Ask "分卷吗？分几卷？": 0 is the explicit answer 不分卷（单卷到底）, and omitting it '
+            + 'means the question is still unanswered (-1).',
+        },
+        chaptersPerVolume: {
+          type: 'integer',
+          description: 'Chapters per volume, when the user answered in that shape instead of a volume count.',
+        },
         updateRhythm: { type: 'string', description: 'Update rhythm, for example daily-2.' },
         chapterPlanWindow: { type: 'integer', description: 'Chapters of detailed outline kept ahead of the prose.' },
         openingGateChapters: {
@@ -412,6 +447,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             state,
             {
               ...(args.targetWords !== undefined && { targetWords: args.targetWords }),
+              ...(args.chapterWords !== undefined && { chapterWords: args.chapterWords }),
               ...(args.totalChapters !== undefined && { totalChapters: args.totalChapters }),
               ...(args.volumes !== undefined && { volumes: args.volumes }),
               ...(args.updateRhythm !== undefined && { updateRhythm: args.updateRhythm }),
@@ -422,6 +458,13 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             },
             now,
           )
+          // Derive only forward, and only what the answers imply: total chapters
+          // from total length ÷ chapter length, volumes from a chapters-per-volume
+          // answer. A stated answer is never overwritten.
+          const plan = normalizeWritingPlan(state.writing, {
+            ...(args.chaptersPerVolume !== undefined && { chaptersPerVolume: args.chaptersPerVolume }),
+          })
+          if (plan !== state.writing) state = { ...state, writing: plan, updatedAt: now() }
           if (args.naming !== undefined && args.naming.length > 0) {
             const incoming = args.naming.map((entry, index) => {
               const title = typeof entry['title'] === 'string' ? entry['title'] : ''
@@ -473,13 +516,41 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         if (next.naming.length > 0 && next.naming.length < 3) {
           warnings.push(`书名/简介/标签备选 ${String(next.naming.length)}/3：SOP 要求至少 3 组，验证阶段要逐个测`)
         }
+        // The length numbers are the author's, so an unanswered one is reported as
+        // a question to put to them, not as a value to assume.
+        const planGaps = writingPlanGaps(next.writing)
+        if (planGaps.length > 0) {
+          warnings.push(
+            `篇幅四问还有 ${String(planGaps.length)} 项没问用户：${planGaps.map((gap) => gap.requirement).join('、')}`
+            + `（novel_init 补录，别自己定）`,
+          )
+        }
+        warnings.push(...writingPlanConflicts(next.writing))
+
+        const body = [
+          `项目文档：${NOVEL_RELATIVE_PATH}`,
+          `平台：${next.platform.name || '—'}（${next.platform.mode}/${next.platform.audience}）`,
+          `篇幅：${describeWritingPlan(next.writing)}`,
+        ]
+        if (planGaps.length > 0) {
+          body.push('', '## 初始化必问（把这几条问用户，答案回填 novel_init）')
+          for (const question of WRITING_PLAN_QUESTIONS) {
+            if (!planGaps.some((gap) => gap.key === question.key)) continue
+            body.push(`- ${question.question}（决定：${question.decides}）`)
+          }
+          body.push('', '## 常见口径（当选项给用户选，不要替他定）')
+          for (const tier of LENGTH_BENCHMARKS) {
+            body.push(`- ${tier.name}：${tier.targetWords} · 单章 ${tier.chapterWords} · ${tier.volumes}（${tier.note}）`)
+          }
+        }
+
         await resync(exec.agent?.session)
         return {
           ok: true,
           operation: 'init',
           detail: `项目已就绪：「${next.meta.title || '(untitled)'}」，已校准 ${String(Object.keys(next.baselines.medians).length)} 项指标中位，候选物料 ${String(next.naming.length)} 组。`,
           ...envelope(next, warnings),
-          body: [`项目文档：${NOVEL_RELATIVE_PATH}`, `平台：${next.platform.name || '—'}（${next.platform.mode}/${next.platform.audience}）`],
+          body,
         }
       },
     }),
@@ -547,7 +618,12 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         infoGap: { type: 'string', description: 'chapter: the information gap opened or closed.' },
         beats: { type: 'array', items: { type: 'string', enum: [...BEAT_KINDS] }, description: 'chapter: beats carried.' },
         hook: { type: 'string', description: 'chapter: the chapter-end hook.' },
-        targetWords: { type: 'integer', description: 'chapter: target length in characters.' },
+        targetWords: {
+          type: 'integer',
+          description:
+            'chapter: target length in characters. Optional — a chapter planned without one inherits the '
+            + 'per-chapter length settled at initialization (novel_init chapterWords).',
+        },
         synopsis: { type: 'string', description: 'chapter: one-line summary of the contract.' },
         volume: { type: 'integer', description: 'chapter: which volume it belongs to.' },
         waive: {
@@ -694,6 +770,22 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             if (written !== undefined && (written.goal === '' || written.climax === '')) {
               warnings.push(`第 ${String(number)} 卷缺独立目标或高潮：SOP 要求每卷有自己的矛盾与高潮`)
             }
+            // The volume count was settled with the user at initialization; the
+            // outline has to stay answerable to it, and 0 means 不分卷.
+            const declared = next.writing.volumes
+            const plannedVolumes = next.outline.volumes.length
+            if (declared === 0) {
+              warnings.push('写作参数登记为「不分卷」，却写入了分卷大纲：要么回 novel_init 定卷数，要么把这一卷并回单卷')
+            } else if (declared > 0 && plannedVolumes > declared) {
+              warnings.push(`已写入 ${String(plannedVolumes)} 卷，超过初始化与用户确认的 ${String(declared)} 卷：补问用户改卷数，或合并卷`)
+            } else if (declared < 0) {
+              warnings.push('是否分卷还没问用户：先回 novel_init 定 volumes（0 = 不分卷），再写分卷大纲')
+            }
+            if (written !== undefined && written.chapters.length >= 2) {
+              const span = (written.chapters.at(-1) ?? 0) - (written.chapters[0] ?? 0) + 1
+              const note = volumeLengthNote(span, next.writing)
+              if (note !== undefined) warnings.push(`第 ${String(number)} 卷：${note}`)
+            }
             break
           }
           case 'chapter': {
@@ -713,8 +805,12 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               waived[field as (typeof CONTRACT_FIELDS)[number]] = args.waiveReason ?? '作者显式放弃'
             }
             const chapterId = resolveChapterId({ id: args.id, title: args.title })
-            const next = await store.update((state) =>
-              upsertChapter(
+            const next = await store.update((state) => {
+              // A chapter that states no target inherits the per-chapter length the
+              // user settled at initialization, so the ±15% write check has
+              // something to compare against instead of silently doing nothing.
+              const targetWords = args.targetWords ?? state.writing.chapterWords
+              return upsertChapter(
                 state,
                 {
                   id: chapterId,
@@ -727,19 +823,36 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
                   ...(args.infoGap !== undefined && { infoGap: args.infoGap }),
                   ...(args.beats !== undefined && { beats: args.beats as NovelState['chapters'][string]['beats'] }),
                   ...(args.hook !== undefined && { hook: args.hook }),
-                  ...(args.targetWords !== undefined && { targetWords: args.targetWords }),
+                  ...(targetWords > 0 && { targetWords }),
                   ...(args.volume !== undefined && { volume: args.volume }),
                   ...(Object.keys(waived).length > 0 && { waived }),
                 },
                 now,
-              ),
-            )
+              )
+            })
             const chapter = next.chapters[chapterId]
             detail = chapter === undefined
               ? '章节已写入'
               : `第 ${String(chapter.number)} 章「${chapter.title || chapterId}」契约已写入`
             const gaps = contractGaps(next, { only: [chapterId] })
             if (gaps[0] !== undefined) warnings.push(`第 ${String(gaps[0].number)} 章契约缺：${gaps[0].missing.join('、')}`)
+            if (chapter !== undefined && chapter.targetWords <= 0) {
+              warnings.push(
+                `第 ${String(chapter.number)} 章没设目标字数，写作参数里也没有单章字数：先问用户单章多少字`
+                + `（novel_init chapterWords），否则正文长度无从核对`,
+              )
+            }
+            if (chapter !== undefined && !next.outline.beats.some((beat) => beat.chapter === chapter.number)) {
+              const expected = rhythmExpectation(
+                chapter.number,
+                chaptersPerVolume(next.writing.totalChapters, next.writing.volumes),
+              )
+              if (expected !== undefined) {
+                warnings.push(
+                  `第 ${String(chapter.number)} 章按节奏应为「${expected}」，节拍表里还没有：novel_plan operation="beat"`,
+                )
+              }
+            }
             const planned = Object.values(next.chapters).filter((entry) => entry.body.trim() === '').length
             if (planned > next.writing.chapterPlanCeiling) {
               warnings.push(
@@ -1568,6 +1681,14 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           }
         } else if (detail === 'plan') {
           body.push(
+            '## 篇幅（初始化四问）',
+            describeWritingPlan(state.writing),
+          )
+          for (const gap of writingPlanGaps(state.writing)) {
+            body.push(`- 未问用户：${gap.requirement}（${gap.fill}）`)
+          }
+          body.push(
+            '',
             '## 立意',
             state.pitch.memorablePoint || '（未写）',
             `情绪：${state.pitch.coreEmotion || '—'}`,

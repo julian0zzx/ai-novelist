@@ -124,6 +124,82 @@ describe('phase one: planning', () => {
   })
 })
 
+describe('phase one: the length plan', () => {
+  it('asks the user for the length numbers instead of assuming them', async () => {
+    const answer = await call('novel_init', { title: '青云记' })
+    expect((answer['warnings'] as string[]).join(' ')).toMatch(/篇幅四问/)
+    const body = (answer['body'] as string[]).join('\n')
+    expect(body).toMatch(/总字数/)
+    expect(body).toMatch(/单章目标多少字/)
+    expect(body).toMatch(/分几卷/)
+    // The tiers are offered as choices, not asserted as the answer.
+    expect(body).toMatch(/短篇/)
+  })
+
+  it('records the answers, derives the chapter count, and stops asking', async () => {
+    const planned = await call('novel_init', {
+      title: '青云记',
+      targetWords: 1200000,
+      chapterWords: 3000,
+      volumes: 12,
+    })
+    expect((planned['warnings'] as string[]) ?? []).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/篇幅四问/)]),
+    )
+    expect((planned['body'] as string[]).join('\n')).toMatch(
+      /篇幅：总字数 1200000 · 单章 3000 字 · 12 卷 · 共约 400 章/,
+    )
+  })
+
+  it('warns when the recorded numbers contradict each other', async () => {
+    const result = await call('novel_init', {
+      title: '青云记',
+      targetWords: 1000000,
+      chapterWords: 3000,
+      totalChapters: 100,
+    })
+    expect((result['warnings'] as string[]).join(' ')).toMatch(/相差 70%/)
+  })
+
+  it('gives a chapter the per-chapter length settled at initialization', async () => {
+    await call('novel_init', { title: '青云记', targetWords: 900000, chapterWords: 3000, volumes: 9 })
+    const planned = await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
+    expect((planned['warnings'] as string[]) ?? []).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/没设目标字数/)]),
+    )
+    // The inherited target is what the dashboard shows a draft against.
+    expect(await callText('novel_status', {})).toMatch(/0 字\/3000/)
+  })
+
+  it('warns about a chapter target when the user never gave one', async () => {
+    await call('novel_init', { title: '青云记' })
+    const planned = await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
+    expect((planned['warnings'] as string[]).join(' ')).toMatch(/没设目标字数/)
+  })
+
+  it('keeps the volume outline answerable to the volume count the user gave', async () => {
+    await call('novel_init', { title: '青云记', targetWords: 600000, chapterWords: 3000, volumes: 0 })
+    const single = await call('novel_plan', { operation: 'volume', number: 1, goal: '入门', climax: '初战' })
+    expect((single['warnings'] as string[]).join(' ')).toMatch(/不分卷/)
+
+    await call('novel_init', { title: '青云记', volumes: 1 })
+    const over = await call('novel_plan', { operation: 'volume', number: 2, goal: '反击', climax: '夺山' })
+    expect((over['warnings'] as string[]).join(' ')).toMatch(/超过初始化与用户确认的 1 卷/)
+  })
+
+  it('suggests the beat the rhythm rule expects once the volume length is known', async () => {
+    await call('novel_init', { title: '青云记', targetWords: 1200000, chapterWords: 3000, volumes: 12 })
+    const planned = await call('novel_plan', { operation: 'chapter', id: 'chapter-3', title: '试剑', number: 3 })
+    expect((planned['warnings'] as string[]).join(' ')).toMatch(/按节奏应为「小高潮」/)
+
+    await call('novel_plan', { operation: 'beat', number: 3, beatKind: 'shuang' })
+    const replanned = await call('novel_plan', { operation: 'chapter', id: 'chapter-3', title: '试剑', number: 3 })
+    expect((replanned['warnings'] as string[]) ?? []).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/按节奏应为/)]),
+    )
+  })
+})
+
 describe('phase two: the opening package', () => {
   /** Fill in everything phase one requires, so the stage advances. */
   async function completePlanning(): Promise<void> {

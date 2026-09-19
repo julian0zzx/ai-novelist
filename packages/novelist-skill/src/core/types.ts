@@ -194,12 +194,23 @@ export interface WritingPlan {
   readonly language: string
   /** Point of view. */
   readonly pov: string
-  /** Planned volumes, 0 when undecided. */
+  /**
+   * Planned volumes. `0` means the book deliberately runs as one volume
+   * (不分卷) and `-1` means the user has not been asked yet — two different
+   * answers, which is why the undecided state is not spelled `0`.
+   */
   readonly volumes: number
-  /** Planned total chapters, 0 when undecided. */
+  /** Planned total chapters, 0 when undecided. Derivable from the length numbers. */
   readonly totalChapters: number
   /** Target total length in characters, 0 when undecided. */
   readonly targetWords: number
+  /**
+   * Target length of one chapter in characters, 0 when undecided.
+   *
+   * The SOP's "1–3 万字" style gates are only checkable per chapter, so this is
+   * the target a chapter contract inherits when it states none of its own.
+   */
+  readonly chapterWords: number
   /** Chapters of detailed outline kept ahead of the prose (the outline window). */
   readonly chapterPlanWindow: number
   /** Chapter positions the platform's opening metrics are read at. */

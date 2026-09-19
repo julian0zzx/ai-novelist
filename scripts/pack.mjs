@@ -74,7 +74,11 @@ const EXPECTED_TOOLS = [
 
 /** The tool surface, as documented by every distribution. */
 const TOOL_TABLE = [
-  ['`novel_init`', '—', 'project, commercial frame, calibration medians, writing parameters, naming candidates'],
+  [
+    '`novel_init`',
+    '—',
+    'project, commercial frame, calibration medians, the length plan (总字数 / 单章字数 / 卷数, asked of the user), naming candidates',
+  ],
   [
     '`novel_plan`',
     'competitor, pitch, world, outline, volume, chapter, beat, opening, naming',
@@ -462,12 +466,39 @@ node scripts/setup.mjs --profile web      # installs tools/ into the named profi
 Then restart the DSH process. Confirm with \`novel_status\`; if it is missing, the
 plugin is not installed in the profile that session runs under.
 
+## Before the first call: the length plan
+
+Ask the user for four numbers **before** you call \`novel_init\` — none of them can
+be read off the premise, and every later length check is measured against them:
+
+| ask the user | lands in | why it matters |
+|---|---|---|
+| 这本书计划写多少字？ | \`targetWords\` | 篇幅口径：完本与上架预期 |
+| 单章目标多少字？ | \`chapterWords\` | 细纲没写目标字数时继承它，\`novel_write\` 用它做 ±15% 长度核对 |
+| 要分卷吗？分几卷？ | \`volumes\`（\`0\` = 明确不分卷） | 分卷大纲的卷数纪律与卷末高潮章位 |
+
+Offer common tiers as *choices*, never as the answer: 短篇 20–40 万字 / 单章 2000
+字左右 / 不分卷或 3–5 卷；中篇 80–150 万字 / 单章 2500–3000 字 / 6–12 卷；长篇
+200–400 万字 / 单章 3000–4000 字 / 15–30 卷。What gets recorded is what the user
+said, not what the table says.
+
+Once \`targetWords\` and \`chapterWords\` are known, \`totalChapters\` is derived
+(total ÷ chapter length) unless the user states one, and a chapters-per-volume
+answer is converted into a volume count. The tool reports whatever is still
+unanswered as a checklist on every \`novel_init\`, and the runtime context repeats
+it each step, so an unasked number cannot quietly become an assumed one.
+\`volumes: 0\` is a real answer (one volume); only an omitted one counts as
+unanswered. The three numbers are then cross-checked — a chapter count that
+contradicts the lengths, or an outline that outgrows the agreed volume count, is
+reported rather than silently accepted.
+
 ## The loop
 
-1. **假设** — \`novel_init\` records the commercial frame *and the calibration
-   medians*. Without same-genre medians the threshold rules cannot run, and every
-   metric verdict degrades to "无法比较". Then \`novel_plan\` for the pitch (the
-   one-sentence memorable point) and 20–50 competitor dismantles.
+1. **假设** — ask the user for the length plan above, then \`novel_init\` records it
+   along with the commercial frame *and the calibration medians*. Without
+   same-genre medians the threshold rules cannot run, and every metric verdict
+   degrades to "无法比较". Then \`novel_plan\` for the pitch (the one-sentence
+   memorable point) and 20–50 competitor dismantles.
 2. **验证** — the minimal viable outline plus the opening package
    (\`novel_plan operation="outline"\` then \`"chapter"\` then \`"opening"\`), then
    \`novel_verify\` with real numbers. A round that does not pass **must** name its
@@ -510,6 +541,9 @@ plugin is not installed in the profile that session runs under.
   and a scope; widening that scope is the author's decision.
 - They do not fabricate thresholds. With no calibrated medians, a reading is
   recorded and reported as incomparable rather than silently judged.
+- They do not choose the length plan. 总字数, 单章字数 and 卷数 are asked of the
+  user; the tools record, derive and cross-check them, and report what is still
+  unanswered instead of filling it in.
 `
 }
 
@@ -605,15 +639,22 @@ console.log(\`setup: verify with  dsh --profile \${profile} --dump-config | grep
  * Generate the tool reference from the shipped source.
  *
  * The nine-tool table comes from the same constant every other distribution
- * uses, so it cannot drift from the shipped surface.
+ * uses, so it cannot drift from the shipped surface; the parameters-and-behaviour
+ * half is lifted from the plugin README's own tool-surface section, up to the
+ * next top-level heading.
  *
  * @returns the Markdown document.
  */
 async function toolsReference() {
   const source = await readFile(join(HOST_DIR, 'README.md'), 'utf8')
-  const marker = '## The nine tools'
+  const marker = '## The tool surface'
   const start = source.indexOf(marker)
-  const extracted = start === -1 ? '' : source.slice(start)
+  let extracted = ''
+  if (start !== -1) {
+    const rest = source.slice(start + marker.length)
+    const end = rest.indexOf('\n## ')
+    extracted = (end === -1 ? rest : rest.slice(0, end)).trim()
+  }
   return `# Tool reference
 
 The nine tools, in the order the SOP uses them:

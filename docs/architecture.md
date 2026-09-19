@@ -206,7 +206,7 @@ with the provider, the model and the rubric version that produced it.
 
 | Tool | SOP phase | Owns |
 |---|---|---|
-| `novel_init` | 一 策划 | The project, its commercial frame, the calibration medians, and the writing parameters |
+| `novel_init` | 一 策划 | The project, its commercial frame, the calibration medians, and the writing parameters — including the **length plan** (`targetWords` / `chapterWords` / `volumes`), which is asked of the user, derived where the answers imply it, and cross-checked |
 | `novel_plan` | 一/二/四 | `competitor` · `pitch` · `world` · `outline` · `volume` · `chapter` · `beat` · `opening` · `naming` |
 | `novel_bible` | 一/四/六 | `character` · `world` · `link` · `review` |
 | `novel_verify` | 三 验证 | `round` (record a validation round) · `assess` |

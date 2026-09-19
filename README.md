@@ -20,7 +20,7 @@ counter can decide; it is registered only where a model route exists.
 
 | Tool | SOP phase | What it owns |
 |---|---|---|
-| `novel_init` | 一 策划 | The project and its commercial frame — platform, mode (paid/free), audience, genre, target readers, monetization — plus the calibration medians (`baselines`, same-genre metric medians from the last 30 days) and the writing parameters: outline window, opening gate chapters, stock target, outline ceiling. |
+| `novel_init` | 一 策划 | The project and its commercial frame — platform, mode (paid/free), audience, genre, target readers, monetization — plus the calibration medians (`baselines`, same-genre metric medians from the last 30 days) and the writing parameters: outline window, opening gate chapters, stock target, outline ceiling. The **length plan** (总字数, 单章字数, 是否分卷/分几卷) is asked of the user, never assumed: unanswered questions come back as a checklist repeated every step, `totalChapters` is derived from total ÷ chapter length, and the numbers are cross-checked against each other and against the volume outline. |
 | `novel_plan` | 一/二/四 | The planning pipeline: `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`. |
 | `novel_bible` | 一/四/六 | Cast, world facts, and reader promises: `character`, `world`, `link`, `review`. A `link` is a promise with a planting point, a due chapter, a payoff and a status; open promises past their due chapter are reported. |
 | `novel_verify` | 三 验证 | The validation gate: `round` records one small-cost test with its metrics and returns the verdict (`pass` / `partial` / `fail`); `assess` compares the latest reading without recording a round. |

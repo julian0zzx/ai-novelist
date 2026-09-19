@@ -163,6 +163,24 @@ describe('serialize and parse', () => {
     expect(state.chapters['a']?.wordCount).toBe(3)
     expect(state.chapters['a']?.status).toBe('planned')
   })
+
+  it('reads a document written before the length plan as "not asked yet", not as 不分卷', () => {
+    // Releases before the length questions persisted `volumes: 0` as an
+    // untouched default. Reading that as an explicit 不分卷 would answer a
+    // question the author was never asked, so the absence of `chapterWords`
+    // marks the document as legacy and the zero as undecided.
+    const legacy = parseNovel(JSON.stringify({
+      schemaVersion: 3,
+      meta: { title: '青云记' },
+      writing: { language: 'zh-CN', pov: 'third-limited', volumes: 0, totalChapters: 0, targetWords: 0 },
+    }))
+    expect(legacy.writing.volumes).toBe(-1)
+    expect(legacy.writing.chapterWords).toBe(0)
+
+    // A stated volume count is an answer even in a legacy document.
+    const stated = parseNovel(JSON.stringify({ schemaVersion: 3, meta: { title: '青云记' }, writing: { volumes: 12 } }))
+    expect(stated.writing.volumes).toBe(12)
+  })
 })
 
 describe('version-1 migration', () => {

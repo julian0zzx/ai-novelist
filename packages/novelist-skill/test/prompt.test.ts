@@ -50,6 +50,8 @@ const snapshot = (overrides: Partial<NovelSnapshot> = {}): NovelSnapshot => ({
   openLinks: 0,
   overdueLinks: 0,
   metricNotes: [],
+  planSummary: '总字数未问 · 单章字数未问 · 是否分卷未问',
+  planGaps: [],
   lastNumber: 0,
   lastTitle: '',
   lastStatus: 'planned',
