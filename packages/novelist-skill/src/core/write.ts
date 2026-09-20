@@ -4,7 +4,9 @@
  * The SOP requires prose to answer its chapter outline field by field, and
  * version 3.0 had no way to notice when it did not. These functions produce the
  * report `novel_write` returns: which contract fields the draft reached, which
- * were missed, which the author waived, and whether the length landed.
+ * were missed, which the author waived, and whether the length landed — against
+ * the 150% gate a first draft is written to, or the finished gate a chapter is
+ * published at (-5%/+15%), depending on the chapter's own stage.
  *
  * Nothing here judges prose quality — that is the author's job, and the SOP says
  * so. It only compares what was promised with what was written.
@@ -13,7 +15,7 @@
  */
 
 import { countWords } from './novel.ts'
-import { contractRows, lengthCheck, missingContract } from './plan.ts'
+import { contractRows, lengthCheck, lengthStageFor, missingContract, type LengthCheck } from './plan.ts'
 import { CONTRACT_FIELDS, type Chapter, type ContractField } from './types.ts'
 
 /** How one contract field fared in a draft. */
@@ -44,8 +46,12 @@ export interface DeliveryReport {
   readonly missed: readonly ContractField[]
   /** Fields reached. */
   readonly reached: readonly ContractField[]
-  /** Length comparison, when a target was set. */
-  readonly length: ReturnType<typeof lengthCheck>
+  /** The gate that binds at the chapter's current lifecycle stage. */
+  readonly length: LengthCheck | undefined
+  /** The 150% first-draft comparison, whenever a target and prose exist. */
+  readonly draftLength: LengthCheck | undefined
+  /** The finished-chapter comparison (-5%/+15%), which `final` is judged against. */
+  readonly finalLength: LengthCheck | undefined
   /** Length after this write, in characters. */
   readonly wordCount: number
   /** One-line verdict the tool prints first. */
@@ -78,12 +84,17 @@ export function analyzeDelivery(chapter: Chapter): DeliveryReport {
     .filter((entry) => entry.plannedAtAll && !entry.delivered)
     .map((entry) => entry.field)
   const reached = fields.filter((entry) => entry.delivered).map((entry) => entry.field)
-  const length = lengthCheck(chapter)
+  // Both gates are reported; which one binds is the chapter's own lifecycle
+  // stage, so a first draft is held to 150% and a trimmed chapter to the finished
+  // window (-5%/+15%).
+  const draftLength = lengthCheck(chapter, { stage: 'draft' })
+  const finalLength = lengthCheck(chapter, { stage: 'final' })
+  const length = lengthStageFor(chapter.status) === 'draft' ? draftLength : finalLength
 
   const parts: string[] = [`已兑现 ${String(reached.length)}/${String(CONTRACT_FIELDS.length)} 项契约`]
   if (missed.length > 0) parts.push(`未兑现：${missed.join('、')}`)
   if (unplanned.length > 0) parts.push(`细纲未写：${unplanned.join('、')}`)
-  if (length !== undefined && !length.within) parts.push(length.note)
+  if (length !== undefined && !length.within) parts.push(length.short)
 
   return {
     id: chapter.id,
@@ -93,6 +104,8 @@ export function analyzeDelivery(chapter: Chapter): DeliveryReport {
     missed,
     reached,
     length,
+    draftLength,
+    finalLength,
     wordCount: countWords(chapter.body),
     summary: parts.join('；'),
   }
@@ -115,7 +128,9 @@ export function blockersToFinal(chapter: Chapter): string[] {
   if (missing.length > 0) blockers.push(`细纲契约未完成：${missing.join('、')}`)
   const report = analyzeDelivery(chapter)
   if (report.missed.length > 0) blockers.push(`上次写作未兑现：${report.missed.join('、')}`)
-  if (report.length !== undefined && !report.length.within) blockers.push(report.length.note)
+  // Publishing is the finished-chapter gate: never more than 5% under the target
+  // the user gave, up to 15% over — not the 150% a first draft is written to.
+  if (report.finalLength !== undefined && !report.finalLength.within) blockers.push(report.finalLength.note)
   return blockers
 }
 

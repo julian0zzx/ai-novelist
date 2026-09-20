@@ -13,6 +13,7 @@
 import {
   CONTRACT_FIELDS,
   type Chapter,
+  type ChapterStatus,
   type ContractField,
   type NovelState,
   type Outline,
@@ -228,7 +229,7 @@ export const WRITING_PLAN_QUESTIONS: readonly PlanQuestion[] = [
   {
     key: 'chapterWords',
     question: '单章目标多少字？',
-    decides: '每章细纲的目标字数、正文长度核对（±15%）',
+    decides: '每章细纲的目标字数、初稿 150% 与成稿 -5%/+15% 的长度核对',
   },
   {
     key: 'volumes',
@@ -311,6 +312,8 @@ export function writingPlanGaps(writing: WritingPlan): MissingField[] {
  *
  * `volumes: 0` is the author's 不分卷 answer and `-1` is "not asked", so the two
  * render differently — a plan nobody has settled must not read like one that has.
+ * The per-chapter draft target rides along, because the 150% rule is only
+ * followed if the number is visible at the moment a chapter is written.
  *
  * @param writing - the writing plan.
  * @returns the line the tools, the prompt and the board show.
@@ -322,6 +325,9 @@ export function describeWritingPlan(writing: WritingPlan): string {
     writing.volumes > 0 ? `${String(writing.volumes)} 卷` : writing.volumes === 0 ? '不分卷' : '是否分卷未问',
   ]
   if (writing.totalChapters > 0) parts.push(`共约 ${String(writing.totalChapters)} 章`)
+  if (writing.chapterWords > 0) {
+    parts.push(`初稿按 ${String(draftTargetWords(writing.chapterWords))} 字/章（150%）`)
+  }
   return parts.join(' · ')
 }
 
@@ -425,33 +431,196 @@ export function volumeLengthNote(length: number, writing: WritingPlan, tolerance
   )
 }
 
+// ── the two length gates: 初稿 150%, 成稿 100% ────────────────────────────────
+
 /**
- * Whether a chapter's target length was met within a tolerance.
+ * How much longer the first draft runs than the finished chapter.
  *
- * The SOP's "1–3 万字" style gates are only checkable if a chapter carries a
- * target; this reports the comparison without enforcing it, because a chapter
- * that runs long for a reason is a legitimate authorial choice.
+ * 去 AI 化 and manual trimming reliably delete a large share of a draft — a
+ * web-novel edit is mostly cutting. A first draft written straight to the
+ * finished target therefore arrives at publication short, so the SOP writes
+ * every first draft to 150% of the chapter target and trims it back into the
+ * finished window afterwards. This is a SOP constant, not an implementation
+ * knob: changing it changes what "写完一章" means.
+ */
+export const DRAFT_TARGET_RATIO = 1.5
+
+/** Which of a chapter's two length gates a draft is measured against. */
+export type LengthStage = 'draft' | 'final'
+
+/**
+ * How far a chapter may miss its target, on each side.
+ *
+ * The window is deliberately **asymmetric**: coming in under the target is the
+ * failure, and over is only padding to trim. A chapter 15% short of the length
+ * the reader was promised is not the same book as one 15% long, so the shortfall
+ * is held to 5% while the overrun keeps the 15% the plan itself allows.
+ */
+export interface LengthTolerance {
+  /** Allowed shortfall as a fraction of the target. */
+  readonly under: number
+  /** Allowed overrun as a fraction of the target. */
+  readonly over: number
+}
+
+/**
+ * The tolerance every length gate applies: −5% / +15%.
+ *
+ * Both gates use it — a first draft that lands under 150% misses the point of
+ * writing long, and a finished chapter that lands under the target has already
+ * lost the length the reader paid for.
+ */
+export const LENGTH_TOLERANCE: LengthTolerance = { under: 0.05, over: 0.15 }
+
+/**
+ * The length a first draft is written to, from the finished-chapter target.
+ *
+ * @param targetWords - the chapter's finished target, 0 when unset.
+ * @param ratio - draft-to-final ratio, default {@link DRAFT_TARGET_RATIO}.
+ * @returns the draft target, or 0 when no target is set.
+ */
+export function draftTargetWords(targetWords: number, ratio = DRAFT_TARGET_RATIO): number {
+  if (targetWords <= 0) return 0
+  return Math.round(targetWords * ratio)
+}
+
+/**
+ * Which length gate a chapter at this lifecycle stage is measured against.
+ *
+ * A `planned` or `drafting` chapter is still a first draft and is held to the
+ * 150% target; `revised` and `final` have already been through 去 AI 化, so the
+ * trimming has happened and they are held to the finished target. Measuring a
+ * trimmed chapter against 150% would reward padding, and measuring a first
+ * draft against 100% would demand the trim before there is anything to trim.
+ *
+ * @param status - the chapter's lifecycle stage.
+ * @returns `draft` or `final`.
+ */
+export function lengthStageFor(status: ChapterStatus): LengthStage {
+  return status === 'planned' || status === 'drafting' ? 'draft' : 'final'
+}
+
+/** The allowed range around a length target. */
+export interface LengthWindow {
+  /** Inclusive lower bound. */
+  readonly low: number
+  /** Inclusive upper bound. */
+  readonly high: number
+}
+
+/**
+ * The allowed range around a length target, -5% / +15% by default.
+ *
+ * The bounds are rounded to whole characters: a length is a character count, so
+ * the window a verdict prints as `2850–3450` has to be the window it enforces,
+ * not a float that rounds to it on screen.
+ *
+ * @param target - the target length in characters.
+ * @param tolerance - override either side, or pass a bare number to set both
+ *   (which is only for a strict comparison, not for the SOP's window).
+ * @returns the range the length must fall inside.
+ */
+export function lengthWindow(target: number, tolerance: number | Partial<LengthTolerance> = {}): LengthWindow {
+  const under = typeof tolerance === 'number' ? tolerance : (tolerance.under ?? LENGTH_TOLERANCE.under)
+  const over = typeof tolerance === 'number' ? tolerance : (tolerance.over ?? LENGTH_TOLERANCE.over)
+  return { low: Math.round(target * (1 - under)), high: Math.round(target * (1 + over)) }
+}
+
+/**
+ * The tolerance in the notation the verdicts print.
+ *
+ * A symmetric tolerance prints as `±15%`; the SOP's asymmetric default prints as
+ * `-5%/+15%` instead, because the two sides are not the same rule and printing
+ * them as one would hide which side is tight.
+ *
+ * @param tolerance - a bare number (both sides) or a partial window.
+ * @returns the label the notes carry.
+ */
+export function lengthToleranceLabel(tolerance: number | Partial<LengthTolerance> = {}): string {
+  const under = typeof tolerance === 'number' ? tolerance : (tolerance.under ?? LENGTH_TOLERANCE.under)
+  const over = typeof tolerance === 'number' ? tolerance : (tolerance.over ?? LENGTH_TOLERANCE.over)
+  const asPercent = (value: number): string => `${String(Math.round(value * 100))}%`
+  return under === over ? `±${asPercent(under)}` : `-${asPercent(under)}/+${asPercent(over)}`
+}
+
+/** How a chapter's length compares with the gate that applies to it. */
+export interface LengthCheck {
+  /** Which gate was applied. */
+  readonly stage: LengthStage
+  /** The target compared against: the 150% draft target, or the finished one. */
+  readonly target: number
+  /** The chapter's current length. */
+  readonly actual: number
+  /** The allowed range around {@link target}. */
+  readonly window: LengthWindow
+  /** Whether the length is inside the window. */
+  readonly within: boolean
+  /** One-line verdict naming the gate it was measured against. */
+  readonly note: string
+  /** The same verdict without the reasoning, for a summary line. */
+  readonly short: string
+}
+
+/** How {@link lengthCheck} picks its gate and tolerance. */
+export interface LengthCheckOptions {
+  /** Force a gate; defaults to the one the chapter's status implies. */
+  readonly stage?: LengthStage
+  /** Override the window; a bare number sets both sides. */
+  readonly tolerance?: number | Partial<LengthTolerance>
+}
+
+/**
+ * Whether a chapter's length met the gate that applies to it, within tolerance.
+ *
+ * Two gates exist because there are two moments: the first draft is written long
+ * (150%) so that 去 AI 化 and hand-cutting cannot leave the finished chapter
+ * short, and the finished chapter must land back inside the target the user gave
+ * — never more than 5% under it, up to 15% over. This reports the comparison
+ * without enforcing it, because a chapter that runs long for a reason is a
+ * legitimate authorial choice. A chapter with no prose has nothing to compare
+ * yet, so it reports nothing.
  *
  * @param chapter - the chapter.
- * @param tolerance - allowed fractional deviation, default 15%.
- * @returns the comparison, or `undefined` when no target is set.
+ * @param options - a bare tolerance, or the gate and tolerance to apply.
+ * @returns the comparison, or `undefined` when no target is set or nothing is written.
  */
-export function lengthCheck(
-  chapter: Chapter,
-  tolerance = 0.15,
-): { readonly target: number; readonly actual: number; readonly within: boolean; readonly note: string } | undefined {
-  if (chapter.targetWords <= 0) return undefined
-  const low = chapter.targetWords * (1 - tolerance)
-  const high = chapter.targetWords * (1 + tolerance)
-  const within = chapter.wordCount >= low && chapter.wordCount <= high
-  return {
-    target: chapter.targetWords,
-    actual: chapter.wordCount,
-    within,
-    note: within
-      ? `字数 ${String(chapter.wordCount)} 在目标 ${String(chapter.targetWords)} ±${String(Math.round(tolerance * 100))}% 内`
-      : `字数 ${String(chapter.wordCount)} 偏离目标 ${String(chapter.targetWords)}（允许 ${String(Math.round(low))}–${String(Math.round(high))}）`,
-  }
+export function lengthCheck(chapter: Chapter, options: number | LengthCheckOptions = {}): LengthCheck | undefined {
+  if (chapter.targetWords <= 0 || chapter.body.trim() === '') return undefined
+  const stage = typeof options === 'number' ? undefined : options.stage
+  const tolerance = typeof options === 'number' ? options : (options.tolerance ?? {})
+  const gate = stage ?? lengthStageFor(chapter.status)
+  const target = gate === 'draft' ? draftTargetWords(chapter.targetWords) : chapter.targetWords
+  const window = lengthWindow(target, tolerance)
+  const actual = chapter.wordCount
+  const within = actual >= window.low && actual <= window.high
+  const percent = lengthToleranceLabel(tolerance)
+  const range = `${String(Math.round(window.low))}–${String(Math.round(window.high))}`
+  const note = gate === 'draft'
+    ? within
+      ? `初稿 ${String(actual)} 字在初稿目标 ${String(target)} 字内`
+        + `（成稿目标 ${String(chapter.targetWords)} 的 150%，允许 ${range}）`
+      : actual < window.low
+        ? `初稿 ${String(actual)} 字低于初稿目标 ${String(target)} 字`
+          + `（成稿目标 ${String(chapter.targetWords)} 的 150%，允许 ${range}）：`
+          + '去 AI 化与手改会成段删减，初稿要按 150% 写才留得住成稿长度'
+        : `初稿 ${String(actual)} 字超过初稿目标 ${String(target)} 字`
+          + `（成稿目标 ${String(chapter.targetWords)} 的 150%，允许 ${range}）：`
+          + '去 AI 化阶段压缩回成稿区间'
+    : within
+      ? `成稿 ${String(actual)} 字在目标 ${String(chapter.targetWords)} 字的 ${percent} 内（允许 ${range}）`
+      : actual < window.low
+        ? `成稿 ${String(actual)} 字偏离目标 ${String(chapter.targetWords)} 字（允许 ${range}）：`
+          + `低于目标 ${percent} 的下限就要补写，成稿不能比目标少太多`
+        : `成稿 ${String(actual)} 字偏离目标 ${String(chapter.targetWords)} 字（允许 ${range}）：`
+          + `超过上限（目标 ${percent}）就在去 AI 化阶段压回`
+  const short = gate === 'draft'
+    ? within
+      ? `初稿 ${String(actual)} 字达到初稿目标 ${String(target)} 字（成稿的 150%）`
+      : `初稿 ${String(actual)} 字${actual < window.low ? '不足' : '超过'}初稿目标 ${String(target)} 字（成稿的 150%）`
+    : within
+      ? `成稿 ${String(actual)} 字在目标 ${String(chapter.targetWords)} 字 ${percent} 内`
+      : `成稿 ${String(actual)} 字${actual < window.low ? '低于' : '高于'}目标 ${String(chapter.targetWords)} 字（${percent}）`
+  return { stage: gate, target, actual, window, within, note, short }
 }
 
 /**

@@ -63,10 +63,13 @@ import {
   contractRows,
   countIneffectiveIterations,
   describeWritingPlan,
+  draftTargetWords,
   emptyNovel,
   iterationRules,
   judgeIteration,
   lessonPrompts,
+  lengthCheck,
+  lengthWindow,
   missingContract,
   normalizeId,
   normalizeWritingPlan,
@@ -101,6 +104,7 @@ import {
   writingPlanConflicts,
   writingPlanGaps,
   type Clock,
+  type Chapter,
   type Lesson,
   type MetricKey,
   type MetricPeriod,
@@ -251,6 +255,40 @@ function pushStyleHints(body: string[], prose: string): void {
 }
 
 /**
+ * Append the chapter's two length gates to a tool body.
+ *
+ * A chapter is written long and published on target: the first draft runs to
+ * 150% of the finished target because 去 AI 化 and hand-editing delete a large
+ * share of it, and the finished chapter then has to land back inside the target
+ * the user gave — never more than 5% under it, up to 15% over. Printing both
+ * windows every time prose is handed back is
+ * what keeps the 150% rule from existing only in the documentation — the writer
+ * sees the number it is drafting against, and the stage decides which of the two
+ * gates binds.
+ *
+ * @param body - the accumulator the calling tool is building.
+ * @param chapter - the chapter whose gates to render.
+ */
+function pushLengthReport(body: string[], chapter: Chapter): void {
+  if (chapter.targetWords <= 0) return
+  const draft = draftTargetWords(chapter.targetWords)
+  const finalWindow = lengthWindow(chapter.targetWords)
+  const draftWindow = lengthWindow(draft)
+  const round = (value: number): string => String(Math.round(value))
+  body.push('', '## 字数（初稿 150%，成稿不许低于目标 5%、可高 15%）')
+  body.push(
+    `- 成稿目标 ${String(chapter.targetWords)} 字：允许 ${round(finalWindow.low)}–${round(finalWindow.high)} 字`
+    + '（下限只差 5%：读者买的是这个长度；上限 +15% 留改稿余量）',
+  )
+  body.push(
+    `- 初稿目标 ${String(draft)} 字（成稿目标 × 150%）：允许 ${round(draftWindow.low)}–${round(draftWindow.high)} 字`
+    + '；去 AI 化与手改会成段删减，初稿按这个写才留得住成稿长度',
+  )
+  const gate = lengthCheck(chapter)
+  if (gate !== undefined) body.push(`- 本章按${gate.stage === 'draft' ? '初稿' : '成稿'}口径：${gate.note}`)
+}
+
+/**
  * Render the envelope plus tool-specific lines as the text the model reads.
  *
  * @param value - the returned envelope.
@@ -349,8 +387,10 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         chapterWords: {
           type: 'integer',
           description:
-            'Target length of one chapter in characters. Ask the user; chapters planned without their own target '
-            + 'inherit this, and novel_write checks the draft against it (±15%).',
+            'Target length of one chapter in characters — the length the reader gets, not the length to draft. Ask the '
+            + 'user; chapters planned without their own target inherit this. The first draft is written to 150% of it '
+            + '(去 AI 化与手改会大幅删减); a finished chapter must land within -5%/+15% of that target — never '
+            + 'more than 5% under it — and novel_write checks a draft against 150% and a finished chapter against that window.',
         },
         totalChapters: {
           type: 'integer',
@@ -568,7 +608,8 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         + 'plus core emotion, payoff list, differentiators, kernel · world=one world rule (a rule without its cost and '
         + 'limit is flagged) · outline=logline, acts, minimal viable outline, or the full outline · volume=one volume\'s '
         + 'goal, conflict, climax, end hook · chapter=one chapter contract (plot task, conflict, emotional payoff, '
-        + 'information gap, beats, hook, target length) · beat=place a rhythm beat · opening=confirm an opening-engineering '
+        + 'information gap, beats, hook, target length) — the target is the finished length, and the chapter is drafted '
+        + 'at 150% of it · beat=place a rhythm beat · opening=confirm an opening-engineering '
         + 'checklist item (omit `key` to list it) · naming=a candidate title/blurb/tag set. '
         + 'Soft gate: a call always succeeds, but when the SOP would not have you here yet the result carries warnings '
         + 'naming what is still missing. Read them before writing prose.',
@@ -621,8 +662,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         targetWords: {
           type: 'integer',
           description:
-            'chapter: target length in characters. Optional — a chapter planned without one inherits the '
-            + 'per-chapter length settled at initialization (novel_init chapterWords).',
+            'chapter: the finished target length in characters; the first draft is written to 150% of it. Optional — a '
+            + 'chapter planned without one inherits the per-chapter length settled at initialization '
+            + '(novel_init chapterWords).',
         },
         synopsis: { type: 'string', description: 'chapter: one-line summary of the contract.' },
         volume: { type: 'integer', description: 'chapter: which volume it belongs to.' },
@@ -807,7 +849,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             const chapterId = resolveChapterId({ id: args.id, title: args.title })
             const next = await store.update((state) => {
               // A chapter that states no target inherits the per-chapter length the
-              // user settled at initialization, so the ±15% write check has
+              // user settled at initialization, so the length check has
               // something to compare against instead of silently doing nothing.
               const targetWords = args.targetWords ?? state.writing.chapterWords
               return upsertChapter(
@@ -834,6 +876,17 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             detail = chapter === undefined
               ? '章节已写入'
               : `第 ${String(chapter.number)} 章「${chapter.title || chapterId}」契约已写入`
+            // The contract's targetWords is the finished length; the draft this
+            // chapter is now written to is 150% of it. Print both at planning
+            // time, which is the last moment before prose exists.
+            if (chapter !== undefined && chapter.targetWords > 0) {
+              const draft = draftTargetWords(chapter.targetWords)
+              body.push('## 本章字数')
+              body.push(
+                `- 成稿目标 ${String(chapter.targetWords)} 字（读者看到的长度，允许 -5%/+15%）`,
+                `- 初稿目标 ${String(draft)} 字 = 成稿目标 × 150%：初稿按这个写，去 AI 化与手改删减后才留得住成稿长度`,
+              )
+            }
             const gaps = contractGaps(next, { only: [chapterId] })
             if (gaps[0] !== undefined) warnings.push(`第 ${String(gaps[0].number)} 章契约缺：${gaps[0].missing.join('、')}`)
             if (chapter !== undefined && chapter.targetWords <= 0) {
@@ -1279,6 +1332,12 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
       description:
         'Write or revise one chapter of prose against its outline contract. '
         + 'Send the COMPLETE chapter text — this replaces the body, it does not append. '
+        + 'A first draft is written to 150% of the chapter\'s target length, because 去 AI 化 and hand-editing delete a '
+        + 'large share of a draft; the finished chapter is then trimmed back to within -5%/+15% of the target the user '
+        + 'gave — the shortfall is held to 5%, because a chapter noticeably under its promised length is the real '
+        + 'failure, while an overrun can still be cut. This '
+        + 'tool holds the draft to whichever gate the chapter\'s status implies (planned/drafting = 150%, revised/final = '
+        + '-5%/+15%) and prints both windows. '
         + 'Report which contract fields the draft actually delivered (delivered=[...]); the tool compares that report '
         + 'with the plan and returns what was missed, what was never planned, and whether the length landed. That '
         + 'comparison is the SOP\'s "严格对应细纲" made checkable — it is the only place the workflow notices a chapter '
@@ -1336,6 +1395,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             )
           }
           body.push('', report.summary)
+          pushLengthReport(body, chapter)
           pushStyleHints(body, chapter.body)
           return {
             ok: report.missed.length === 0,
@@ -1377,6 +1437,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           }
         }
         if (report.unplanned.length > 0) body.push('', `细纲本身没写：${report.unplanned.join('、')}`)
+        pushLengthReport(body, written)
         pushStyleHints(body, written.body)
         if (args.status === 'final') {
           const blockers = blockersToFinal(written)
@@ -1720,6 +1781,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           body.push(`## 第 ${String(chapter.number)} 章「${chapter.title || chapter.id}」（${chapter.status}）`)
           for (const row of contractRows(chapter)) body.push(`- ${row.field}：${row.text || '（未写）'}`)
           body.push('', analyzeDelivery(chapter).summary)
+          pushLengthReport(body, chapter)
           pushStyleHints(body, chapter.body)
           body.push('', chapter.body.trim() === '' ? '（尚无正文）' : chapter.body)
         } else {
@@ -1734,9 +1796,11 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           if (progress.numberingIssues.length > 0) body.push(`章号异常：${progress.numberingIssues.join('、')}`)
           for (const chapter of chapters.slice(0, 30)) {
             const missing = missingContract(chapter)
+            const draft = draftTargetWords(chapter.targetWords)
             body.push(
               `${String(chapter.number).padStart(3, ' ')}. [${chapter.status}] ${chapter.title || chapter.id}`
                 + ` ${String(chapter.wordCount)} 字${chapter.targetWords > 0 ? `/${String(chapter.targetWords)}` : ''}`
+                + `${draft > 0 ? `（初稿 ${String(draft)}）` : ''}`
                 + `${missing.length > 0 ? ` ⚠缺${missing.join('/')}` : ''}`,
             )
           }

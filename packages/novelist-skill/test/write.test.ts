@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { styleObservations } from '../src/core/index.ts'
+import { analyzeDelivery, blockersToFinal, styleObservations } from '../src/core/index.ts'
+import type { Chapter, ChapterStatus } from '../src/core/types.ts'
 
 /**
  * The 去 AI 化 statistics, pinned threshold by threshold.
@@ -79,5 +80,74 @@ describe('styleObservations', () => {
       '对话句占比约 0%，偏低可考虑增加场景对话',
       '以「他看」开头的句子出现 4 次，句式重复感明显',
     ])
+  })
+})
+
+/**
+ * The report carries both gates and says which one binds.
+ *
+ * `novel_write` prints the same two numbers, so a report that silently applied
+ * the wrong gate would let a first draft pass at the finished length — the exact
+ * failure the 150% rule exists to prevent.
+ */
+describe('analyzeDelivery length gates', () => {
+  /**
+   * A chapter with a contract answered, so only the length gates vary.
+   *
+   * @param status - the lifecycle stage.
+   * @param characters - how much prose it holds.
+   * @returns the chapter.
+   */
+  const chapter = (status: ChapterStatus, characters: number): Chapter => {
+    const body = '甲'.repeat(characters)
+    return {
+      id: 'chapter-1',
+      number: 1,
+      title: '山门',
+      synopsis: '',
+      status,
+      body,
+      wordCount: characters,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      volume: 0,
+      plotTask: '推进',
+      conflict: '拦路',
+      emotionalPayoff: '期待',
+      infoGap: '为何上山',
+      beats: ['tension'],
+      hook: '钟响',
+      targetWords: 3000,
+      waived: {},
+      delivered: ['plotTask'],
+    }
+  }
+
+  it('reports both gates and binds a draft to the 150% one', () => {
+    const report = analyzeDelivery(chapter('drafting', 4500))
+    expect(report.draftLength?.target).toBe(4500)
+    expect(report.finalLength?.target).toBe(3000)
+    expect(report.length?.stage).toBe('draft')
+    expect(report.length?.within).toBe(true)
+    expect(report.summary).not.toContain('偏离')
+  })
+
+  it('binds a final chapter to the finished window and reports it as a blocker to publishing', () => {
+    const report = analyzeDelivery(chapter('final', 4500))
+    expect(report.length?.stage).toBe('final')
+    expect(report.length?.within).toBe(false)
+    expect(report.summary).toMatch(/成稿/)
+    expect(blockersToFinal(chapter('final', 4500)).join(' ')).toMatch(/偏离目标 3000/)
+    // 2700 is 10% under: inside a symmetric ±15% window, but a blocker here
+    // because a finished chapter may not come in more than 5% short.
+    expect(analyzeDelivery(chapter('final', 2700)).length?.within).toBe(false)
+    expect(blockersToFinal(chapter('final', 2700)).join(' ')).toMatch(/成稿不能比目标少太多/)
+  })
+
+  it('has nothing to compare until prose exists', () => {
+    const report = analyzeDelivery(chapter('planned', 0))
+    expect(report.length).toBeUndefined()
+    expect(report.draftLength).toBeUndefined()
+    expect(report.finalLength).toBeUndefined()
+    expect(blockersToFinal(chapter('final', 0)).join(' ')).toMatch(/尚无正文/)
   })
 })

@@ -3,6 +3,7 @@ import { emptyNovel } from '../src/core/novel.ts'
 import { CHAPTER_STATUSES } from '../src/core/types.ts'
 import type { Chapter, NovelState } from '../src/core/types.ts'
 import { boardOf } from '../src/client/board.ts'
+import type { BoardCard } from '../src/client/board.ts'
 
 /**
  * Kanban board specs.
@@ -98,6 +99,25 @@ describe('boardOf', () => {
     // plotTask, conflict, emotionalPayoff, infoGap are still unanswered; the
     // declared beat and hook are not.
     expect(card?.missing).toEqual(['plotTask', 'conflict', 'emotionalPayoff', 'infoGap'])
+  })
+
+  it('carries the length gate its column is measured against', () => {
+    const board = boardOf(
+      stateOf(
+        chapter({ number: 1, status: 'drafting', targetWords: 3000, wordCount: 4200, body: '正文' }),
+        chapter({ number: 2, status: 'final', targetWords: 3000, wordCount: 3000, body: '正文' }),
+      ),
+    )
+    const card = (number: number): BoardCard | undefined =>
+      board.columns.flatMap((column) => column.cards).find((found) => found.number === number)
+    // A draft is measured against the 150% it is written to; a published chapter
+    // against the target the user gave.
+    expect(card(1)?.draftWords).toBe(4500)
+    expect(card(1)?.lengthGate).toBe('draft')
+    expect(card(2)?.draftWords).toBe(4500)
+    expect(card(2)?.lengthGate).toBe('final')
+    // No target means no draft line, exactly as `draftTargetWords` says.
+    expect(boardOf(stateOf(chapter({ number: 3 }))).columns[0]?.cards[0]?.draftWords).toBe(0)
   })
 
   it('honours a waived contract field rather than calling it missing', () => {

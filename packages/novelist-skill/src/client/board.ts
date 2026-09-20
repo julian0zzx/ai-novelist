@@ -16,7 +16,7 @@
 
 import { CHAPTER_STATUSES } from '../core/types.ts'
 import type { Chapter, ChapterStatus, NovelState } from '../core/types.ts'
-import { missingContract } from '../core/plan.ts'
+import { draftTargetWords, lengthStageFor, missingContract } from '../core/plan.ts'
 import { assessStage, progressOf } from '../core/novel.ts'
 
 /** One chapter as the board shows it; every field is a fact about the state. */
@@ -35,6 +35,10 @@ export interface BoardCard {
   readonly wordCount: number
   /** Target length, 0 when the plan set none. */
   readonly targetWords: number
+  /** First-draft target (150% of {@link targetWords}), 0 when unset. */
+  readonly draftWords: number
+  /** Which length gate the card's stage is measured against. */
+  readonly lengthGate: 'draft' | 'final'
   /** Whether the chapter holds any prose at all. */
   readonly written: boolean
   /** Beats the chapter carries, in the contract's own order. */
@@ -126,6 +130,8 @@ function cardOf(chapter: Chapter): BoardCard {
     status: chapter.status,
     wordCount: chapter.wordCount,
     targetWords: chapter.targetWords,
+    draftWords: draftTargetWords(chapter.targetWords),
+    lengthGate: lengthStageFor(chapter.status),
     written: chapter.body.trim() !== '',
     beats: chapter.beats,
     hasHook: chapter.hook.trim() !== '',

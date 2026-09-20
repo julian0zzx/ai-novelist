@@ -1,17 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DRAFT_TARGET_RATIO,
   LENGTH_BENCHMARKS,
+  LENGTH_TOLERANCE,
   WRITING_PLAN_QUESTIONS,
   chaptersPerVolume,
+  countWords,
   derivedTotalChapters,
   describeWritingPlan,
+  draftTargetWords,
   emptyWriting,
+  lengthCheck,
+  lengthStageFor,
+  lengthToleranceLabel,
+  lengthWindow,
   normalizeWritingPlan,
   rhythmExpectation,
   volumeLengthNote,
   writingPlanConflicts,
   writingPlanGaps,
 } from '../src/core/index.ts'
+import type { Chapter, ChapterStatus } from '../src/core/types.ts'
 
 /**
  * The length plan: the four questions asked at initialization, what the two
@@ -50,7 +59,9 @@ describe('the writing plan questions', () => {
   it('renders an unanswered plan differently from a settled one', () => {
     expect(describeWritingPlan(emptyWriting())).toBe('总字数未问 · 单章字数未问 · 是否分卷未问')
     const answered = { ...emptyWriting(), targetWords: 1200000, chapterWords: 3000, volumes: 12, totalChapters: 400 }
-    expect(describeWritingPlan(answered)).toBe('总字数 1200000 · 单章 3000 字 · 12 卷 · 共约 400 章')
+    expect(describeWritingPlan(answered)).toBe(
+      '总字数 1200000 · 单章 3000 字 · 12 卷 · 共约 400 章 · 初稿按 4500 字/章（150%）',
+    )
   })
 })
 
@@ -117,5 +128,131 @@ describe('volume length and rhythm', () => {
     expect(rhythmExpectation(10, 40)).toBe('中高潮')
     expect(rhythmExpectation(40, 40)).toBe('卷末大高潮 + 卷末钩子')
     expect(rhythmExpectation(7, 40)).toBeUndefined()
+  })
+})
+
+/**
+ * The two length gates: a first draft is written long, the finished chapter is
+ * published on target.
+ *
+ * Editing a web-novel chapter is mostly cutting, so a draft written to the
+ * finished target comes out short. The 150% draft gate exists to absorb that,
+ * and the finished gate is what the chapter length the user gave actually means:
+ * -5%/+15%, asymmetric because falling under the promised length is the failure
+ * while an overrun can still be cut. These specs pin both gates, their edges,
+ * and the boundary between them.
+ */
+describe('the two length gates', () => {
+  /** Prose of exactly `characters` CJK characters, which {@link countWords} counts one for one. */
+  const body = (characters: number): string => '甲'.repeat(characters)
+
+  /**
+   * A chapter carrying only what the length gates read.
+   *
+   * @param status - the lifecycle stage.
+   * @param targetWords - the finished target.
+   * @param characters - how much prose it holds.
+   * @returns the chapter.
+   */
+  const chapter = (status: ChapterStatus, targetWords: number, characters: number): Chapter => ({
+    id: 'chapter-1',
+    number: 1,
+    title: '',
+    synopsis: '',
+    status,
+    body: body(characters),
+    wordCount: countWords(body(characters)),
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    volume: 0,
+    plotTask: '',
+    conflict: '',
+    emotionalPayoff: '',
+    infoGap: '',
+    beats: [],
+    hook: '',
+    targetWords,
+    waived: {},
+    delivered: [],
+  })
+
+  it('derives the first draft from the finished target, at 150%', () => {
+    expect(DRAFT_TARGET_RATIO).toBe(1.5)
+    expect(draftTargetWords(3000)).toBe(4500)
+    expect(draftTargetWords(2500)).toBe(3750)
+    // Rounded, because half a character is not a length anyone can write to.
+    expect(draftTargetWords(2333)).toBe(3500)
+    // No target, no draft line: an unanswered question stays unanswered.
+    expect(draftTargetWords(0)).toBe(0)
+  })
+
+  it('gates planned and drafting chapters on the draft, revised and final on the finished target', () => {
+    expect(lengthStageFor('planned')).toBe('draft')
+    expect(lengthStageFor('drafting')).toBe('draft')
+    expect(lengthStageFor('revised')).toBe('final')
+    expect(lengthStageFor('final')).toBe('final')
+  })
+
+  it('passes a 4400-character first draft it would fail as a finished chapter', () => {
+    const draft = chapter('drafting', 3000, 4400)
+    const check = lengthCheck(draft)
+    expect(check?.stage).toBe('draft')
+    expect(check?.target).toBe(4500)
+    expect(check?.within).toBe(true)
+    expect(check?.note).toContain('150%')
+    // The same prose misses the finished window: that gap is the room 去 AI 化
+    // and hand-cutting are supposed to consume.
+    expect(lengthCheck(draft, { stage: 'final' })?.within).toBe(false)
+  })
+
+  it('calls a draft written to the finished target short, in the gate’s own words', () => {
+    const check = lengthCheck(chapter('drafting', 3000, 3000))
+    expect(check?.within).toBe(false)
+    expect(check?.note).toMatch(/低于初稿目标 4500 字/)
+    expect(check?.note).toMatch(/初稿要按 150% 写/)
+    // The summary line keeps the verdict and drops the reasoning.
+    expect(check?.short).toBe('初稿 3000 字不足初稿目标 4500 字（成稿的 150%）')
+  })
+
+  it('judges a trimmed chapter on the finished target and stops asking for 150%', () => {
+    const trimmed = lengthCheck(chapter('revised', 3000, 3000))
+    expect(trimmed?.stage).toBe('final')
+    expect(trimmed?.target).toBe(3000)
+    expect(trimmed?.within).toBe(true)
+    expect(trimmed?.note).toMatch(/成稿/)
+    // The same length is still wrong while the chapter claims to be a draft.
+    expect(lengthCheck(chapter('drafting', 3000, 3000))?.within).toBe(false)
+  })
+
+  it('pins the window edges, which are asymmetric on both gates', () => {
+    // -5% / +15%: coming in under the target is the failure, so the shortfall is
+    // capped at 5% while the overrun keeps the 15% the plan allows.
+    expect(LENGTH_TOLERANCE).toEqual({ under: 0.05, over: 0.15 })
+    expect(lengthToleranceLabel()).toBe('-5%/+15%')
+    expect(lengthWindow(3000)).toEqual({ low: 2850, high: 3450 })
+    expect(lengthWindow(4500).low).toBeCloseTo(4275)
+    expect(lengthWindow(4500).high).toBeCloseTo(5175)
+    expect(lengthCheck(chapter('drafting', 3000, 4275))?.within).toBe(true)
+    expect(lengthCheck(chapter('drafting', 3000, 4274))?.within).toBe(false)
+    expect(lengthCheck(chapter('final', 3000, 2850))?.within).toBe(true)
+    expect(lengthCheck(chapter('final', 3000, 2849))?.within).toBe(false)
+  })
+
+  it('rejects a finished chapter that is 10% under target, which ±15% would have allowed', () => {
+    const short = lengthCheck(chapter('final', 3000, 2700))
+    expect(short?.within).toBe(false)
+    expect(short?.note).toMatch(/成稿不能比目标少太多/)
+    // The same 13% overrun is still inside the window: long can be cut.
+    expect(lengthCheck(chapter('final', 3000, 3400))?.within).toBe(true)
+  })
+
+  it('keeps the bare-tolerance call working, and stays silent with no prose or no target', () => {
+    // A bare number sets both sides, so 0 is the strict comparison.
+    expect(lengthToleranceLabel(0)).toBe('±0%')
+    expect(lengthCheck(chapter('final', 3000, 3000), 0)?.within).toBe(true)
+    expect(lengthCheck(chapter('final', 3000, 3100), 0)?.within).toBe(false)
+    // Nothing written yet: there is no draft to judge, and blockersToFinal says
+    // 尚无正文 separately.
+    expect(lengthCheck(chapter('drafting', 3000, 0))).toBeUndefined()
+    expect(lengthCheck(chapter('drafting', 0, 3000))).toBeUndefined()
   })
 })

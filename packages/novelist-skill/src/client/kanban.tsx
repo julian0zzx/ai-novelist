@@ -284,6 +284,16 @@ function useProject(sessionId: SessionId, workspaceRoot: string | undefined, att
  */
 function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode {
   const title = card.title.trim() === '' ? `第${String(card.number)}章` : card.title
+  // The card shows the length the column is measured against: a first draft
+  // runs to 150% of the target so that 去 AI 化 and hand-cutting cannot leave
+  // the finished chapter short, and the trimmed chapter is measured at 100%.
+  const gateWords = card.lengthGate === 'draft' ? card.draftWords : card.targetWords
+  const gateHint =
+    card.lengthGate === 'draft' && card.draftWords > 0
+      ? `初稿目标 ${String(card.draftWords)} 字（成稿 ${String(card.targetWords)} 字的 150%）`
+      : card.targetWords > 0
+        ? `成稿目标 ${String(card.targetWords)} 字（-5%/+15%）`
+        : undefined
   return (
     <div style={STYLE.card} title={card.synopsis.trim() === '' ? undefined : card.synopsis}>
       <div style={STYLE.cardTop}>
@@ -292,9 +302,9 @@ function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode 
         {card.volume > 0 && <span style={STYLE.cardNumber}>卷{String(card.volume)}</span>}
       </div>
       <div style={STYLE.cardRow}>
-        <span style={STYLE.meta}>
+        <span style={STYLE.meta} title={gateHint}>
           {String(card.wordCount)}
-          {card.targetWords > 0 ? ` / ${String(card.targetWords)}` : ''} {t('board.words')}
+          {gateWords > 0 ? ` / ${String(gateWords)}` : ''} {t('board.words')}
         </span>
         {!card.written && <span style={STYLE.warn}>{t('board.unwritten')}</span>}
       </div>

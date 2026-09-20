@@ -211,6 +211,9 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'the recorded data, and the blockers are what the next phase still needs. Plan with novel_plan, record cast, '
     + 'world and promises with novel_bible, validate with novel_verify before committing to a full outline, write with '
     + 'novel_write (reporting which contract fields the draft delivered), and drive iteration with novel_metrics. '
+    + 'A chapter is written long and published on target: write the first draft to 150% of the chapter target, because '
+    + '去 AI 化 and hand-editing delete a large share of it, then trim the finished chapter back to within '
+    + '-5%/+15% of the target (a finished chapter may never come in more than 5% short). '
     + 'A soft gate never blocks you, but when a result carries warnings the SOP and your position disagree — say so '
     + 'to the user instead of silently proceeding. If the length plan (总字数 / 单章字数 / 是否分卷) is still '
     + 'unanswered, ask the user before planning chapters: those numbers are theirs to give, not yours to assume.',

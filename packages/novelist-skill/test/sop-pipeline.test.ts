@@ -169,6 +169,11 @@ describe('phase one: the length plan', () => {
     )
     // The inherited target is what the dashboard shows a draft against.
     expect(await callText('novel_status', {})).toMatch(/0 字\/3000/)
+    // And the contract is told, at planning time, the length its first draft is
+    // written to: 150% of the finished target.
+    const plannedText = await callText('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
+    expect(plannedText).toContain('成稿目标 3000 字')
+    expect(plannedText).toContain('初稿目标 4500 字')
   })
 
   it('warns about a chapter target when the user never gave one', async () => {
@@ -423,6 +428,65 @@ describe('phase five: serialization and iteration', () => {
     expect(text).toContain('发布前检查')
     expect(text).toContain('合规自查')
     expect((result['warnings'] as string[]).join(' ')).toMatch(/标记 final/)
+  })
+
+  it('drafts to 150% of the target and prints both length gates', async () => {
+    await serializing()
+    // 45 characters is the draft target for this 30-character chapter: the first
+    // draft is written long so that 去 AI 化 and hand-cutting cannot leave the
+    // finished chapter short.
+    const result = await call('novel_write', {
+      chapterId: 'chapter-1',
+      body: '甲'.repeat(45),
+      delivered: ['plotTask'],
+      status: 'drafting',
+    })
+    const text = String((result['body'] as string[]).join('\n'))
+    expect(text).toContain('成稿目标 30 字')
+    expect(text).toContain('初稿目标 45 字')
+    expect(text).toMatch(/按初稿口径/)
+    expect((result['warnings'] as string[]) ?? []).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/低于初稿目标/)]),
+    )
+  })
+
+  it('calls a draft written to the finished target short of the 150% it needs', async () => {
+    await serializing()
+    const result = await call('novel_write', {
+      chapterId: 'chapter-1',
+      body: '甲'.repeat(30),
+      delivered: ['plotTask'],
+      status: 'drafting',
+    })
+    const text = String((result['body'] as string[]).join('\n'))
+    expect(text).toMatch(/低于初稿目标 45 字/)
+    expect(text).toMatch(/初稿要按 150% 写/)
+  })
+
+  it('holds a revised chapter to the finished target, not to 150%', async () => {
+    await serializing()
+    const result = await call('novel_write', {
+      chapterId: 'chapter-1',
+      body: '甲'.repeat(30),
+      delivered: ['plotTask'],
+      status: 'revised',
+    })
+    const text = String((result['body'] as string[]).join('\n'))
+    expect(text).toMatch(/按成稿口径/)
+    expect(text).not.toMatch(/低于初稿目标/)
+  })
+
+  it('flags a finished chapter that is 10% under target, which a symmetric ±15% would have passed', async () => {
+    await serializing()
+    const result = await call('novel_write', {
+      chapterId: 'chapter-1',
+      body: '甲'.repeat(27),
+      delivered: ['plotTask'],
+      status: 'revised',
+    })
+    const text = String((result['body'] as string[]).join('\n'))
+    expect(text).toContain('允许 29–35 字')
+    expect(text).toMatch(/成稿不能比目标少太多/)
   })
 
   it('reports the 去 AI 化 statistics on every write, and again on check', async () => {

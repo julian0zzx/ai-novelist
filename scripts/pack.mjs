@@ -474,13 +474,23 @@ be read off the premise, and every later length check is measured against them:
 | ask the user | lands in | why it matters |
 |---|---|---|
 | 这本书计划写多少字？ | \`targetWords\` | 篇幅口径：完本与上架预期 |
-| 单章目标多少字？ | \`chapterWords\` | 细纲没写目标字数时继承它，\`novel_write\` 用它做 ±15% 长度核对 |
+| 单章目标多少字？ | \`chapterWords\` | 细纲没写目标字数时继承它；初稿目标 = 成稿目标 × 150%，成稿落回 -5%/+15% |
 | 要分卷吗？分几卷？ | \`volumes\`（\`0\` = 明确不分卷） | 分卷大纲的卷数纪律与卷末高潮章位 |
 
 Offer common tiers as *choices*, never as the answer: 短篇 20–40 万字 / 单章 2000
 字左右 / 不分卷或 3–5 卷；中篇 80–150 万字 / 单章 2500–3000 字 / 6–12 卷；长篇
 200–400 万字 / 单章 3000–4000 字 / 15–30 卷。What gets recorded is what the user
 said, not what the table says.
+
+The chapter number you record is the **finished** length, and there are two gates
+around it: the first draft is written to 150% of it — 去 AI 化 and hand-editing
+delete a large share of a draft, so a draft written straight to the target arrives
+at publication short — and the trimmed chapter must land back inside **-5%/+15%**,
+an asymmetric window because coming in under the promised length is the real
+failure while an overrun can still be cut. The
+tools hold a chapter to whichever gate its status implies (planned/drafting =
+150%, revised/final = -5%/+15%), print both windows whenever prose is handed back, and
+carry the draft target in the runtime context.
 
 Once \`targetWords\` and \`chapterWords\` are known, \`totalChapters\` is derived
 (total ÷ chapter length) unless the user states one, and a chapters-per-volume
@@ -503,9 +513,11 @@ reported rather than silently accepted.
    (\`novel_plan operation="outline"\` then \`"chapter"\` then \`"opening"\`), then
    \`novel_verify\` with real numbers. A round that does not pass **must** name its
    fallback and its abandon condition; the tool refuses the round otherwise.
-3. **放大** — \`novel_write\` per chapter, reporting which contract fields the
-   draft delivered **and the 去 AI 化 statistics** (paragraph length, dialogue
-   density, repeated sentence openings). Those numbers are symptoms, not a
+3. **放大** — \`novel_write\` per chapter, writing the first draft to **150% of the
+   chapter target** (去 AI 化与手改会成段删减，初稿按成稿字数写必然偏短), reporting
+   which contract fields the draft delivered **and the 去 AI 化 statistics**
+   (paragraph length, dialogue density, repeated sentence openings). Those numbers
+   are symptoms, not a
    verdict, and nothing edits the prose for you: rewrite the chapter and send it
    back through \`operation="write"\`, or re-read the numbers later with
    \`operation="check"\` or \`novel_status detail="chapter"\`. When a chapter needs a
