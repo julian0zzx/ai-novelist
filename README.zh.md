@@ -307,4 +307,4 @@ pnpm run fixture /tmp/ain-fixture
 
 ## 许可证
 
-MIT
+AGPL-3.0

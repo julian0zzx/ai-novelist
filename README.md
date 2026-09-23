@@ -361,4 +361,4 @@ how the plugin is put together and why; it is the file to read before changing a
 
 ## License
 
-MIT
+AGPL-3.0
