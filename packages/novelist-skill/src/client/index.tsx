@@ -72,6 +72,9 @@ export const COMPOSER_TAB_KIND = 'ai-novelist'
 /** Copy for the tab chip until a live title registration replaces it. */
 export const COMPOSER_TAB_TITLE = 'Novel Composer'
 
+/** Stable identity of this tab's entry on the sidebar guide page. */
+export const COMPOSER_GUIDE_ENTRY_ID = 'ai-novelist/composer-entry'
+
 /** Slot key this tab body registers into. */
 const PANE_TAB_SLOT = 'sidebar.right.pane.tab'
 
@@ -272,6 +275,10 @@ export function apply(ctx: ClientContext): void {
     title: () => COMPOSER_TAB_TITLE,
     guide: [
       {
+        // rc.2 made the entry identity mandatory, not decorative: the guide
+        // keys selection and shortcut binding by `id`, so two contributions
+        // from one type stay distinguishable without relying on their order.
+        id: COMPOSER_GUIDE_ENTRY_ID,
         order: 50,
         title: () => COMPOSER_TAB_TITLE,
         description: () => 'Plan, draft, and track a web novel',

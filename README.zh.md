@@ -6,7 +6,7 @@
 生产 SOP 变成可执行的东西：agent 拿到的是真实项目文件、带门禁的策划流水线、设定集、逐章契约、
 按同类中位校准的指标台账，以及成稿导出，而不是把一整本小说塞在上下文里。
 
-面向 [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.1.5-rc.1`。
+面向 [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.2.0-rc.2`。
 
 ## 它带来了什么
 

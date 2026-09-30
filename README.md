@@ -8,7 +8,7 @@ project file, a planning pipeline with gates, a story bible, a per-chapter contr
 metric ledger calibrated against same-genre medians, and a manuscript exporter — instead
 of holding a novel in its context window.
 
-Built for [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.1.5-rc.1`.
+Built for [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.2.0-rc.2`.
 
 ## What it adds
 

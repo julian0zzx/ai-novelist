@@ -7,7 +7,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { emptyNovel, upsertChapter } from '../src/core/index.ts'
 import { NovelStore } from '../src/host/store.ts'
 import { boardOf } from '../src/client/board.ts'
-import { readProject } from '../src/client/project.ts'
+import { novelDocumentVersion, readProject, readProjectFile } from '../src/client/project.ts'
 import type { SessionId } from '../src/client/project.ts'
 import type { ClientRemote } from '../src/client/remote.ts'
 
@@ -63,13 +63,56 @@ function remoteOver(workspaceRoot: string): ClientRemote {
       },
       // Reaching for a second page would mean the fixture outgrew one, which
       // would make this spec read a partial JSON document and fail confusingly.
-      readAll: () => Promise.reject(new Error('unexpected second page')),
+      readBytes: () => Promise.reject(new Error('unexpected second page')),
     },
   } as unknown as ClientRemote
 }
 
 /** The session identity a read is addressed by; the fake ignores it. */
 const SESSION = 'session-client-read' as SessionId
+
+/**
+ * A Remote whose text read always reports itself incomplete, so the reader takes
+ * the whole-file byte path.
+ *
+ * `read` answers one page with `eof: false` no matter the file, which is the
+ * contract for a document larger than one page; the reader must then ask
+ * `readBytes` for the whole file. dsh 0.2.0-rc.2 returns native bytes there, so
+ * the fake hands back the same UTF-8 bytes a real transport would and the spec
+ * pins that the reader decodes them rather than reaching for `atob`.
+ *
+ * @param text - the bytes every read answers with, as decoded text.
+ * @returns the fake face.
+ */
+function pagedRemoteOver(text: string): ClientRemote {
+  return {
+    workspaceFiles: {
+      read: async () => ({ ok: true as const, value: { text: 'first page only', eof: false } }),
+      readBytes: async () => ({ ok: true as const, value: { data: new TextEncoder().encode(text), eof: true } }),
+    },
+  } as unknown as ClientRemote
+}
+
+describe('readProjectFile', () => {
+  it('assembles a document split across pages through the whole-file byte read', async () => {
+    const document = JSON.stringify({ schemaVersion: 1, title: '青云记' })
+
+    const raw = await readProjectFile(pagedRemoteOver(document), SESSION, '/any/novel.json', new AbortController().signal)
+
+    expect(raw).toBe(document)
+    expect(novelDocumentVersion(raw ?? '')).toBe(1)
+  })
+
+  it('answers undefined for the Remote code that means "no such file"', async () => {
+    const absent = {
+      workspaceFiles: {
+        read: async () => ({ ok: false as const, error: { code: 'workspace-file/not-found', message: 'gone' } }),
+      },
+    } as unknown as ClientRemote
+
+    expect(await readProjectFile(absent, SESSION, '/any/novel.json', new AbortController().signal)).toBeUndefined()
+  })
+})
 
 describe('readProject', () => {
   it('turns a store-written project into the board the Kanban view shows', async () => {

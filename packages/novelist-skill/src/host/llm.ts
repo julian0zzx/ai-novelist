@@ -20,6 +20,27 @@ import type { Context } from '@deepseek-ai/cordis'
 import { BlockAssembler, createUserMessage, type LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { ReviewRequest } from '../core/review.ts'
 
+/**
+ * The producer tag this plugin's review call carries.
+ *
+ * dsh 0.2.0-rc.2 replaced the single catch-all `'plugin'` source with a
+ * merge-extensible map whose entries each producer declares in its own module,
+ * so a message says *which* producer it came from rather than that it came from
+ * "a plugin". Declaring the kind here keeps that attribution honest and makes it
+ * impossible for another package to claim the same one.
+ *
+ * The call is hand-built and never enters the session log, so the declaration
+ * carries no `form`: an undeclared form is the documented default for content
+ * that is not a context contribution.
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'ai-novelist-review': {
+      kind: 'ai-novelist-review'
+    }
+  }
+}
+
 /** Raised when a review cannot be produced, with the reason in the message. */
 export class NovelReviewError extends Error {
   override readonly name = 'NovelReviewError'
@@ -138,7 +159,7 @@ export async function runReview(
       messages: [
         createUserMessage({
           content: [{ type: 'text', text: request.user }],
-          source: { kind: 'plugin', plugin: 'ai-novelist' },
+          source: { kind: 'ai-novelist-review' },
         }),
       ],
       maxTokens: request.maxTokens,

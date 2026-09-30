@@ -71,26 +71,26 @@ export async function readProjectFile(
   const result = await remote.workspaceFiles.read(sessionId, path, {}, signal)
   if (result.ok) {
     if (result.value.eof) return result.value.text
-    // The document is larger than one page. Ask for the whole thing rather than
-    // assembling a partial JSON document, which would fail as malformed.
-    const whole = await remote.workspaceFiles.readAll(sessionId, path, signal)
+    // The document is larger than one line page. Ask for the whole thing rather
+    // than assembling a partial JSON document, which would fail as malformed.
+    // dsh 0.2.0-rc.2 dropped the base64 `readAll` convenience for a byte read
+    // that returns native bytes, so an omitted range plus `TextDecoder` is the
+    // whole-file path now — one fewer encoding to undo, not an extra one.
+    const whole = await remote.workspaceFiles.readBytes(sessionId, path, {}, signal)
     if (!whole.ok) throw new Error(`${path}: ${whole.error.code}: ${whole.error.message}`)
-    return decodeBase64(whole.value.data)
+    return decodeWholeFile(whole.value.data)
   }
   if (ABSENT_CODES.has(result.error.code)) return undefined
   throw new Error(`${path}: ${result.error.code}: ${result.error.message}`)
 }
 
 /**
- * Decode the Remote's base64 byte window as UTF-8 text.
+ * Decode one whole-file byte read as UTF-8 text.
  *
- * @param base64 - the encoded bytes.
+ * @param bytes - the file's native bytes, as the Remote now delivers them.
  * @returns the decoded text.
  */
-function decodeBase64(base64: string): string {
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+function decodeWholeFile(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes)
 }
 
