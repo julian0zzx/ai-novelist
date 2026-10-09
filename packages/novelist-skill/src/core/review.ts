@@ -20,7 +20,9 @@ import { countWords } from './novel.ts'
 import type {
   Chapter,
   Competitor,
+  Evaluation,
   Iteration,
+  LaunchDecision,
   Lesson,
   MetricReading,
   NovelProgress,
@@ -348,6 +350,15 @@ export function buildRetroRequest(input: {
   readonly progress: NovelProgress
   readonly readings: readonly MetricReading[]
   readonly iterations: readonly Iteration[]
+  /**
+   * The investment evaluations, so the retrospective can judge the decisions
+   * themselves and not only the numbers behind them: "we changed a variable
+   * three times and the reading never moved" is a lesson, and it is invisible
+   * in the reading list alone.
+   */
+  readonly evaluations: readonly Evaluation[]
+  /** The stage-three launch decisions: what the book was bet on, and why. */
+  readonly launchDecisions: readonly LaunchDecision[]
   readonly lessons: readonly Lesson[]
 }): ReviewRequest {
   const cells = (reading: MetricReading): string =>
@@ -367,6 +378,21 @@ export function buildRetroRequest(input: {
       (iteration) =>
         `${iteration.id} [${iteration.outcome}] 范围=${iteration.scope} 动作=${iteration.action} 触发=${iteration.trigger}`,
     )
+    .join('\n')
+  const evaluations = input.evaluations
+    .slice(-8)
+    .map((entry) => {
+      const appointment = [
+        entry.nextAtChapter > 0 ? `第${String(entry.nextAtChapter)}章复看` : '',
+        entry.nextTrigger,
+      ].filter((part) => part !== '').join('，')
+      return `${entry.id} 第${String(entry.round)}次 判定=${entry.verdict}`
+        + ` 回退=${entry.fallback || '—'} 放弃条件=${entry.abandonIf || '—'}`
+        + ` 下次评估=${appointment || '—'} 备注=${entry.note || '—'}`
+    })
+    .join('\n')
+  const launchDecisions = input.launchDecisions
+    .map((entry) => `${entry.id} 决策=${entry.verdict} 回退=${entry.fallback || '—'} 放弃条件=${entry.abandonIf || '—'} 依据=${entry.note || '—'}`)
     .join('\n')
   const chapters = Object.values(input.state.chapters)
     .sort((a, b) => a.number - b.number)
@@ -404,6 +430,12 @@ export function buildRetroRequest(input: {
     '',
     '迭代台账（最近 12 次）：',
     iterations === '' ? '（没有迭代记录）' : iterations,
+    '',
+    '投入评估（最近 8 次，按需启动）：',
+    evaluations === '' ? '（没有做过投入评估）' : evaluations,
+    '',
+    '上线决策（阶段三的人工 go/no-go）：',
+    launchDecisions === '' ? '（没有记录上线决策）' : launchDecisions,
     '',
     '章节：',
     chapters === '' ? '（没有章节）' : chapters,

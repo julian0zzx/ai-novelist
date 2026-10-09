@@ -17,7 +17,7 @@ import { emptyNovel, upsertChapter, type NovelState } from '../src/core/index.ts
  * every other layer — routing, prompt framing, parsing, recording, the derived
  * transcript — runs for real, against a real filesystem and a real store.
  *
- * The properties asserted here are the promises the tool makes: the eight
+ * The properties asserted here are the promises the tool makes: the seven
  * deterministic tools never need a model, a review never edits prose, a
  * judgement records the model and rubric that produced it, and nothing a model
  * wrote enters the ledger unless the author asked for it.
@@ -174,26 +174,25 @@ async function until(check: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe('novel_review registration', () => {
-  it('is absent without a model, so the eight deterministic tools never need one', async () => {
+  it('is absent without a model, so the seven deterministic tools never need one', async () => {
     apply(ctx, Config({ workspaceRoot: root }) as never)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect([...tools.keys()].sort()).toEqual([
+      'novel_assess',
       'novel_bible',
       'novel_init',
-      'novel_metrics',
       'novel_plan',
       'novel_repo',
       'novel_status',
-      'novel_verify',
       'novel_write',
     ])
   })
 
-  it('appears as the ninth tool once a model route exists', async () => {
+  it('appears as the eighth tool once a model route exists', async () => {
     ctx.plugin(fakeModel)
     apply(ctx, Config({ workspaceRoot: root }) as never)
     await until(() => tools.has('novel_review'))
-    expect(tools.size).toBe(9)
+    expect(tools.size).toBe(8)
   })
 })
 

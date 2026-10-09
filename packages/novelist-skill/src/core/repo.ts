@@ -176,13 +176,15 @@ export function extractAssets(state: NovelState): IpAsset[] {
 export function summarizeCompletion(state: NovelState): string {
   const progress = progressOf(state)
   const written = progress.chapters - progress.emptyChapters.length
-  const rounds = state.verifications.length
-  const passed = state.verifications.filter((round) => round.verdict === 'pass').length
+  const evaluations = state.evaluations.length
+  const cuts = state.evaluations.filter((round) => round.verdict === 'fail').length
+  const decisions = state.launchDecisions.length
   const iterations = state.iterations.length
   const ineffective = state.iterations.filter((iteration) => iteration.outcome === 'ineffective').length
   return [
     `共 ${String(progress.chapters)} 章（已写 ${String(written)} 章，${String(progress.totalWords)} 字）`,
-    `验证 ${String(rounds)} 轮（通过 ${String(passed)} 轮）`,
+    `上线决策 ${String(decisions)} 次`,
+    `投入评估 ${String(evaluations)} 次（其中判定切书 ${String(cuts)} 次）`,
     `迭代 ${String(iterations)} 次（其中 ${String(ineffective)} 次判定无效）`,
     `未回收伏笔 ${String(progress.openLinks.length)} 条`,
   ].join('；')

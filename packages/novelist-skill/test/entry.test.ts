@@ -68,13 +68,12 @@ describe('apply', () => {
     apply(ctx, Config({ workspaceRoot: root }) as never)
     expect(ctx.get('novelState')).toBeDefined()
     expect(registered.map((definition) => definition.name).sort()).toEqual([
+      'novel_assess',
       'novel_bible',
       'novel_init',
-      'novel_metrics',
       'novel_plan',
       'novel_repo',
       'novel_status',
-      'novel_verify',
       'novel_write',
     ])
   })

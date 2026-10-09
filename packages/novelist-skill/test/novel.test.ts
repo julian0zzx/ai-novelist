@@ -3,7 +3,8 @@ import {
   NOVEL_SCHEMA_VERSION,
   NovelInputError,
   NovelStoreError,
-  addReading,
+  addEvaluation,
+  addLaunchDecision,
   assessStage,
   countWords,
   emptyNovel,
@@ -17,7 +18,6 @@ import {
   setOpeningCheck,
   slugify,
   stageLabel,
-  updateBaselines,
   updatePitch,
   upsertChapter,
   upsertCharacter,
@@ -29,19 +29,13 @@ import {
 /** Fixed clock so every timestamp assertion is exact. */
 const at = (iso: string) => () => iso
 
-/** A minimal verification record; spreads override just the verdict. */
-const emptyVerification = {
-  id: 'round-1',
-  round: 1,
+/** A minimal launch decision; spreads override just the verdict. */
+const emptyLaunchDecision = {
+  id: 'launch-1',
   at: '2024-01-02T00:00:00.000Z',
-  channel: 'readers',
-  sampleSize: 10,
-  readingId: 'reading-1',
-  namingId: '',
-  verdict: 'fail' as const,
-  reasons: [],
-  fallback: '阶段二',
-  abandonIf: '核心指标再降',
+  verdict: 'revise' as const,
+  fallback: '阶段二：改开篇三章',
+  abandonIf: '再改一轮仍留不住读者就换概念',
   note: '',
 }
 
@@ -80,7 +74,8 @@ describe('emptyNovel', () => {
     expect(state.links).toEqual({})
     expect(state.readings).toEqual([])
     expect(state.iterations).toEqual([])
-    expect(state.verifications).toEqual([])
+    expect(state.evaluations).toEqual([])
+    expect(state.launchDecisions).toEqual([])
     expect(state.retro).toBeUndefined()
   })
 })
@@ -151,6 +146,37 @@ describe('serialize and parse', () => {
     expect(() => parseNovel('{oops')).toThrow(NovelStoreError)
     expect(() => parseNovel('[]')).toThrow(NovelStoreError)
     expect(() => parseNovel('{"schemaVersion":99}')).toThrow(/not supported/)
+  })
+
+  it('reads a document that still calls the evaluation ledger `verifications`', () => {
+    // 3.2 renamed the ledger and added the evaluation's next appointment. A
+    // document written before that must keep its rounds rather than silently
+    // losing them to a renamed key.
+    const legacy = parseNovel(JSON.stringify({
+      schemaVersion: 3,
+      meta: { title: '青云记' },
+      verifications: [
+        {
+          id: 'round-1',
+          round: 1,
+          at: '2024-01-02T00:00:00.000Z',
+          channel: 'readers',
+          sampleSize: 12,
+          readingId: 'reading-1',
+          verdict: 'fail',
+          reasons: ['三章读完低于阈值'],
+          fallback: '阶段二：改开篇',
+          abandonIf: '再验一轮仍不达标就换概念',
+          note: '',
+        },
+      ],
+    }))
+    expect(legacy.evaluations).toHaveLength(1)
+    expect(legacy.evaluations[0]?.fallback).toBe('阶段二：改开篇')
+    // Fields the old record never carried default rather than being invented.
+    expect(legacy.evaluations[0]?.nextAtChapter).toBe(0)
+    expect(legacy.evaluations[0]?.nextTrigger).toBe('')
+    expect(legacy.launchDecisions).toEqual([])
   })
 
   it('recomputes the word count instead of trusting the file', () => {
@@ -388,55 +414,67 @@ describe('assessStage', () => {
     expect(assessment.blockers.join(' ')).toMatch(/竞品/)
   })
 
-  it('moves to verification-prep once the pitch and 20 competitors exist', () => {
+  it('moves to opening-package once the pitch and 20 competitors exist', () => {
     const assessment = assessStage(withPitchAndCompetitors())
-    expect(assessment.stage).toBe('verification-prep')
+    expect(assessment.stage).toBe('opening-package')
     expect(assessment.blockers.join(' ')).toMatch(/最小可行大纲/)
   })
 
-  it('requires the opening package, including the checklist, before verifying', () => {
+  it('requires the opening package, including the checklist, before the launch decision', () => {
     let state = withPitchAndCompetitors()
     state = { ...state, outline: { ...state.outline, logline: '少年上山', minimal: '一屏摘要', acts: ['起'] } }
     state = upsertChapter(state, { id: 'c1', number: 1, plotTask: '上山' }, at('2024-01-01T00:00:00.000Z'))
-    expect(assessStage(state).stage).toBe('verification-prep')
+    expect(assessStage(state).stage).toBe('opening-package')
     expect(assessStage(state).blockers.join(' ')).toMatch(/开篇工程清单/)
 
     for (const check of state.outline.opening) {
       state = setOpeningCheck(state, check.key, true, '已确认', at('2024-01-01T00:00:00.000Z'))
     }
-    // Opening package complete, but nobody has measured anything yet.
-    expect(assessStage(state).stage).toBe('verification-prep')
-    expect(assessStage(state).blockers.join(' ')).toMatch(/读数/)
+    // Opening package complete. Nothing has been measured, and nothing needs to
+    // be: the phase ends in a declared decision, not in a reading.
+    expect(assessStage(state).stage).toBe('opening-decision')
+    expect(assessStage(state).blockers.join(' ')).toMatch(/上线决策/)
   })
 
-  it('requires a passing round before the full outline', () => {
+  it('unlocks the full outline on a declared `go` alone, with no reading recorded', () => {
     let state = withPitchAndCompetitors()
-    state = updateBaselines(state, { medians: { readThrough3: 0.5, followRead10: 0.2 }, calibratedAt: '2024-01-01T00:00:00.000Z' })
     state = { ...state, outline: { ...state.outline, logline: '少年上山', minimal: '摘要', acts: ['起'] } }
     state = upsertChapter(state, { id: 'c1', number: 1, plotTask: '上山' }, at('2024-01-01T00:00:00.000Z'))
     for (const check of state.outline.opening) {
       state = setOpeningCheck(state, check.key, true, '', at('2024-01-01T00:00:00.000Z'))
     }
-    state = addReading(state, {
-      id: 'reading-1',
-      at: '2024-01-02T00:00:00.000Z',
-      period: 'new-book',
-      atChapter: 3,
-      values: { readThrough3: 0.3 },
-      source: 'platform',
-      note: '',
-    })
-    const failing = assessStage({ ...state, verifications: [{ ...emptyVerification, verdict: 'fail' }] })
-    expect(failing.stage).toBe('verifying')
-    expect(failing.blockers.join(' ')).toMatch(/验证未通过/)
-
-    const passing = assessStage({ ...state, verifications: [{ ...emptyVerification, verdict: 'pass' }] })
+    // No baselines, no readings, no evaluations — the point of the redesign.
+    const decided = addLaunchDecision(
+      state,
+      { ...emptyLaunchDecision, verdict: 'go', fallback: '', abandonIf: '' },
+      at('2024-01-02T00:00:00.000Z'),
+    )
+    const passing = assessStage(decided)
     expect(passing.stage).toBe('full-outline')
     expect(passing.blockers.join(' ')).toMatch(/完整大纲/)
   })
 
+  it('holds at the launch decision for `revise` and `abandon`, repeating the fallback and abandon condition', () => {
+    let state = withPitchAndCompetitors()
+    state = { ...state, outline: { ...state.outline, logline: '少年上山', minimal: '摘要', acts: ['起'] } }
+    state = upsertChapter(state, { id: 'c1', number: 1, plotTask: '上山' }, at('2024-01-01T00:00:00.000Z'))
+    for (const check of state.outline.opening) {
+      state = setOpeningCheck(state, check.key, true, '', at('2024-01-01T00:00:00.000Z'))
+    }
+    const revising = assessStage(addLaunchDecision(state, emptyLaunchDecision, at('2024-01-02T00:00:00.000Z')))
+    expect(revising.stage).toBe('opening-decision')
+    expect(revising.blockers.join(' ')).toMatch(/阶段二：改开篇三章/)
+    expect(revising.blockers.join(' ')).toMatch(/换概念/)
+
+    const abandoning = assessStage(
+      addLaunchDecision(state, { ...emptyLaunchDecision, id: 'launch-2', verdict: 'abandon' }, at('2024-01-03T00:00:00.000Z')),
+    )
+    expect(abandoning.stage).toBe('opening-decision')
+    expect(abandoning.blockers.join(' ')).toMatch(/放弃该概念/)
+  })
+
   it('labels every phase in the SOP vocabulary', () => {
-    for (const stage of ['planning', 'verification-prep', 'verifying', 'full-outline', 'serializing', 'completed'] as const) {
+    for (const stage of ['planning', 'opening-package', 'opening-decision', 'full-outline', 'serializing', 'completed'] as const) {
       expect(stageLabel(stage)).toMatch(/阶段/)
     }
   })

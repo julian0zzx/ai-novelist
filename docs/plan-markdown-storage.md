@@ -254,7 +254,7 @@ updatedAt: 2026-09-13T14:20:34.921Z
 |---|---|---|
 | `title` `premise` `genres` `pov` `language` | `.novel/novel.json` | 项目元数据 |
 | `platform` `pitch` `baselines` `writing` | `.novel/novel.json` | 商业框架、校准中位、写作参数 |
-| `readings[]` `iterations[]` `verifications[]` `reviews[]` | `.novel/novel.json` | 反馈与证据链：要被阈值计算，必须原子 |
+| `readings[]` `iterations[]` `evaluations[]` `launchDecisions[]` `reviews[]` | `.novel/novel.json` | 反馈与证据链：要被阈值计算，必须原子（3.2 前 `evaluations[]` 名为 `verifications[]`，读取时兼容） |
 | `links{}`（伏笔台账） | `.novel/novel.json` | "承诺"带状态与回收章，参与卷末门禁 |
 | `logline` `acts[]` `minimal` `fullOutlineDone` | `全书大纲.md` | |
 | 人物条目 | `人物设定.md` | |
@@ -284,7 +284,8 @@ updatedAt: 2026-09-13T14:20:34.921Z
   "links": { "…": { … } },
   "readings": [ … ],
   "iterations": [ … ],
-  "verifications": [ … ],
+  "evaluations": [ … ],
+  "launchDecisions": [ … ],
   "reviews": [ … ],
   "index": {
     "outlineFile": "全书大纲.md",
@@ -408,7 +409,7 @@ store.update(mutate)
 
 1. **工具仍不改写正文**：`novel_review` 的改写稿仍只落 `.novel/reviews/*.md`；只有
    `novel_write` 能写 `章节/*.md`。
-2. **阈值仍只认元数据**：`readings`/`iterations`/`verifications` 留在 `novel.json`，
-   `novel_metrics` 的裁决不因为这次改造而变成读 Markdown。
+2. **阈值仍只认元数据**：`readings`/`iterations`/`evaluations`/`launchDecisions` 留在
+   `novel.json`，`novel_assess` 的裁决不因为这次改造而变成读 Markdown。
 3. **越界保护不变**：所有路径仍由 `NovelStore.contain()` 做路径算术判定，拒绝逃出工作区根。
 4. **模型草稿不是事实**：`novel_review` 的 `save=true` 语义不变，只是落点是新文件。

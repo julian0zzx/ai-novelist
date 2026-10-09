@@ -133,8 +133,8 @@ const STATUS_LABELS: Readonly<Record<ChapterStatus, string>> = {
 /** Human labels for the SOP phases. */
 const STAGE_LABELS: Readonly<Record<string, string>> = {
   planning: '策划',
-  'verification-prep': '开篇验证包',
-  verifying: '验证中',
+  'opening-package': '开篇包',
+  'opening-decision': '上线决策',
   'full-outline': '完整大纲',
   serializing: '连载中',
   completed: '已完结',

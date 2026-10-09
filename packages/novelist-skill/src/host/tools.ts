@@ -1,5 +1,5 @@
 /**
- * Model-facing tools: the nine surfaces of the SOP.
+ * Model-facing tools: the eight surfaces of the SOP.
  *
  * One tool per capability, each owning one phase or one kind of state, so the
  * model's vocabulary matches the workflow instead of the storage layout:
@@ -7,13 +7,18 @@
  * | tool | SOP phase | what it owns |
  * |---|---|---|
  * | `novel_init` | 一 策划 | project, platform, calibration medians, writing parameters |
- * | `novel_plan` | 一/二/四 | pitch, competitors, world, outline, volumes, beats, chapters, naming |
+ * | `novel_plan` | 一/二/三/四 | pitch, competitors, world, outline, volumes, beats, chapters, naming, the launch decision |
  * | `novel_bible` | 一/四/六 | cast, world facts, reader promises, and their review |
- * | `novel_verify` | 三 验证 | validation rounds: readings in, verdict out |
  * | `novel_write` | 五 连载 | prose plus the contract-delivery report |
- * | `novel_metrics` | 五 放大 | readings, rule-driven iteration, outcome back-fill |
+ * | `novel_assess` | 五 按需 | the on-demand investment evaluation: readings in, verdict out |
  * | `novel_status` | 全流程 | the SOP dashboard, entirely derived |
  * | `novel_repo` | 六 复盘 | retrospective, IP assets, templates, manuscript export |
+ *
+ * The data assessment is deliberately *not* a phase. `novel_assess` is started by
+ * the author when they want to know whether the book is still worth continuing —
+ * normally once the platform has numbers to transcribe — and nothing in the
+ * pipeline waits for it. The stage machine advances on planned and written work
+ * alone, which is what lets a project move while the numbers are unavailable.
  *
  * Every tool answers with the same envelope — `ok`, `operation`, `detail`, the
  * derived stage, the next phase's blockers, soft-gate `warnings`, and a progress
@@ -41,7 +46,9 @@ import {
   REVIEW_PROMPT_VERSION,
   WRITING_PLAN_QUESTIONS,
   NovelInputError,
+  addEvaluation,
   addIteration,
+  addLaunchDecision,
   addReading,
   addReview,
   analyzeDelivery,
@@ -65,6 +72,9 @@ import {
   describeWritingPlan,
   draftTargetWords,
   emptyNovel,
+  evaluationAction,
+  evaluationActionLabel,
+  evaluationHint,
   iterationRules,
   judgeIteration,
   lessonPrompts,
@@ -105,15 +115,20 @@ import {
   writingPlanGaps,
   type Clock,
   type Chapter,
+  type Evaluation,
+  type IterationOutcome,
+  type LaunchVerdict,
   type Lesson,
+  type MetricBaselines,
   type MetricKey,
   type MetricPeriod,
   type NovelState,
   type ReviewFinding,
   type ReviewKind,
   type ReviewRecord,
+  type VerdictLevel,
 } from '../core/index.ts'
-import { DEFAULT_MULTIPLIERS } from '../core/metrics.ts'
+import { CUT_LOSS_MULTIPLIER, DEFAULT_MULTIPLIERS, INEFFECTIVE_ITERATIONS_FOR_CUT } from '../core/metrics.ts'
 import { NovelReviewError, resolveRoute, runReview, type ReviewSettings } from './llm.ts'
 import type { ProjectResolver } from './resolver.ts'
 import { policyForSession, withSandboxPolicy } from './sandbox.ts'
@@ -160,6 +175,15 @@ interface Envelope {
   readonly stage: string
   readonly blockers: string[]
   readonly warnings?: string[]
+  /**
+   * Present only when the project suggests running an investment evaluation.
+   *
+   * It rides in the envelope rather than in `warnings` on purpose: a warning says
+   * the SOP disagrees with where you are, and this never does — the data check is
+   * optional by design, and reporting it as a warning would rebuild the gate this
+   * design removes.
+   */
+  readonly evaluationDue?: string
   readonly progress: {
     readonly chapters: number
     readonly words: number
@@ -189,6 +213,12 @@ const ENVELOPE_PROPERTIES = {
     description: 'Soft-gate notes: the call succeeded, but the SOP disagrees with the position.',
   },
   body: { type: 'array', items: { type: 'string' }, description: 'Tool-specific detail lines.' },
+  evaluationDue: {
+    type: 'string',
+    description:
+      'Present only when the project suggests running an investment evaluation now, with the reason. Advisory: the '
+      + 'data check is on demand and never blocks anything.',
+  },
   progress: {
     type: 'object',
     required: true,
@@ -218,10 +248,14 @@ const ENVELOPE_SCHEMA = { type: 'object', additionalProperties: true, properties
 function envelope(state: NovelState, warnings: readonly string[] = []): Envelope {
   const assessment = assessStage(state)
   const progress = progressOf(state)
+  const hint = evaluationHint(state)
   return {
     stage: `${assessment.stage}（${stageLabel(assessment.stage)}）`,
     blockers: [...assessment.blockers],
     ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
+    // Only when it is due: an always-present line would train the model to
+    // ignore it, and the point of the hint is that it is rare and actionable.
+    ...(hint.due ? { evaluationDue: hint.reason } : {}),
     progress: {
       chapters: progress.chapters,
       words: progress.totalWords,
@@ -232,6 +266,18 @@ function envelope(state: NovelState, warnings: readonly string[] = []): Envelope
       overdueLinks: progress.overdueLinks.length,
     },
   }
+}
+
+/**
+ * The threshold verdict in Chinese, for tool output.
+ *
+ * @param verdict - the verdict the comparisons produced.
+ * @returns 通过 / 部分通过 / 不通过.
+ */
+function verdictLabelOf(verdict: VerdictLevel): string {
+  if (verdict === 'pass') return '通过'
+  if (verdict === 'partial') return '部分通过'
+  return '不通过'
 }
 
 /**
@@ -610,14 +656,20 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         + 'goal, conflict, climax, end hook · chapter=one chapter contract (plot task, conflict, emotional payoff, '
         + 'information gap, beats, hook, target length) — the target is the finished length, and the chapter is drafted '
         + 'at 150% of it · beat=place a rhythm beat · opening=confirm an opening-engineering '
-        + 'checklist item (omit `key` to list it) · naming=a candidate title/blurb/tag set. '
+        + 'checklist item (omit `key` to list it) · naming=a candidate title/blurb/tag set · '
+        + 'launch=the stage-three go/no-go: whether the opening package is worth building out into a full skeleton. '
+        + 'launch is a declared judgement, not a computed number — the evidence at that point is an editor and a handful '
+        + 'of readers. A verdict that is not `go` must name where to fall back to (`fallback`) and what would make you '
+        + 'drop the concept (`abandonIf`); the tool refuses it otherwise, because that requirement is what stops the '
+        + 'decision from becoming a formality. Platform numbers are never required here: the data check is '
+        + '`novel_assess`, run on demand. '
         + 'Soft gate: a call always succeeds, but when the SOP would not have you here yet the result carries warnings '
         + 'naming what is still missing. Read them before writing prose.',
       parameters: {
         operation: {
           type: 'string',
           required: true,
-          enum: ['competitor', 'pitch', 'world', 'outline', 'volume', 'chapter', 'beat', 'opening', 'naming'],
+          enum: ['competitor', 'pitch', 'world', 'outline', 'volume', 'chapter', 'beat', 'opening', 'naming', 'launch'],
           description: 'Which planning step to write.',
         },
         id: { type: 'string', description: 'Slug of the record; derived from title/name when omitted.' },
@@ -676,7 +728,20 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         waiveReason: { type: 'string', description: 'chapter: why those fields are waived.' },
         remove: { type: 'boolean', description: 'chapter: delete this chapter instead of writing it.' },
         beatKind: { type: 'string', enum: [...BEAT_KINDS], description: 'beat: which kind of beat.' },
-        note: { type: 'string', description: 'beat/opening: one line on what happens, or the evidence.' },
+        note: { type: 'string', description: 'beat/opening/launch: one line on what happens, or the evidence.' },
+        verdict: {
+          type: 'string',
+          enum: ['go', 'revise', 'abandon'],
+          description: 'launch: go (投入完整骨架) | revise (改后再说) | abandon (放弃该概念).',
+        },
+        fallback: {
+          type: 'string',
+          description: 'launch: required when the verdict is not `go` — which phase to fall back to.',
+        },
+        abandonIf: {
+          type: 'string',
+          description: 'launch: required when the verdict is not `go` — what would make you drop the concept.',
+        },
         key: { type: 'string', description: 'opening: the checklist key; omit to list the checklist.' },
         done: { type: 'boolean', description: 'opening: confirm (true) or unconfirm (false).' },
         rationale: { type: 'string', description: 'naming: why this set should work.' },
@@ -972,6 +1037,45 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             }
             break
           }
+          case 'launch': {
+            // The stage-three decision. It is a judgement, so the tool does not
+            // compute it — it only refuses to let a non-`go` verdict through
+            // without a fallback target and an abandon condition, which is the
+            // SOP's own anti-formality rule (C7) and the one thing that survives
+            // the move away from a data-driven gate.
+            const verdict = (args.verdict ?? 'revise') as LaunchVerdict
+            if (args.verdict === undefined) {
+              throw new NovelInputError('operation="launch" needs `verdict`: go | revise | abandon')
+            }
+            if (verdict !== 'go' && (args.fallback === undefined || args.fallback.trim() === '')) {
+              throw new NovelInputError(
+                `上线决策为「${verdict}」，必须给出 fallback（回退到哪个阶段）才能记录——`
+                + 'SOP 要求不通过的上线决策写明回退目标，否则决策会变成走过场',
+              )
+            }
+            if (verdict !== 'go' && (args.abandonIf === undefined || args.abandonIf.trim() === '')) {
+              throw new NovelInputError(`上线决策为「${verdict}」，必须给出 abandonIf（什么情况下放弃该概念）`)
+            }
+            const round = current.launchDecisions.length + 1
+            const decision = {
+              id: `launch-${String(round)}`,
+              at: now(),
+              verdict,
+              fallback: args.fallback ?? '',
+              abandonIf: args.abandonIf ?? '',
+              note: args.note ?? '',
+            }
+            await store.update((state) => addLaunchDecision(state, decision, now))
+            detail = `上线决策 ${decision.id}：${verdict === 'go' ? '通过，进入完整大纲' : verdict === 'revise' ? '改后再说' : '放弃该概念'}`
+            body.push(`## 上线决策 ${decision.id}`)
+            if (verdict === 'go') {
+              body.push('- 进入阶段四：完整大纲、分卷、节拍表与伏笔表')
+            } else {
+              body.push('', `回退目标：${decision.fallback}`, `放弃条件：${decision.abandonIf}`)
+              if (verdict === 'revise') body.push('', '改完后重新调用 operation="launch" 记录下一次决策。')
+            }
+            break
+          }
           default: {
             throw new NovelInputError(`unknown planning operation ${JSON.stringify(args.operation)}`)
           }
@@ -1163,41 +1267,78 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
     }),
   )
 
-  // ── novel_verify ────────────────────────────────────────────────────────────
+  // ── novel_assess ────────────────────────────────────────────────────────────
 
   registerScoped(ctx,
     defineTool({
-      name: 'novel_verify',
+      name: 'novel_assess',
       description:
-        'The SOP validation gate. operation="round" records one small-cost test — editor submission, reader sample, '
-        + 'author group, platform new-book window — with its metrics, and returns the verdict computed by comparing every '
-        + 'reading against the calibrated same-genre medians: pass, partial, or fail. '
-        + 'A round that does not pass must name where to fall back to and what would make you abandon the concept; the '
-        + 'tool refuses the round without them, because that requirement is what stops validation from becoming a '
-        + 'formality. '
-        + 'operation="assess" reports the latest readings against the thresholds without recording a round. '
+        'The on-demand investment evaluation: "is this book still worth continuing?" '
+        + 'It is deliberately NOT part of the pipeline. No stage waits for it, the project advances whether or not the '
+        + 'platform numbers exist yet, and nothing here is ever a gate — which is what makes it usable in the common '
+        + 'case where the data lives on the platform and has to be transcribed by hand. '
+        + 'Run it when the author asks that question, normally after the book has been live long enough to report '
+        + 'something. '
+        + 'operation="record" stores one reading (period, chapter position, values) and immediately reports which '
+        + 'threshold rules fire, each with its action and the scope it may reach (chapter / volume / whole-book). '
+        + 'operation="iterate" writes the change you decided on into the ledger, tied to the reading that triggered it. '
+        + 'operation="evaluate" runs the session: it compares the reading against the calibrated same-genre medians, '
+        + 'back-fills the result of every earlier change against this reading, and returns the verdict — 继续投入 / '
+        + '换变量后继续 / 切书止损 — with the rules that fired. '
+        + 'An evaluation that does not pass must name where to fall back to (`fallback`) and what would make you stop '
+        + '(`abandonIf`), and every evaluation must leave an appointment for the next one (`nextAtChapter` and/or '
+        + '`nextTrigger`): without that appointment an on-demand check quietly turns into no check at all. '
+        + 'record and evaluate also accept `baselines` to re-calibrate the medians while you are already on the platform '
+        + 'copying numbers — they are a 30-day figure, so the moment of evaluation is the right moment to refresh them. '
+        + 'operation="history" lists every evaluation with its verdict, fallback, abandon condition and next appointment; '
+        + 'operation="rules" prints the thresholds currently in force. '
+        + 'operation="outcome" is the manual override for the automatic back-fill: name the `iterationId` and the '
+        + '`outcomeReadingId` that closes it, and the tool reports whether that reading improved on the one the change '
+        + 'started from. Use it when an adjustment should be judged against a reading `evaluate` did not pick — an '
+        + 'earlier one, or one recorded after the evaluation ran. '
         + 'The numbers come from the platform or from readers; the tool compares and decides, it never invents a value.',
       parameters: {
-        operation: { type: 'string', required: true, enum: ['round', 'assess'], description: 'round (record) | assess (report).' },
-        channel: { type: 'string', description: 'round: editor | readers | author-group | platform.' },
-        sampleSize: { type: 'integer', description: 'round: how many readers or titles the sample covers.' },
-        period: {
+        operation: {
           type: 'string',
-          enum: ['new-book', 'paid', 'free'],
-          description: 'round: which release period the metrics belong to; defaults to new-book.',
+          required: true,
+          enum: ['record', 'iterate', 'evaluate', 'outcome', 'history', 'rules'],
+          description: 'record | iterate | evaluate | outcome | history | rules.',
         },
-        atChapter: { type: 'integer', description: 'round: the chapter position the reading describes.' },
+        period: { type: 'string', enum: ['new-book', 'paid', 'free'], description: 'record: release period.' },
+        atChapter: { type: 'integer', description: 'record: chapter position the reading describes.' },
         metrics: {
           type: 'object',
           additionalProperties: true,
-          description: 'round: values keyed by metric, for example {"readThrough3": 0.42, "followRead10": 0.18}.',
+          description: 'record: values keyed by metric, for example {"readThrough3": 0.42, "followRead10": 0.18}.',
         },
-        source: { type: 'string', description: 'round: where the numbers came from.' },
-        namingId: { type: 'string', description: 'round: which naming candidate this round tested, if any.' },
-        fallback: { type: 'string', description: 'round: required when not passing — which phase to fall back to.' },
-        abandonIf: { type: 'string', description: 'round: required when not passing — what would make you drop the concept.' },
-        note: { type: 'string', description: 'round: your own reading of the reader reaction.' },
-        readingId: { type: 'string', description: 'assess: a specific reading; defaults to the latest.' },
+        source: { type: 'string', description: 'record: where the numbers came from.' },
+        note: { type: 'string', description: 'record/iterate/evaluate: free-form observation.' },
+        baselines: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            'record/evaluate: same-genre medians to re-calibrate with, keyed by metric. Refresh them here, at the '
+            + 'moment you are already reading the platform.',
+        },
+        baselineSource: { type: 'string', description: 'record/evaluate: where the refreshed medians came from.' },
+        trigger: { type: 'string', description: 'iterate: the rule key that fired, or "manual".' },
+        action: { type: 'string', description: 'iterate: what you decided to change.' },
+        scope: { type: 'string', enum: ['chapter', 'volume', 'whole-book'], description: 'iterate: how far the change reaches.' },
+        evidence: { type: 'string', description: 'iterate: the comparison that triggered it.' },
+        baselineReadingId: { type: 'string', description: 'iterate: the reading it responds to; defaults to the latest.' },
+        iterationId: { type: 'string', description: 'outcome: the adjustment to close; defaults to the most recent.' },
+        outcomeReadingId: {
+          type: 'string',
+          description: 'outcome: the reading that judges it; defaults to the latest recorded.',
+        },
+        readingId: { type: 'string', description: 'evaluate: the reading to evaluate; defaults to the latest.' },
+        channel: { type: 'string', description: 'evaluate: platform | readers | editor | author-group.' },
+        sampleSize: { type: 'integer', description: 'evaluate: how many readers or titles the sample covers.' },
+        namingId: { type: 'string', description: 'evaluate: which naming candidate was under test, if any.' },
+        fallback: { type: 'string', description: 'evaluate: required when not passing — which phase to fall back to.' },
+        abandonIf: { type: 'string', description: 'evaluate: required when not passing — what would make you stop.' },
+        nextAtChapter: { type: 'integer', description: 'evaluate: the chapter position to evaluate again at.' },
+        nextTrigger: { type: 'string', description: 'evaluate: the next appointment in words, e.g. 卷末 / 数据异常时.' },
       },
       output: { schema: ENVELOPE_SCHEMA, render: renderTool },
       execute: async (args, exec) => {
@@ -1209,114 +1350,421 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         const warnings: string[] = []
         const body: string[] = []
 
+        // Re-calibration is offered here rather than only at initialization
+        // because the medians are a 30-day figure and the author is on the
+        // platform at exactly this moment. Recording them at evaluation time is
+        // still "before the comparison", which is all SOP principle 5 requires —
+        // and it is the medians just transcribed that `evaluate` must judge
+        // against, so the patch is built before any comparison runs.
+        const calibrationPatch = (): Partial<MetricBaselines> | undefined => {
+          if (args.baselines === undefined) return undefined
+          const medians = { ...current.baselines.medians }
+          for (const [key, value] of Object.entries(args.baselines)) {
+            if (typeof value === 'number' && Number.isFinite(value)) Object.assign(medians, { [key]: value })
+            else warnings.push(`中位 "${key}" 不是数字，已忽略`)
+          }
+          return {
+            medians,
+            calibratedAt: now(),
+            ...(args.baselineSource !== undefined && { source: args.baselineSource }),
+          }
+        }
+
+        const calibrationWarning = (baselines: MetricBaselines): void => {
+          const age = calibrationAge(baselines, new Date())
+          if (!age.stale) return
+          warnings.push(
+            age.days === undefined
+              ? '尚未校准同类中位：阈值规则无法执行，这次只能记录不能裁决（本工具传 baselines 即可随手校准）'
+              : `中位校准已 ${String(Math.round(age.days))} 天（SOP 要求近 30 天）：建议本次读数一起重新校准`,
+          )
+        }
+
+        if (args.operation === 'rules') {
+          const age = calibrationAge(current.baselines, new Date())
+          body.push('## 当前生效的阈值')
+          body.push(
+            age.days === undefined
+              ? '尚未校准同类中位：所有阈值不可用，请在 record/evaluate 时传 baselines，或在 novel_init 里录入'
+              : `中位校准于 ${current.baselines.calibratedAt}（${String(Math.round(age.days))} 天前）${age.stale ? ' — 已超过 30 天，建议重新校准' : ''}`,
+          )
+          for (const metric of METRIC_KEYS) {
+            const median = current.baselines.medians[metric]
+            const multiplier = current.baselines.multipliers[metric] ?? DEFAULT_MULTIPLIERS[metric] ?? 0.8
+            body.push(
+              median === undefined
+                ? `- ${metric}：未校准`
+                : `- ${metric}：中位 ${String(median)} × ${String(multiplier)} = 触发线 ${String(Number((median * multiplier).toFixed(4)))}`,
+            )
+          }
+          return {
+            ok: true,
+            operation: 'rules',
+            detail: `已校准 ${String(Object.keys(current.baselines.medians).length)} 项指标`,
+            ...envelope(current, warnings),
+            body,
+          }
+        }
+
+        if (args.operation === 'history') {
+          const hint = evaluationHint(current)
+          body.push('## 投入评估历史')
+          if (current.evaluations.length === 0) {
+            body.push('- 还没有做过投入评估（按需启动，不启动也不影响写作进度）')
+          }
+          for (const entry of current.evaluations) {
+            const appointment = [
+              entry.nextAtChapter > 0 ? `第 ${String(entry.nextAtChapter)} 章` : '',
+              entry.nextTrigger,
+            ].filter((part) => part !== '').join('，')
+            body.push(
+              `- 第 ${String(entry.round)} 次（${entry.at.slice(0, 10)}，${entry.channel || '未注明渠道'}）：`
+              + `${verdictLabelOf(entry.verdict)} → ${evaluationActionLabel(evaluationAction(entry.verdict))}`,
+            )
+            if (entry.fallback !== '') body.push(`  回退目标：${entry.fallback}`)
+            if (entry.abandonIf !== '') body.push(`  放弃条件：${entry.abandonIf}`)
+            if (appointment !== '') body.push(`  下次评估：${appointment}`)
+            if (entry.note !== '') body.push(`  备注：${entry.note}`)
+          }
+          const open = current.iterations.filter((iteration) => iteration.outcomeReadingId === '')
+          body.push(
+            '',
+            `读数 ${String(current.readings.length)} 条 · 迭代 ${String(current.iterations.length)} 次`
+            + `（待回填 ${String(open.length)} 次）`,
+            `评估提示：${hint.due ? '建议启动一次' : '暂不需要'} — ${hint.reason}`,
+          )
+          return {
+            ok: true,
+            operation: 'history',
+            detail: `投入评估 ${String(current.evaluations.length)} 次${hint.due ? `；${hint.reason}` : ''}`,
+            ...envelope(current, warnings),
+            body,
+          }
+        }
+
+        if (args.operation === 'iterate') {
+          if (args.action === undefined || args.action.trim() === '') {
+            throw new NovelInputError('operation="iterate" needs the `action` you decided on')
+          }
+          const baselineReadingId = args.baselineReadingId ?? current.readings.at(-1)?.id ?? ''
+          const id = `iteration-${String(current.iterations.length + 1)}`
+          const action = args.action
+          const next = await store.update(
+            (state) =>
+              addIteration(
+                state,
+                {
+                  id,
+                  at: now(),
+                  trigger: args.trigger ?? 'manual',
+                  evidence: args.evidence ?? '',
+                  action,
+                  scope: (args.scope ?? 'chapter') as 'chapter' | 'volume' | 'whole-book',
+                  baselineReadingId,
+                  outcomeReadingId: '',
+                  outcome: 'unknown',
+                  note: args.note ?? '',
+                },
+                now,
+              ),
+          )
+          body.push(
+            `基准读数：${baselineReadingId || '（无）'}`,
+            '下一次 operation="evaluate" 会用当时的读数自动回填这次调整的结果。',
+          )
+          await resync(exec.agent?.session)
+          return {
+            ok: true,
+            operation: 'iterate',
+            detail: `迭代 ${id} 已记录：${action}（范围 ${args.scope ?? 'chapter'}）`,
+            ...envelope(next, warnings),
+            body,
+          }
+        }
+
+        // The manual override for `evaluate`'s automatic back-fill. `evaluate`
+        // closes everything open against the reading being evaluated, which is
+        // the right default; this exists for the cases it cannot see — an
+        // adjustment that was decided after that reading, or one whose outcome
+        // is a reading the author wants to name explicitly.
+        if (args.operation === 'outcome') {
+          const iterationId = args.iterationId ?? current.iterations.at(-1)?.id
+          if (iterationId === undefined) {
+            throw new NovelInputError('还没有可结项的调整：先用 operation="iterate" 记录一次改动')
+          }
+          const target = current.iterations.find((iteration) => iteration.id === iterationId)
+          if (target === undefined) throw new NovelInputError(`找不到调整 ${iterationId}`)
+          const outcomeReadingId = args.outcomeReadingId ?? current.readings.at(-1)?.id ?? ''
+          if (outcomeReadingId === '') {
+            throw new NovelInputError('没有可用于结项的读数：先用 operation="record" 抄一次读数')
+          }
+          if (outcomeReadingId === target.baselineReadingId) {
+            throw new NovelInputError(
+              `读数 ${outcomeReadingId} 就是这次调整的基准读数，拿它结项等于没比较：换一个更晚的读数`,
+            )
+          }
+          const note = args.note
+          const linked = await store.update((state) => ({
+            ...state,
+            iterations: state.iterations.map((iteration) =>
+              iteration.id === iterationId
+                ? { ...iteration, outcomeReadingId, outcome: 'pending', ...(note !== undefined && { note }) }
+                : iteration,
+            ),
+            updatedAt: now(),
+          }))
+          const iteration = linked.iterations.find((entry) => entry.id === iterationId)
+          const judged = iteration === undefined ? undefined : judgeIteration(linked, iteration)
+          const final =
+            judged === undefined
+              ? linked
+              : await store.update((state) => ({
+                  ...state,
+                  iterations: state.iterations.map((entry) =>
+                    entry.id === iterationId ? { ...entry, outcome: judged.improved ? 'effective' : 'ineffective' } : entry,
+                  ),
+                  updatedAt: now(),
+                }))
+          const ineffective = countIneffectiveIterations(final)
+          if (ineffective >= INEFFECTIVE_ITERATIONS_FOR_CUT) {
+            warnings.push(
+              `已累计 ${String(ineffective)} 轮调整无效：SOP 的切书止损条件是「连续 2–3 轮无效且核心指标长期低于中位 `
+              + `${String(Math.round(CUT_LOSS_MULTIPLIER * 100))}%」，请核对读数后再决定是否切书`,
+            )
+          }
+          body.push(judged?.note ?? '缺少可比读数，未判定有效性')
+          body.push('', '这次是手动结项：下一次 operation="evaluate" 只会自动回填仍未结项的调整。')
+          await resync(exec.agent?.session)
+          return {
+            ok: true,
+            operation: 'outcome',
+            detail:
+              judged === undefined
+                ? `调整 ${iterationId} 已关联读数 ${outcomeReadingId}（尚无可比较的基准）`
+                : `调整 ${iterationId} 结果：${judged.improved ? '有效' : '无效'} — ${judged.note}`,
+            ...envelope(final, warnings),
+            body,
+          }
+        }
+
         const values: Partial<Record<MetricKey, number>> = {}
         for (const [key, value] of Object.entries(args.metrics ?? {})) {
           if (typeof value === 'number' && Number.isFinite(value)) Object.assign(values, { [key]: value })
           else warnings.push(`指标 "${key}" 不是数字，已忽略`)
         }
 
-        const age = calibrationAge(current.baselines, new Date())
-        if (age.stale) {
-          warnings.push(
-            age.days === undefined
-              ? '尚未校准同类中位：阈值规则无法执行，本轮只能记录不能裁决（novel_init 的 baselines）'
-              : `中位校准已 ${String(Math.round(age.days))} 天（SOP 要求近 30 天）：建议重新校准`,
-          )
-        }
-
-        if (args.operation === 'assess') {
+        if (args.operation === 'evaluate') {
           const reading =
             args.readingId === undefined
               ? current.readings.at(-1)
               : current.readings.find((entry) => entry.id === args.readingId)
-          if (reading === undefined) throw new NovelInputError('没有可评估的读数；先用 operation="round" 录入一轮')
-          const assessments = assessReading(reading, current.baselines)
-          const tally = tallyAssessments(assessments)
-          body.push(`## 读数评估（${reading.id}，${reading.period}）`)
-          for (const entry of assessments) body.push(`- ${entry.note}`)
-          body.push('', `达标 ${String(tally.passed)} · 未达标 ${String(tally.failed)} · 无法比较 ${String(tally.incomparable)}`)
-          for (const outcome of iterationRules(reading, assessments, current)) {
-            body.push('', `## 触发规则 [${outcome.key}]`, `- ${outcome.label}`, `  动作：${outcome.action}（范围：${outcome.scope}）`)
-            for (const evidence of outcome.evidence) body.push(`  依据：${evidence}`)
+          if (reading === undefined) {
+            throw new NovelInputError('没有可评估的读数；先用 operation="record" 把平台数据抄一次')
           }
+
+          const patch = calibrationPatch()
+          const baselines: MetricBaselines = patch === undefined ? current.baselines : { ...current.baselines, ...patch }
+          const assessments = assessReading(reading, baselines)
+          const tally = tallyAssessments(assessments)
+          // SOP principle 5, enforced at the one place it can be: a reading whose
+          // every metric lacks a median is not evidence, and answering "继续投入"
+          // on it would be the tool inventing a verdict out of nothing.
+          if (assessments.length > 0 && tally.incomparable === assessments.length) {
+            throw new NovelInputError(
+              '这次读数的指标都没有可比的同类中位，无法裁决：先用 baselines 校准同榜中位（SOP 原则 5：没有基线的指标不是指标），'
+              + '或换用已校准的指标',
+            )
+          }
+          const { verdict, reasons } = verdictFromAssessments(assessments)
+          const action = evaluationAction(verdict)
+
+          // The two disciplines that survive from the old phase-three gate. Both
+          // are about stopping the check from becoming a formality, and neither
+          // needs a number.
+          if (verdict !== 'pass' && (args.fallback === undefined || args.fallback.trim() === '')) {
+            throw new NovelInputError(
+              `评估结论为「${verdictLabelOf(verdict)}」，必须给出 fallback（回退到哪个阶段）才能完成这次评估——`
+              + 'SOP 要求不通过的评估写明回退目标，否则评估会变成走过场',
+            )
+          }
+          if (verdict !== 'pass' && (args.abandonIf === undefined || args.abandonIf.trim() === '')) {
+            throw new NovelInputError(`评估结论为「${verdictLabelOf(verdict)}」，必须给出 abandonIf（什么情况下切书止损）`)
+          }
+          const nextAtChapter = args.nextAtChapter ?? 0
+          const nextTrigger = args.nextTrigger ?? ''
+          if (nextAtChapter <= 0 && nextTrigger.trim() === '') {
+            throw new NovelInputError(
+              '必须留下下一次评估的约定（nextAtChapter 或 nextTrigger）——'
+              + '按需评估唯一会死的方式就是没人再问，约定就是防止它悄悄变成「从不评估」',
+            )
+          }
+
+          // Persist the calibration before anything else reads the state, so the
+          // stored medians and the ones this verdict used cannot disagree.
+          const base = patch === undefined ? current : await store.update((state) => updateBaselines(state, patch, now))
+          calibrationWarning(baselines)
+
+          // Back-fill every change that is still open, using this reading as its
+          // outcome. This is what makes "连续 2–3 轮调整无效 → 切书止损"
+          // decidable: an evaluation is the only moment the question is asked,
+          // so it is where the previous answer is collected.
+          const open = base.iterations.filter(
+            (iteration) =>
+              iteration.outcomeReadingId === ''
+              && iteration.baselineReadingId !== reading.id
+              && Date.parse(iteration.at) <= Date.parse(reading.at),
+          )
+          let linked = base
+          if (open.length > 0) {
+            linked = await store.update((state) => ({
+              ...state,
+              iterations: state.iterations.map((iteration) =>
+                iteration.outcomeReadingId === ''
+                  && iteration.baselineReadingId !== reading.id
+                  && Date.parse(iteration.at) <= Date.parse(reading.at)
+                  ? { ...iteration, outcomeReadingId: reading.id, outcome: 'pending' }
+                  : iteration,
+              ),
+              updatedAt: now(),
+            }))
+          }
+          const judged: IterationOutcome[] = []
+          for (const iteration of linked.iterations) {
+            if (iteration.outcomeReadingId !== reading.id) continue
+            const outcome = judgeIteration(linked, iteration)
+            if (outcome !== undefined) judged.push(outcome)
+          }
+          if (judged.length > 0) {
+            linked = await store.update((state) => ({
+              ...state,
+              iterations: state.iterations.map((iteration) => {
+                const outcome = judged.find((entry) => entry.id === iteration.id)
+                return outcome === undefined
+                  ? iteration
+                  : { ...iteration, outcome: outcome.improved ? 'effective' : 'ineffective' }
+              }),
+              updatedAt: now(),
+            }))
+          }
+
+          const round = linked.evaluations.length + 1
+          const evaluation: Evaluation = {
+            id: `evaluation-${String(round)}`,
+            round,
+            at: reading.at,
+            channel: args.channel ?? '',
+            sampleSize: args.sampleSize ?? 0,
+            readingId: reading.id,
+            namingId: args.namingId ?? '',
+            verdict,
+            reasons,
+            fallback: args.fallback ?? '',
+            abandonIf: args.abandonIf ?? '',
+            nextAtChapter,
+            nextTrigger,
+            note: args.note ?? '',
+          }
+          const final = await store.update((state) => addEvaluation(state, evaluation, now))
+
+          body.push(`## 第 ${String(round)} 次投入评估（${evaluation.channel || '未注明渠道'}）`)
+          body.push(`读数 ${reading.id}（${reading.period}，第 ${String(reading.atChapter)} 章）`)
+          for (const entry of assessments) body.push(`- ${entry.note}`)
+          body.push(
+            '',
+            `达标 ${String(tally.passed)} · 未达标 ${String(tally.failed)} · 无法比较 ${String(tally.incomparable)}`,
+            '',
+            '## 裁决',
+            `- ${verdictLabelOf(verdict)} → ${evaluationActionLabel(action)}`,
+          )
+          for (const reason of reasons) body.push(`  ${reason}`)
+          if (verdict !== 'pass') {
+            body.push('', `回退目标：${evaluation.fallback}`, `放弃条件：${evaluation.abandonIf}`)
+          }
+          if (judged.length > 0) {
+            body.push('', '## 上次调整的结果（本次读数回填）')
+            for (const outcome of judged) {
+              body.push(`- ${outcome.id}：${outcome.improved ? '有效' : '无效'} — ${outcome.note}`)
+            }
+          }
+          const outcomes = iterationRules(reading, assessments, final)
+          if (outcomes.length > 0) {
+            body.push('', '## 触发的规则与动作')
+            for (const outcome of outcomes) {
+              body.push(`- [${outcome.key}] ${outcome.label}`, `  动作：${outcome.action}`, `  范围：${outcome.scope}`)
+              for (const evidence of outcome.evidence) body.push(`  依据：${evidence}`)
+            }
+            body.push('', '决定后用 operation="iterate" 把动作写入台账，下一次评估会自动回填它的结果。')
+          }
+          body.push(
+            '',
+            '## 下次评估',
+            `- ${[nextAtChapter > 0 ? `第 ${String(nextAtChapter)} 章` : '', nextTrigger].filter((part) => part !== '').join('，')}`,
+            '- 看板与运行时上下文会在到时提醒，但它永远不阻断写作。',
+          )
+
+          const ineffective = countIneffectiveIterations(final)
+          if (ineffective >= INEFFECTIVE_ITERATIONS_FOR_CUT) {
+            warnings.push(
+              `已累计 ${String(ineffective)} 轮调整无效：SOP 的切书止损条件是「连续 2–3 轮无效且核心指标长期低于中位 `
+              + `${String(Math.round(CUT_LOSS_MULTIPLIER * 100))}%」，请核对读数后再决定是否切书`,
+            )
+          }
+          await resync(exec.agent?.session)
           return {
             ok: true,
-            operation: 'assess',
-            detail: `读数 ${reading.id}：达标 ${String(tally.passed)}，未达标 ${String(tally.failed)}，无法比较 ${String(tally.incomparable)}`,
-            ...envelope(current, warnings),
+            operation: 'evaluate',
+            detail: `第 ${String(round)} 次投入评估：${verdictLabelOf(verdict)} → ${evaluationActionLabel(action)}`,
+            ...envelope(final, warnings),
             body,
           }
         }
 
-        const readingId = `reading-${String(current.readings.length + 1)}`
+        if (Object.keys(values).length === 0) {
+          throw new NovelInputError('operation="record" needs at least one numeric metric value in `metrics`')
+        }
         const reading = {
-          id: readingId,
+          id: `reading-${String(current.readings.length + 1)}`,
           at: now(),
           period: (args.period ?? 'new-book') as MetricPeriod,
           atChapter: args.atChapter ?? 0,
           values,
-          source: args.source ?? args.channel ?? '',
+          source: args.source ?? '',
           note: args.note ?? '',
         }
-        const assessments = assessReading(reading, current.baselines)
-        const { verdict, reasons } = verdictFromAssessments(assessments)
-        if (verdict !== 'pass' && (args.fallback === undefined || args.fallback.trim() === '')) {
-          throw new NovelInputError(
-            `验证结论为「${verdict}」，必须给出 fallback（回退到哪个阶段）才能完成这一轮——`
-            + 'SOP 要求不通过的验证写明回退目标，否则验证会变成走过场',
-          )
-        }
-        if (verdict !== 'pass' && (args.abandonIf === undefined || args.abandonIf.trim() === '')) {
-          throw new NovelInputError(`验证结论为「${verdict}」，必须给出 abandonIf（什么情况下放弃该概念）`)
-        }
-
-        const round = current.verifications.length + 1
-        const fallback = args.fallback ?? ''
-        const abandonIf = args.abandonIf ?? ''
-        const note = args.note ?? ''
-        const channel = args.channel ?? ''
-        const sampleSize = args.sampleSize ?? 0
-        const namingId = args.namingId ?? ''
-        const next = await store.update(
-          (state) =>
-            addReading(
-              {
-                ...state,
-                verifications: [
-                  ...state.verifications,
-                  {
-                    id: `round-${String(round)}`,
-                    round,
-                    at: reading.at,
-                    channel,
-                    sampleSize,
-                    readingId,
-                    namingId,
-                    verdict,
-                    reasons,
-                    fallback,
-                    abandonIf,
-                    note,
-                  },
-                ],
-              },
-              reading,
-              now,
-            ),
+        const patch = calibrationPatch()
+        const next = await store.update((state) =>
+          addReading(patch === undefined ? state : updateBaselines(state, patch, now), reading, now),
         )
+        calibrationWarning(next.baselines)
+        const assessments = assessReading(reading, next.baselines)
+        const tally = tallyAssessments(assessments)
+        const outcomes = iterationRules(reading, assessments, next)
+        const hint = evaluationHint(next)
 
-        body.push(`## 第 ${String(round)} 轮验证（${channel || '未注明渠道'}）`)
-        for (const reason of reasons) body.push(`- ${reason}`)
-        if (verdict !== 'pass') body.push('', `回退目标：${fallback}`, `放弃条件：${abandonIf}`)
-        for (const outcome of iterationRules(reading, assessments, next)) {
-          body.push('', `## 建议动作 [${outcome.key}]`, `- ${outcome.action}（范围：${outcome.scope}）`)
+        body.push(`## 读数 ${reading.id}（${reading.period}，第 ${String(reading.atChapter)} 章）`)
+        for (const entry of assessments) body.push(`- ${entry.note}`)
+        body.push('', `达标 ${String(tally.passed)} · 未达标 ${String(tally.failed)} · 无法比较 ${String(tally.incomparable)}`)
+        if (outcomes.length > 0) {
+          body.push('', '## 触发的规则与动作（尚未裁决）')
+          for (const outcome of outcomes) {
+            body.push(`- [${outcome.key}] ${outcome.label}`, `  动作：${outcome.action}`, `  范围：${outcome.scope}`)
+            for (const evidence of outcome.evidence) body.push(`  依据：${evidence}`)
+          }
         }
-
+        const open = next.iterations.filter((iteration) => iteration.outcomeReadingId === '')
+        if (open.length > 0) {
+          body.push('', `待回填的调整：${open.map((iteration) => iteration.id).join('、')}（下一次 evaluate 自动回填）`)
+        }
+        body.push(
+          '',
+          '读数只是数据。要一份「还值不值得写下去」的裁决，调用 operation="evaluate" —— 它不会自动发生。',
+          `评估提示：${hint.due ? '建议启动一次' : '暂不需要'} — ${hint.reason}`,
+        )
         await resync(exec.agent?.session)
         return {
           ok: true,
-          operation: 'round',
-          detail: `第 ${String(round)} 轮验证结论：${verdict === 'pass' ? '通过' : verdict === 'partial' ? '部分通过' : '不通过'}`,
+          operation: 'record',
+          detail: `读数 ${reading.id} 已记录：达标 ${String(tally.passed)}，未达标 ${String(tally.failed)}（裁决需 operation="evaluate"）`,
           ...envelope(next, warnings),
           body,
         }
@@ -1474,223 +1922,6 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
     }),
   )
 
-  // ── novel_metrics ───────────────────────────────────────────────────────────
-
-  registerScoped(ctx,
-    defineTool({
-      name: 'novel_metrics',
-      description:
-        'The SOP feedback loop: record platform readings, apply the quantified iteration rules, and close the loop on '
-        + 'earlier changes. '
-        + 'operation="record" stores one reading and immediately reports which rules fired, each with its action and the '
-        + 'scope the change may reach (chapter / volume / whole-book) — the SOP\'s discipline is as much about how far a '
-        + 'change may reach as about what to change. '
-        + 'operation="iterate" writes the change you decided on into the ledger, tied to the reading that triggered it. '
-        + 'operation="outcome" attaches a later reading to an iteration and reports whether it actually improved — that is '
-        + 'what makes "连续 2–3 轮调整无效 → 切书止损" decidable instead of a feeling. '
-        + 'operation="rules" prints the thresholds currently in force. '
-        + 'The numbers come from the platform; the tool compares them against your calibrated medians and hands back a '
-        + 'decision.',
-      parameters: {
-        operation: {
-          type: 'string',
-          required: true,
-          enum: ['record', 'iterate', 'outcome', 'rules'],
-          description: 'record | iterate | outcome | rules.',
-        },
-        period: { type: 'string', enum: ['new-book', 'paid', 'free'], description: 'record: release period.' },
-        atChapter: { type: 'integer', description: 'record: chapter position the reading describes.' },
-        metrics: {
-          type: 'object',
-          additionalProperties: true,
-          description: 'record: values keyed by metric, for example {"chapterScore": 62, "followRead10": 0.11}.',
-        },
-        source: { type: 'string', description: 'record: where the numbers came from.' },
-        note: { type: 'string', description: 'record/iterate/outcome: free-form observation.' },
-        trigger: { type: 'string', description: 'iterate: the rule key that fired, or "manual".' },
-        action: { type: 'string', description: 'iterate: what you decided to change.' },
-        scope: { type: 'string', enum: ['chapter', 'volume', 'whole-book'], description: 'iterate: how far the change reaches.' },
-        evidence: { type: 'string', description: 'iterate: the comparison that triggered it.' },
-        baselineReadingId: { type: 'string', description: 'iterate: the reading it responds to; defaults to the latest.' },
-        iterationId: { type: 'string', description: 'outcome: which iteration to close.' },
-        outcomeReadingId: { type: 'string', description: 'outcome: the reading taken after the change; defaults to the latest.' },
-      },
-      output: { schema: ENVELOPE_SCHEMA, render: renderTool },
-      execute: async (args, exec) => {
-        const store = storeFor(exec.agent?.session)
-        const current = await store.read()
-        if (current === undefined) {
-          throw new NovelInputError(`no novel project at ${store.documentPath}; call novel_init first`)
-        }
-        const warnings: string[] = []
-        const body: string[] = []
-
-        if (args.operation === 'rules') {
-          const age = calibrationAge(current.baselines, new Date())
-          body.push('## 当前生效的阈值')
-          body.push(
-            age.days === undefined
-              ? '尚未校准同类中位：所有阈值不可用，请先在 novel_init 的 baselines 里录入'
-              : `中位校准于 ${current.baselines.calibratedAt}（${String(Math.round(age.days))} 天前）${age.stale ? ' — 已超过 30 天，建议重新校准' : ''}`,
-          )
-          for (const metric of METRIC_KEYS) {
-            const median = current.baselines.medians[metric]
-            const multiplier = current.baselines.multipliers[metric] ?? DEFAULT_MULTIPLIERS[metric] ?? 0.8
-            body.push(
-              median === undefined
-                ? `- ${metric}：未校准`
-                : `- ${metric}：中位 ${String(median)} × ${String(multiplier)} = 触发线 ${String(Number((median * multiplier).toFixed(4)))}`,
-            )
-          }
-          return {
-            ok: true,
-            operation: 'rules',
-            detail: `已校准 ${String(Object.keys(current.baselines.medians).length)} 项指标`,
-            ...envelope(current, warnings),
-            body,
-          }
-        }
-
-        if (args.operation === 'iterate') {
-          if (args.action === undefined || args.action.trim() === '') {
-            throw new NovelInputError('operation="iterate" needs the `action` you decided on')
-          }
-          const baselineReadingId = args.baselineReadingId ?? current.readings.at(-1)?.id ?? ''
-          const id = `iteration-${String(current.iterations.length + 1)}`
-          const action = args.action
-          const next = await store.update(
-            (state) =>
-              addIteration(
-                state,
-                {
-                  id,
-                  at: now(),
-                  trigger: args.trigger ?? 'manual',
-                  evidence: args.evidence ?? '',
-                  action,
-                  scope: (args.scope ?? 'chapter') as 'chapter' | 'volume' | 'whole-book',
-                  baselineReadingId,
-                  outcomeReadingId: '',
-                  outcome: 'unknown',
-                  note: args.note ?? '',
-                },
-                now,
-              ),
-          )
-          body.push(`基准读数：${baselineReadingId || '（无）'}`, '下一次读数后用 operation="outcome" 回填结果。')
-          await resync(exec.agent?.session)
-          return {
-            ok: true,
-            operation: 'iterate',
-            detail: `迭代 ${id} 已记录：${action}（范围 ${args.scope ?? 'chapter'}）`,
-            ...envelope(next, warnings),
-            body,
-          }
-        }
-
-        if (args.operation === 'outcome') {
-          const iterationId = args.iterationId ?? current.iterations.at(-1)?.id
-          if (iterationId === undefined) throw new NovelInputError('没有可回填的迭代记录')
-          const outcomeReadingId = args.outcomeReadingId ?? current.readings.at(-1)?.id ?? ''
-          const note = args.note
-          const linked = await store.update((state) => ({
-            ...state,
-            iterations: state.iterations.map((iteration) =>
-              iteration.id === iterationId
-                ? {
-                    ...iteration,
-                    outcomeReadingId,
-                    outcome: 'pending',
-                    ...(note !== undefined && { note }),
-                  }
-                : iteration,
-            ),
-            updatedAt: now(),
-          }))
-          const iteration = linked.iterations.find((entry) => entry.id === iterationId)
-          const judged = iteration === undefined ? undefined : judgeIteration(linked, iteration)
-          const final =
-            judged === undefined
-              ? linked
-              : await store.update((state) => ({
-                  ...state,
-                  iterations: state.iterations.map((entry) =>
-                    entry.id === iterationId ? { ...entry, outcome: judged.improved ? 'effective' : 'ineffective' } : entry,
-                  ),
-                  updatedAt: now(),
-                }))
-          const ineffective = countIneffectiveIterations(final)
-          if (ineffective >= 2) {
-            warnings.push(
-              `已累计 ${String(ineffective)} 轮调整无效：SOP 的切书止损条件是「连续 2–3 轮无效且核心指标长期低于中位 50%」，请核对读数`,
-            )
-          }
-          body.push(judged?.note ?? '缺少可比读数，未判定有效性')
-          await resync(exec.agent?.session)
-          return {
-            ok: true,
-            operation: 'outcome',
-            detail:
-              judged === undefined
-                ? `迭代 ${iterationId} 已关联读数 ${outcomeReadingId}（尚无可比较的基准）`
-                : `迭代 ${iterationId} 结果：${judged.improved ? '有效' : '无效'} — ${judged.note}`,
-            ...envelope(final, warnings),
-            body,
-          }
-        }
-
-        const values: Partial<Record<MetricKey, number>> = {}
-        for (const [key, value] of Object.entries(args.metrics ?? {})) {
-          if (typeof value === 'number' && Number.isFinite(value)) Object.assign(values, { [key]: value })
-          else warnings.push(`指标 "${key}" 不是数字，已忽略`)
-        }
-        if (Object.keys(values).length === 0) {
-          throw new NovelInputError('operation="record" needs at least one numeric metric value in `metrics`')
-        }
-        if (calibrationAge(current.baselines, new Date()).days === undefined) {
-          warnings.push('尚未校准同类中位：读数已记录，但阈值规则无法执行（novel_init 的 baselines）')
-        }
-        const reading = {
-          id: `reading-${String(current.readings.length + 1)}`,
-          at: now(),
-          period: (args.period ?? 'new-book') as MetricPeriod,
-          atChapter: args.atChapter ?? 0,
-          values,
-          source: args.source ?? '',
-          note: args.note ?? '',
-        }
-        const next = await store.update((state) => addReading(state, reading, now))
-        const assessments = assessReading(reading, next.baselines)
-        const tally = tallyAssessments(assessments)
-        const outcomes = iterationRules(reading, assessments, next)
-
-        body.push(`## 读数 ${reading.id}（${reading.period}）`)
-        for (const entry of assessments) body.push(`- ${entry.note}`)
-        body.push('', `达标 ${String(tally.passed)} · 未达标 ${String(tally.failed)} · 无法比较 ${String(tally.incomparable)}`)
-        if (outcomes.length > 0) {
-          body.push('', '## 触发的规则与动作')
-          for (const outcome of outcomes) {
-            body.push(`- [${outcome.key}] ${outcome.label}`, `  动作：${outcome.action}`, `  范围：${outcome.scope}`)
-            for (const evidence of outcome.evidence) body.push(`  依据：${evidence}`)
-          }
-          body.push('', '决定后用 operation="iterate" 把动作写入台账。')
-        }
-        const open = next.iterations.filter((iteration) => iteration.outcomeReadingId === '')
-        if (open.length > 0) {
-          body.push('', `待回填结果的迭代：${open.map((iteration) => iteration.id).join('、')}（operation="outcome"）`)
-        }
-        await resync(exec.agent?.session)
-        return {
-          ok: true,
-          operation: 'record',
-          detail: `读数 ${reading.id} 已记录：达标 ${String(tally.passed)}，未达标 ${String(tally.failed)}，触发 ${String(outcomes.length)} 条规则`,
-          ...envelope(next, warnings),
-          body,
-        }
-      },
-    }),
-  )
-
   // ── novel_status ────────────────────────────────────────────────────────────
 
   registerScoped(ctx,
@@ -1810,34 +2041,51 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             const link = state.links[id]
             if (link !== undefined) body.push(`- 逾期：${link.note}（应回收于 ${link.dueAt}）`)
           }
-          body.push('', '## 最近读数')
+          // The data side of the project, reported on its own axis. It is never
+          // a phase and never a blocker: `evaluationDue` is advice, and the
+          // reading under it is just the last number anyone transcribed.
+          const hint = evaluationHint(state)
+          body.push('', '## 投入评估（按需，不阻断进度）')
+          body.push(`- ${hint.due ? '建议启动一次' : '暂不需要'}：${hint.reason}`)
+          const lastEvaluation = state.evaluations.at(-1)
+          if (lastEvaluation === undefined) {
+            body.push('- 还没有评估过；平台有数据时用 novel_assess 抄录后 evaluate')
+          } else {
+            const appointment = [
+              lastEvaluation.nextAtChapter > 0 ? `第 ${String(lastEvaluation.nextAtChapter)} 章` : '',
+              lastEvaluation.nextTrigger,
+            ].filter((part) => part !== '').join('，')
+            body.push(
+              `- 上次评估：第 ${String(lastEvaluation.round)} 次（${lastEvaluation.at.slice(0, 10)}）`
+              + ` ${verdictLabelOf(lastEvaluation.verdict)} → ${evaluationActionLabel(evaluationAction(lastEvaluation.verdict))}`,
+            )
+            if (appointment !== '') body.push(`  下次评估约定：${appointment}`)
+          }
           const latest = state.readings.at(-1)
           if (latest === undefined) {
-            body.push('（还没有读数：用 novel_verify 或 novel_metrics 录入）')
+            body.push('- 还没有读数（novel_assess operation="record" 录入）')
           } else {
-            body.push(`${latest.id}（${latest.period}，第 ${String(latest.atChapter)} 章）`)
-            for (const entry of assessReading(latest, state.baselines)) body.push(`- ${entry.note}`)
+            body.push(`- 最近读数：${latest.id}（${latest.period}，第 ${String(latest.atChapter)} 章）`)
+            for (const entry of assessReading(latest, state.baselines)) body.push(`  ${entry.note}`)
           }
           const openIterations = state.iterations.filter((iteration) => iteration.outcomeReadingId === '')
           if (openIterations.length > 0) {
-            body.push('', `## 待回填的迭代（${String(openIterations.length)}）`)
+            body.push('', `## 待回填的调整（${String(openIterations.length)}）`)
+            body.push('下一次 novel_assess operation="evaluate" 会用当时的读数自动回填结果。')
             for (const iteration of openIterations) body.push(`- ${iteration.id}：${iteration.action}（${iteration.scope}）`)
           }
-          // A failed validation round is a standing instruction until it passes,
-          // so the dashboard repeats its fallback and abandon condition: the SOP
-          // checkpoint is precisely "did this round say where to go back to".
-          const failedRounds = state.verifications.filter((round) => round.verdict !== 'pass')
-          if (failedRounds.length > 0) {
-            const last = failedRounds.at(-1)
-            body.push('', '## 未通过的验证轮次')
-            for (const round of failedRounds) {
-              body.push(`- 第 ${String(round.round)} 轮（${round.channel || '未注明渠道'}）：${round.verdict}`)
-              if (round.fallback !== '') body.push(`  回退目标：${round.fallback}`)
-              if (round.abandonIf !== '') body.push(`  放弃条件：${round.abandonIf}`)
-            }
-            if (last !== undefined && last.verdict === 'fail') {
-              body.push('', `⚠ 最近一轮验证不通过：按「${last.fallback || '未写回退目标'}」回退后再验`)
-            }
+          // A launch decision that is not `go` is a standing instruction, so the
+          // dashboard repeats its fallback and abandon condition: the SOP
+          // checkpoint is precisely "did the decision say where to go back to".
+          const lastDecision = state.launchDecisions.at(-1)
+          if (lastDecision !== undefined && lastDecision.verdict !== 'go') {
+            body.push(
+              '',
+              `## 未通过的上线决策（${lastDecision.id}）`,
+              `- ${lastDecision.verdict === 'abandon' ? '放弃该概念' : '改后再说'}`,
+            )
+            if (lastDecision.fallback !== '') body.push(`  回退目标：${lastDecision.fallback}`)
+            if (lastDecision.abandonIf !== '') body.push(`  放弃条件：${lastDecision.abandonIf}`)
           }
           // Reviews are model judgements, not ledger facts, so the dashboard
           // reports them as a separate line: something to re-read, never
@@ -2074,9 +2322,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
  *
  * What it will not do is as much of the contract as what it does: it never
  * writes a chapter, never overwrites published prose, and never lets a model
- * judgement into `iterations` or `verifications` — the ledger entries that the
- * SOP's thresholds act on. A review is recorded as a review, with the model and
- * the rubric version that produced it.
+ * judgement into `iterations`, `evaluations` or `launchDecisions` — the ledger
+ * entries that the SOP's thresholds act on. A review is recorded as a review,
+ * with the model and the rubric version that produced it.
  *
  * @param ctx - plugin context carrying the tool registry and a model route.
  * @param projects - resolves the novel store per calling session.
@@ -2301,6 +2549,8 @@ function buildRequest(
     progress: progressOf(state),
     readings: state.readings,
     iterations: state.iterations,
+    evaluations: state.evaluations,
+    launchDecisions: state.launchDecisions,
     lessons: state.retro?.lessons ?? [],
   })
 }

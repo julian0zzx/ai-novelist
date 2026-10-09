@@ -52,11 +52,19 @@ export const PLATFORM_AUDIENCES = ['male', 'female', 'general'] as const
 /** One entry of {@link PLATFORM_AUDIENCES}. */
 export type PlatformAudience = (typeof PLATFORM_AUDIENCES)[number]
 
-/** The pipeline phases of the SOP, in order. */
+/**
+ * The pipeline phases of the SOP, in order.
+ *
+ * Every one of them is derived from what has been **planned and written**, never
+ * from a metric reading. Data assessment is not a phase: it is an action the
+ * author starts when they want to know whether the book is still worth the
+ * investment (see {@link Evaluation}). Keeping the two apart is what lets a
+ * project advance while the platform numbers are still unavailable.
+ */
 export const PROJECT_STAGES = [
   'planning',
-  'verification-prep',
-  'verifying',
+  'opening-package',
+  'opening-decision',
   'full-outline',
   'serializing',
   'completed',
@@ -418,8 +426,10 @@ export interface NovelMetadata {
   readonly readings: readonly MetricReading[]
   /** Applied changes with their evidence chain. */
   readonly iterations: readonly Iteration[]
-  /** Validation rounds. */
-  readonly verifications: readonly VerificationRound[]
+  /** Investment evaluations: the SOP's data check, run on demand. */
+  readonly evaluations: readonly Evaluation[]
+  /** Stage-three go/no-go decisions, newest last. */
+  readonly launchDecisions: readonly LaunchDecision[]
   /** Model-backed judgements. */
   readonly reviews: readonly ReviewRecord[]
   /**
@@ -427,7 +437,7 @@ export interface NovelMetadata {
    *
    * Kept here because the plan's ownership table names no home for it, and the
    * rule for that case is "it stays in the metadata document" rather than
-   * "it is dropped" — its `done` flags gate the move out of `verification-prep`.
+   * "it is dropped" — its `done` flags gate the move out of `opening-package`.
    */
   readonly opening: Outline['opening']
   /** Where the content files live, and what they last contained. */
@@ -587,8 +597,21 @@ export interface Iteration {
   readonly note: string
 }
 
-/** One validation round of the SOP's phase three. */
-export interface VerificationRound {
+/**
+ * One investment evaluation: the SOP's data check, run on demand.
+ *
+ * This is **not** a pipeline phase and nothing gates on it. The author starts
+ * one when they want the question "is this book still worth continuing?"
+ * answered with numbers instead of a feeling — normally after the book has been
+ * live long enough for the platform to report something, which is also when the
+ * numbers can be transcribed by hand.
+ *
+ * What survives from the old phase-three gate is the discipline: an evaluation
+ * that does not pass must name where to fall back to and what would make the
+ * author stop, and every evaluation must leave an appointment for the next one.
+ * Without that appointment an on-demand check quietly becomes no check at all.
+ */
+export interface Evaluation {
   /** Stable id. */
   readonly id: string
   /** Round number, 1-based, in the order they were run. */
@@ -599,20 +622,77 @@ export interface VerificationRound {
   readonly channel: string
   /** How many readers or titles the sample covers. */
   readonly sampleSize: number
-  /** The reading id carrying this round's numbers. */
+  /** The reading id carrying this evaluation's numbers. */
   readonly readingId: string
-  /** Which naming candidate was under test, when the round tested naming. */
+  /** Which naming candidate was under test, when the evaluation tested naming. */
   readonly namingId: string
-  /** The computed verdict. */
+  /** The verdict the thresholds produced. */
   readonly verdict: VerdictLevel
   /** Why that verdict, in the tool's words. */
   readonly reasons: readonly string[]
-  /** Where to go back to when the round did not pass. */
+  /** Where to go back to when the evaluation did not pass. */
   readonly fallback: string
-  /** What would make the author abandon the concept. */
+  /** What would make the author stop investing in this book. */
   readonly abandonIf: string
-  /** The author's own reading of reader reactions. */
+  /** The chapter position to look again at, 0 when the author named no number. */
+  readonly nextAtChapter: number
+  /** The next appointment in the author's words, for example 卷末 or 数据异常时. */
+  readonly nextTrigger: string
+  /** The author's own reading of the numbers. */
   readonly note: string
+}
+
+/** The investment verdicts an evaluation can end in. */
+export const EVALUATION_ACTIONS = ['continue', 'adjust', 'cut'] as const
+
+/** One entry of {@link EVALUATION_ACTIONS}. */
+export type EvaluationAction = (typeof EVALUATION_ACTIONS)[number]
+
+/** The stage-three go/no-go verdicts. */
+export const LAUNCH_VERDICTS = ['go', 'revise', 'abandon'] as const
+
+/** One entry of {@link LAUNCH_VERDICTS}. */
+export type LaunchVerdict = (typeof LAUNCH_VERDICTS)[number]
+
+/**
+ * The stage-three go/no-go: a human decision that the opening package is worth
+ * building out into a full skeleton.
+ *
+ * It used to be a number. It is not one any more, because the evidence actually
+ * available at that point — an editor's read, a dozen readers, the author's own
+ * judgement — is judgement, and the SOP's own §1.2 keeps judgement out of the
+ * threshold ledger. What is kept is the anti-formality rule: a decision that is
+ * not `go` must name where to fall back to and what would make the author drop
+ * the concept.
+ */
+export interface LaunchDecision {
+  /** Stable id. */
+  readonly id: string
+  /** ISO-8601 instant. */
+  readonly at: string
+  /** `go` unlocks the full outline; `revise` stays here; `abandon` drops the concept. */
+  readonly verdict: LaunchVerdict
+  /** Where to go back to when the verdict is not `go`. */
+  readonly fallback: string
+  /** What would make the author drop the concept. */
+  readonly abandonIf: string
+  /** One line on the evidence the decision rests on. */
+  readonly note: string
+}
+
+/**
+ * The derived "it may be time to look at the numbers" signal.
+ *
+ * Advisory by construction: it is computed from project state (chapters written,
+ * the previous evaluation's appointment), so it needs no platform access, and it
+ * is reported as a suggestion rather than a blocker so that an author who cannot
+ * transcribe numbers is never stopped by it.
+ */
+export interface EvaluationHint {
+  /** Whether the project suggests running an evaluation now. */
+  readonly due: boolean
+  /** The reason, in the author's language. */
+  readonly reason: string
 }
 
 // ── retrospectives and reusable templates ─────────────────────────────────────
@@ -846,8 +926,16 @@ export interface NovelState {
   readonly readings: readonly MetricReading[]
   /** Applied changes with their evidence chain. */
   readonly iterations: readonly Iteration[]
-  /** Validation rounds. */
-  readonly verifications: readonly VerificationRound[]
+  /**
+   * Investment evaluations, in the order run.
+   *
+   * Empty is the normal state of a project: an evaluation happens only when the
+   * author asks whether the book is still worth continuing, and nothing in the
+   * pipeline waits for one.
+   */
+  readonly evaluations: readonly Evaluation[]
+  /** The stage-three go/no-go decisions and their reasons. */
+  readonly launchDecisions: readonly LaunchDecision[]
   /**
    * Model-backed judgements in the order taken.
    *

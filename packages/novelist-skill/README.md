@@ -30,7 +30,7 @@ The workflow this package implements is [`../../docs/sop.md`](../../docs/sop.md)
   scaffold it writes is empty: the folder's name as the title, every story field blank;
 - classifies **every other workspace when a session opens in it** (`session/created`), so the
   tools, the prompt and adoption all follow the session's `cwd` — see `views.ts` below;
-- registers the eight computing tools, the optional `novel_review`, and the runtime-context prompt section.
+- registers the seven computing tools, the optional `novel_review`, and the runtime-context prompt section.
   The reviewer is mounted through `ctx.inject(['llm'], …)` and is therefore absent wherever no
   model route exists.
 
@@ -60,7 +60,7 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 | `markdown.ts` | The restricted Markdown dialect, with no dependency: `splitFrontmatter` / `parseFrontmatter` / `serializeFrontmatter` (scalars, string lists, one level of mapping, both list spellings), `splitSections` / `sectionText` / `sectionList` (fence-aware), `readEntries` / `renderEntry`, `parseTable` / `renderTable` / `escapeCell` (`\|` escapes, wrong-cell-count is an error not a shift), `parseDocument` / `renderDocument`, and `hashContent`. Every failure is a `MarkdownError` carrying the offending line. |
 | `content.ts` | §4's ownership table: `decomposeContent` (state → the files that own each datum) and `composeContent` (files → outline, cast, world, chapters). Per-kind readers and renderers (`parseOutlineFile`, `parseCastFile`, `parseWorldFile`, `parseVolumeFile`, `parseChapterPlanFile`, `parseChapterOutlineFile`, `parseChapterBodyFile`, and their `render*` counterparts), each naming every other home in the same file, and all failures raised as `NovelContentError` naming the file. |
 | `plan.ts` | "What does the plan still owe?" — `missingOutlineFields`, `missingPitchFields`, `worldGaps` (a rule with no cost/limits), `castGaps` (protagonist spine), `contractGaps` / `missingContract`, `contractRows`, `lengthCheck` (the two length gates: a first draft is written to `DRAFT_TARGET_RATIO` = 150% of the target, a `revised`/`final` chapter is held to `LENGTH_TOLERANCE` = -5%/+15%; `draftTargetWords` / `lengthStageFor` / `lengthWindow` / `lengthToleranceLabel` are the pieces), `rhythmExpectation`, `openingPackageGaps`. Also the **length plan**: `WRITING_PLAN_QUESTIONS` / `LENGTH_BENCHMARKS` (the questions the composer puts to the author, with tiers offered as choices), `writingPlanGaps` (what is still unanswered), `derivedTotalChapters` / `chaptersPerVolume` / `normalizeWritingPlan` (forward-only derivation), `writingPlanConflicts` / `volumeLengthNote` (where the numbers disagree), `describeWritingPlan` (which carries the per-chapter draft target). This is what the soft gate, the runtime context and the delivery report read. |
-| `metrics.ts` | Baselines to decisions: `thresholdFor`, `calibrationAge` (30-day staleness), `assessReading`, `tallyAssessments`, `verdictFromAssessments`, `iterationRules`, `decliningStreak`, `countIneffectiveIterations`, `openIterationsFor`, `judgeIteration`, plus `DEFAULT_MULTIPLIERS`, `SUSTAINED_DECLINE_CHAPTERS`, `INEFFECTIVE_ITERATIONS_FOR_CUT`, `PERIOD_METRICS`. |
+| `metrics.ts` | Baselines to decisions: `thresholdFor`, `calibrationAge` (30-day staleness), `assessReading`, `tallyAssessments`, `verdictFromAssessments`, `evaluationAction` / `evaluationActionLabel` (verdict → 继续投入 / 换变量后继续 / 切书止损), `evaluationHint` (the derived, advisory reminder to run one — `DEFAULT_EVALUATION_INTERVAL = 10` chapters), `iterationRules`, `decliningStreak`, `countIneffectiveIterations`, `openIterationsFor`, `judgeIteration`, plus `DEFAULT_MULTIPLIERS`, `SUSTAINED_DECLINE_CHAPTERS`, `INEFFECTIVE_ITERATIONS_FOR_CUT`, `PERIOD_METRICS`. |
 | `write.ts` | The delivery report: `analyzeDelivery` (planned / waived / reached / missed / unplanned, plus both length gates — `draftLength` at 150% and `finalLength` at -5%/+15%, with the one the chapter's status implies as `length`), `blockersToFinal` (which judges on the finished gate), `complianceChecklist`, `styleObservations` (mechanical statistics for the 去 AI 化 step, not a quality verdict). |
 | `review.ts` | The model-backed rubrics as versioned data (`REVIEW_PROMPT_VERSION`, `AI_FLAVOR_DIMENSIONS`), the request builders for all four operations (`buildAiFlavorRequest`, `buildRewriteRequest`, `buildOpeningRequest`, `buildCompetitorRequest`, `buildRetroRequest`), the project brief every request carries, and the tolerant reply parser (`extractReviewJson`, `parseReviewOutput`, `renderReview`). Pure — the model is the only thing it does not own. |
 | `repo.ts` | The closing phase's assembly: `buildTemplate`, `estimateVolumeLength`, `collectHookPatterns` / `classifyHook`, `extractAssets`, `summarizeCompletion`, `buildRetrospective`, `lessonPrompts`. |
@@ -77,7 +77,7 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 | `views.ts` | `createWorkspaceViews`: what the composer knows about one workspace, keyed by root. One `WorkspaceView` per directory holds the verdict, whether that classification is the call that wrote the document, and a snapshot cache; `classify()` runs at most once per root and hands concurrent callers the same promise; `viewForSession` routes a session to its own `cwd` and an agentless caller to the deployment root. The deployment's policy arrives as two callbacks (`normalize` for `workspaceMode`, `mayAdopt` for `adoptableVerdict`), so the registry itself knows nothing about profiles. `onSessionCreated` is the `global` lifecycle listener that starts classification when a session appears — global because a session's scope is not the plugin's. |
 | `prompt.ts` | The runtime-context section (`composer:workspace`): `renderWorkspaceContext` renders the workspace kind, the document path, the project numbers and the per-kind conduct text; `createSnapshotCache` keeps those numbers in a 1.5 s TTL cache because the prompt registry resolves text synchronously; `registerWorkspacePrompt` files it after the sandbox facts and resolves *which* workspace per assembly, from the agent that assembly is for. A failed refresh keeps the last good numbers and records why. |
 | `llm.ts` | The only module that talks to a model. `resolveRoute` (call override → configured `reviewProvider`/`reviewModel` → `agentDefaultModel.currentSelection()`), `runReview` (one `ctx.llm.stream` call assembled with the harness's `BlockAssembler`, with timeout, cancellation, truncation and empty-answer diagnosis), and `NovelReviewError`. |
-| `tools.ts` | The nine model-facing tools, their JSON schemas, the shared envelope and its renderer, `DEFAULT_MANUSCRIPT_PATH` / `DEFAULT_TEMPLATE_PATH` / `DEFAULT_REVIEW_PATH`, `registerTools`, and `registerReviewTool` (registered separately, because it needs a model the other eight never do). Each tool body resolves its store from the calling session, mutates through the store, then refreshes the view of *that* session's workspace. |
+| `tools.ts` | The eight model-facing tools, their JSON schemas, the shared envelope and its renderer, `DEFAULT_MANUSCRIPT_PATH` / `DEFAULT_TEMPLATE_PATH` / `DEFAULT_REVIEW_PATH`, `registerTools`, and `registerReviewTool` (registered separately, because it needs a model the other seven never do). Each tool body resolves its store from the calling session, mutates through the store, then refreshes the view of *that* session's workspace. |
 
 ### `src/client/` — the browser half
 
@@ -114,17 +114,18 @@ standing. No React, which is what lets `test/board.test.ts` specify it without a
 
 ## The tool surface
 
-One tool per capability, each owning one phase or one kind of state.
+One tool per capability, each owning one phase or one kind of state — except `novel_assess`,
+which owns no phase: it is the on-demand data evaluation, started by the author when they ask
+whether the book is still worth continuing, and nothing in the pipeline waits for it.
 
 | Tool | Operations / kinds | Notes |
 |---|---|---|
 | `novel_init` | — (one call, idempotent) | Project, commercial frame, `baselines` + `multipliers`, writing parameters. The length plan (`targetWords`, `chapterWords`, `volumes`) is asked of the user and never guessed: `totalChapters` is derived from total ÷ chapter length, unanswered questions are reported as a checklist, and contradictions between the numbers are warned about. `volumes: 0` is the explicit 不分卷 answer; omitting it leaves the question open. Never overwrites an existing premise (it warns and points at `novel_plan operation="pitch"`). Unknown metric keys in `baselines` are ignored with a warning. |
-| `novel_plan` | `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming` | `chapter` accepts `waive` + `waiveReason`, `remove: true`, and derives the id from `id`/`title`. `opening` without a `key` lists the checklist and reports `ok: false` (nothing changed). |
+| `novel_plan` | `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`, `launch` | `chapter` accepts `waive` + `waiveReason`, `remove: true`, and derives the id from `id`/`title`. `opening` without a `key` lists the checklist and reports `ok: false` (nothing changed). `launch` records the phase-three human go/no-go (`verdict` = `go` / `revise` / `abandon`); `go` is what unlocks phase four, and a `revise` or `abandon` **throws** unless `fallback` and `abandonIf` are supplied. |
 | `novel_bible` | `character`, `world`, `link`, `review` | `link` carries `plantedAt` / `dueAt` / `payoff` / `status` / `volume`; `review` reports world gaps, cast gaps and unrecovered or overdue promises. |
-| `novel_verify` | `round`, `assess` | `round` records a reading and a verification record and returns the computed verdict. A verdict other than `pass` **throws** unless `fallback` and `abandonIf` are supplied. |
 | `novel_write` | `write`, `read`, `check` | `chapterId` is required; `write` replaces the body (never appends) and takes `delivered` = the contract fields the draft reached. A first draft is written to 150% of the chapter target (去 AI 化与手改会成段删减), so the tool prints both length windows and checks the draft against whichever gate the chapter's status implies (`planned`/`drafting` = 150%, `revised`/`final` = -5%/+15%). Every `write` and `check` also returns the SOP's 去 AI 化 statistics — long paragraphs, average paragraph length, dialogue density, repeated sentence openings — as countable symptoms; the tool never edits the prose, so a revision goes back through `write`. Marking `status: 'final'` prints the pre-publish blockers and the compliance checklist, but does not refuse. |
-| `novel_metrics` | `record`, `iterate`, `outcome`, `rules` | `record` needs at least one numeric metric; `iterate` needs an `action`; `outcome` links a later reading to an iteration and reports whether it improved; `rules` prints every metric's median, multiplier and trigger line. |
-| `novel_status` | `detail`: `dashboard`, `bible`, `plan`, `chapter` | Pure read. `dashboard` includes the chapter table (first 30), promise recovery, the latest reading against its thresholds, iterations awaiting an outcome, and the calling session's workspace verdict. |
+| `novel_assess` | `record`, `iterate`, `evaluate`, `outcome`, `history`, `rules` | `record` needs at least one numeric metric and returns the rules it fires (action + scope); `record`/`evaluate` also accept `baselines` to re-calibrate on the spot. `iterate` needs an `action`. `evaluate` compares the reading with the calibrated medians, back-fills every open iteration against it, and returns the verdict → action mapping; it **throws** without `nextAtChapter`/`nextTrigger`, throws without `fallback`/`abandonIf` when the verdict is not a pass, and refuses to answer when every metric lacks a median. `outcome` is the manual override for the automatic back-fill: it closes the named `iterationId` against the named `outcomeReadingId` (defaulting to the most recent of each), throws when that reading is the change's own baseline, and reports whether it improved. `history` lists the evaluations with their verdicts, fallback, abandon condition and next appointment; `rules` prints every metric's median, multiplier and trigger line. |
+| `novel_status` | `detail`: `dashboard`, `bible`, `plan`, `chapter` | Pure read. `dashboard` includes the chapter table (first 30), promise recovery, the derived evaluation hint and last evaluation, the latest reading against its thresholds, adjustments awaiting a back-fill, and the calling session's workspace verdict. |
 | `novel_repo` | `export`, `retro`, `asset`, `lesson`, `template` | `export` requires chapters; `retro` derives the data summary, assets and one template; `lesson`/`asset` create the retro record if it does not exist; `template` warns when no retrospective has been written yet. |
 
 ### The shared envelope
@@ -140,15 +141,18 @@ detail      one line on what happened
 stage       the derived SOP phase, e.g. `serializing（阶段五 连载与放大）`
 blockers    what the SOP still needs before the next phase (from `assessStage`)
 warnings?   the soft gate: the call succeeded, but the SOP disagrees with the position
+evaluationDue?  the on-demand evaluation is suggested (never a warning, never a blocker)
 progress    chapters, words, written, contracted, stock, openLinks, overdueLinks
 ```
 
 `blockers` is the phase's own missing preconditions; `warnings` is everything else the call
 noticed (a chapter contract that is incomplete, a world rule with no cost, a promise with no
 `dueAt`, thin competitor coverage, a stale calibration, an undelivered contract field).
-Neither ever refuses a call — with two deliberate exceptions: `novel_verify` refuses a
-non-passing round without `fallback` / `abandonIf`, and every tool refuses to guess a
-chapter it cannot resolve.
+Neither ever refuses a call — with two deliberate exceptions, both about keeping a decision
+from becoming a formality: `novel_plan operation="launch"` refuses a non-`go` verdict without
+`fallback` / `abandonIf`, and `novel_assess operation="evaluate"` refuses a session with no
+appointment for the next evaluation and refuses to answer when no metric has a comparable
+median. Every tool also refuses to guess a chapter it cannot resolve.
 
 ## Schema v3 data model
 
@@ -164,7 +168,7 @@ content lives in the Markdown files that index names, so an author can read and 
 | Research | `competitors[]` (the dismantled leaderboard titles), `baselines` (`medians`, `multipliers`, `calibratedAt`, `source`) |
 | Writing plan | `writing`: `language`, `pov`, `volumes`, `totalChapters`, `targetWords`, `chapterPlanWindow`, `openingGateChapters`, `stockTargetChapters`, `chapterPlanCeiling`, `updateRhythm` |
 | Promises | `links` (map) — status and recovery chapter feed the volume-end gate, so this must be atomic |
-| Feedback | `readings[]`, `iterations[]` (with `baselineReadingId` / `outcomeReadingId` / `outcome`), `verifications[]`, `reviews[]` |
+| Feedback | `readings[]`, `iterations[]` (with `baselineReadingId` / `outcomeReadingId` / `outcome`), `evaluations[]` (with `nextAtChapter` / `nextTrigger`), `launchDecisions[]` (the phase-three go/no-go with its `fallback` / `abandonIf`), `reviews[]` |
 | Checklist | `opening[]`: the opening-engineering items whose `done` flags gate phase two |
 | Index | `index`: `outlineFile`, `castFile`, `worldFile`, `volumeFile`, `chapterPlanFile`, `chapters` (id → number, title, `bodyFile`, `outlineFile`, both hashes), `files` (path → hash) |
 | Closing | `retro?` (dataSummary, highlights, problems, lessons, assets, templates) |
@@ -203,8 +207,10 @@ Two conventions hold everywhere:
 plan must not be silently emptied by an upgrade), premise, cast, world entries and chapters
 survive, `meta.genres` becomes the platform's genres, and `meta.language` / `meta.pov` seed
 the writing plan. Records v1 never modelled (pitch, naming, baselines, competitors,
-outline body, readings, iterations, verifications) start empty, and the project simply
-lands in the phase its data supports.
+outline body, readings, evaluations, iterations, launch decisions) start empty, and the
+project simply lands in the phase its data supports. A version-3 document that still carries
+the pre-3.2 `verifications` key is read into `evaluations`, so an older project keeps its
+ledger.
 
 ## Metric rules in force
 
@@ -224,7 +230,7 @@ lands in the phase its data supports.
 A threshold exists only when a median exists: `thresholdFor(metric) = medians[metric] ×
 (multipliers[metric] ?? DEFAULT_MULTIPLIERS[metric] ?? 0.8)`. A reading against an uncalibrated
 metric is reported as "无法比较" and never blocks a pass — but `calibrationAge` flags a
-calibration older than 30 days, and `novel_verify` / `novel_metrics` warn when there is none.
+calibration older than 30 days, and `novel_assess` warns when there is none.
 
 `iterationRules` renders the SOP's quantified table as `key` → action + scope:
 `rewrite-opening` (chapter), `change-naming` (chapter), `tighten-hooks` (chapter),
@@ -244,7 +250,9 @@ Two places where the code and the SOP's wording differ on purpose, both worth kn
   text, not in the comparison;
 - the verdict boundary is not in the SOP, so `verdictFromAssessments` fixes it: no failure is
   `pass`, any failure without a *core* failure (`readThrough3`, `followRead10`, `clickRate`,
-  `favoriteRate`) is `partial`, and a failing core metric is `fail`.
+  `favoriteRate`) is `partial`, and a failing core metric is `fail`. `evaluationAction` maps
+  those three onto the decision the author actually makes — `pass` → 继续投入, `partial` →
+  换变量后继续, `fail` → 切书止损.
 
 ## Invariants a contributor must not break
 

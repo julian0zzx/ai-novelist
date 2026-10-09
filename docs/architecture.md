@@ -85,7 +85,7 @@ src/core/          pure domain — no I/O, no clock, no Cordis
   content.ts         §4's ownership table: state ⇄ Markdown files, per kind
   novel.ts           every state transition as a pure function, the metadata codec, derived views
   plan.ts            what the plan still owes: outline/pitch/world/cast/contract gaps
-  metrics.ts         baselines → thresholds → verdicts → iteration rules
+  metrics.ts         baselines → thresholds → verdicts → iteration rules → the evaluation hint
   write.ts           the delivery report: did the prose pay for the plan? (plus the 去 AI 化 statistics)
   review.ts          the model-backed rubrics, their request framing, and the tolerant reply parser
   repo.ts            retrospective, assets, and the structural template
@@ -96,7 +96,7 @@ src/host/          the deployment surface
   views.ts           one workspace's view: classification, adoption, and the numbers behind it
   prompt.ts          the runtime-context section and the cache it reads
   llm.ts             the one seam that calls a model: route resolution, one streamed call
-  tools.ts           the nine model-facing tools (thin adapters over core)
+  tools.ts           the eight model-facing tools (thin adapters over core)
 src/client/        the browser surface
   index.tsx          the right-Sidebar tab type + its body
   kanban.tsx         the conversation view beside Chat and Trajectory
@@ -192,26 +192,25 @@ recomputed on every read and back-filled on every write.
 
 ### `host/tools.ts` — the model's vocabulary
 
-Nine tools, one per SOP capability, so the model's vocabulary matches the workflow rather
+Eight tools, one per SOP capability, so the model's vocabulary matches the workflow rather
 than the storage layout. They are deliberately thin: each parses arguments, calls a `core`
 function through the store, and renders a result the model can act on.
 
-**Eight compute; one asks a model.** That split is the load-bearing decision in this file.
-`novel_metrics` comparing a reading against a calibrated median must give the same verdict
+**Seven compute; one asks a model.** That split is the load-bearing decision in this file.
+`novel_assess` comparing a reading against a calibrated median must give the same verdict
 every time, or the SOP's evidence chain (C5, C8) collapses; `novel_review` judging whether a
 chapter reads as machine-written cannot be computed at all, and the SOP assigns it to
 judgement (§1.2). Mixing the two would break both, so the model never touches the ledgers
-(`iterations`, `verifications`) that thresholds act on: a review is recorded as a review,
+(`iterations`, `evaluations`) that thresholds act on: a review is recorded as a review,
 with the provider, the model and the rubric version that produced it.
 
 | Tool | SOP phase | Owns |
 |---|---|---|
 | `novel_init` | 一 策划 | The project, its commercial frame, the calibration medians, and the writing parameters — including the **length plan** (`targetWords` / `chapterWords` / `volumes`), which is asked of the user, derived where the answers imply it, and cross-checked |
-| `novel_plan` | 一/二/四 | `competitor` · `pitch` · `world` · `outline` · `volume` · `chapter` · `beat` · `opening` · `naming` |
+| `novel_plan` | 一/二/三/四 | `competitor` · `pitch` · `world` · `outline` · `volume` · `chapter` · `beat` · `opening` · `naming` · `launch` (the phase-three go/no-go) |
 | `novel_bible` | 一/四/六 | `character` · `world` · `link` · `review` |
-| `novel_verify` | 三 验证 | `round` (record a validation round) · `assess` |
 | `novel_write` | 五 连载 | `write` · `read` · `check` — prose, the contract-delivery report, and the automatic 去 AI 化 statistics |
-| `novel_metrics` | 五 放大 | `record` · `iterate` · `outcome` · `rules` |
+| `novel_assess` | 五 按需 | `record` · `iterate` · `evaluate` · `outcome` · `history` · `rules` — the on-demand investment evaluation; it owns no phase and gates nothing |
 | `novel_status` | 全流程 | `dashboard` (default) · `bible` · `plan` · `chapter` |
 | `novel_repo` | 六 复盘 | `export` · `retro` · `asset` · `lesson` · `template` |
 | `novel_review` | 五/六 判断 | **model-backed** — `ai-flavor` · `opening` · `competitor` · `retro` |
@@ -219,7 +218,8 @@ with the provider, the model and the rubric version that produced it.
 Design rules the tools follow:
 
 - **One envelope for every call.** `ok`, `operation`, `detail`, the derived `stage`, the next
-  phase's `blockers`, optional soft-gate `warnings`, and a `progress` line. Whichever tool the
+  phase's `blockers`, optional soft-gate `warnings`, an optional `evaluationDue` hint, and a
+  `progress` line. Whichever tool the
   model happens to call, it learns where the project stands and what the SOP expects next.
   `renderEnvelope` is the only renderer, so this cannot drift tool by tool.
 - **Results state where the novel now stands.** Every write returns the chapter index and
@@ -230,10 +230,13 @@ Design rules the tools follow:
 - **Chapter references are forgiving.** `resolveChapter` accepts an id, a slugified id, or a
   title, because that is how a user talks about chapters.
 - **Word counts are never trusted from the caller.** They are recomputed from the body.
-- **Refusal is reserved for data integrity.** A non-passing validation round without
-  `fallback` and `abandonIf` is rejected, because the SOP's point is that a failure has to
-  say where it goes back to; everything else the SOP would rather you did differently comes
-  back as a warning on a successful call.
+- **Refusal is reserved for data integrity.** Two records are rejected because they cannot be
+  valid without something the SOP requires and the caller omitted: a `novel_plan`
+  `operation="launch"` verdict that is not `go` without `fallback` and `abandonIf`, and a
+  `novel_assess operation="evaluate"` without an appointment for the next evaluation (or with
+  no comparable median at all). Both are the SOP's point that a decision has to say where it
+  goes back to; everything else the SOP would rather you did differently comes back as a
+  warning on a successful call.
 
 The tool descriptions are part of the product: they are the only place the model learns the
 workflow, so they carry the ordering, the "plan is not prose" distinction, and the
@@ -251,7 +254,7 @@ spec.
   the model the session is already using, so switching models in the GUI switches the
   reviewer. With none of the three, the tool is **not registered at all** (the plugin
   injects the capability inside `ctx.inject(['llm'], …)`); a profile with no model keeps
-  eight working tools rather than a ninth that can only fail. That injection is used as a
+  seven working tools rather than an eighth that can only fail. That injection is used as a
   *trigger*, not as the mounting context: a service context exposes the injected dependency
   and nothing else, so registration happens against the plugin's own ctx, which carries
   `tools`.
@@ -532,9 +535,10 @@ prevents forgetting is to make each of them a field.
 
 That is why the document is at version 3. It holds, as data: the commercial frame and the
 calibration medians (`platform`, `baselines`), the commitments made to readers (`links`), the
-readings and the iteration ledger (`readings`, `iterations`, `verifications`), the closing
-material (`retro`), the opening checklist whose `done` flags gate phase two, and the index
-that says where the content files are. The per-chapter contract and `targetWords`/`waived`/
+readings, the evaluation and iteration ledger (`readings`, `evaluations`, `iterations`), the
+launch decisions behind phase three (`launchDecisions`), the closing material (`retro`), the
+opening checklist whose `done` flags gate phase two, and the index that says where the content
+files are. The per-chapter contract and `targetWords`/`waived`/
 `delivered` moved into the chapter files, because they are things an author reads and revises.
 
 Version 2 kept all of that in one JSON document, and version 1 held only a premise, a cast and
@@ -559,7 +563,9 @@ document takes the same path after `migrateV1`:
 - `meta.genres` becomes the platform's genres, `meta.language` / `meta.pov` seed the writing
   plan;
 - the records v1 never modelled (pitch, naming, baselines, competitors, the outline body,
-  readings, iterations, verifications) start empty.
+  readings, evaluations, iterations, launch decisions) start empty. A version-3 document that
+  still carries the old `verifications` key is read into `evaluations`, so nothing recorded
+  before the 3.2 revision is lost.
 
 **The backup is kept forever.** A human's draft does not disappear because the plugin changed
 its storage layout. Every migration is idempotent too: a second read of a version-3 document
@@ -587,20 +593,47 @@ checks over the new state (`worldGaps`, `castGaps`, `contractGaps`, `openingPack
 call's arguments said. The same shape recurs in every other tool, which is why the envelope
 is rendered by one function instead of eight.
 
-Two refusals survive on purpose, and both are data-integrity requirements rather than workflow
-opinions: a non-passing `novel_verify round` without `fallback` and `abandonIf` throws (the
-SOP's rule is that a failure has to state where it goes back to — the record cannot be valid
-without it), and a chapter reference that matches nothing throws with the known ids listed.
-"The record would be meaningless" is a different thing from "the SOP would rather you did
-this later".
+The refusals that survive on purpose are data-integrity requirements rather than workflow
+opinions. Two come from the SOP's anti-formality rule: a `novel_plan operation="launch"`
+verdict that is not `go` without `fallback` and `abandonIf` throws (a failure has to state
+where it goes back to — the record cannot be valid without it), and a
+`novel_assess operation="evaluate"` refuses a session that names no next appointment, and
+refuses to answer at all when every metric in the reading lacks a comparable median. A third
+is a plain lookup error: a chapter reference that matches nothing throws with the known ids
+listed. "The record would be meaningless" is a different thing from "the SOP would rather you
+did this later".
+
+### Two axes: the pipeline and the on-demand evaluation
+
+Only one of the two things the plugin tracks is a phase.
+
+**The pipeline.** `assessStage` derives the stage from planned and written work alone —
+pitch, competitor coverage, the outline, the opening checklist, the launch decision, the
+volume and beat tables, chapters with prose, the retrospective. It never consults a reading or
+an evaluation. That is what lets a project advance while the platform numbers are unavailable:
+the phase-three gate is a declared human `go` (`novel_plan operation="launch"`), not a
+computed pass, and the evidence behind it — an editor's read, a handful of readers, an author
+group — is judgement, which the SOP files under §1.2's second category. What the tool enforces
+is only the anti-formality rule: a verdict that is not `go` must name a fallback target and an
+abandon condition.
+
+**The data evaluation.** `novel_assess` is started by the author when they want to know
+whether the book is still worth continuing, normally once the platform has numbers that can be
+transcribed by hand. Nothing waits for it and nothing gates on it: a project that has never
+been measured is a normal project, and `evaluationDue` — the hint in `core/metrics.ts` that
+compares chapters written against the previous evaluation's appointment — surfaces as an
+optional envelope field, a dashboard line and a prompt line, never as a warning or a blocker.
+The bridge between the axes is that both are recorded in the same document: the author makes a
+decision in the pipeline, and the evaluation is the evidence they can pull on whenever they
+choose to look.
 
 ### Metrics become decisions
 
 A number only enters the project because a platform, an editor, a test cohort or a human
-reported it: `novel_verify round` and `novel_metrics record` accept the values a caller
-supplies, drop anything that is not a finite number with a warning, and never synthesise a
-value. A metric nobody calibrated is reported as incomparable rather than guessed at. From
-there the chain is arithmetic:
+reported it: `novel_assess operation="record"` accepts the values a caller supplies, drops
+anything that is not a finite number with a warning, and never synthesises a value. A metric
+nobody calibrated is reported as incomparable rather than guessed at. From there the chain is
+arithmetic:
 
 1. **Baselines.** `novel_init` records same-genre medians over the last 30 days. No median
    means no threshold: `thresholdFor` returns `undefined`, `assessReading` reports the metric
@@ -620,10 +653,11 @@ there the chain is arithmetic:
    metric *and* `decliningStreak` at `SUSTAINED_DECLINE_CHAPTERS` (5), and the cut-loss rule
    needs `INEFFECTIVE_ITERATIONS_FOR_CUT` (2) ineffective iterations *and* a failing core
    metric.
-5. **The ledger.** `novel_metrics iterate` writes the decision into `iterations` with the
-   reading it responds to, and `novel_metrics outcome` attaches a later reading to it;
-   `judgeIteration` compares the two readings' shared metrics and marks the iteration
-   effective or ineffective, which is what `countIneffectiveIterations` counts in step 4.
+5. **The ledger.** `novel_assess iterate` writes the decision into `iterations` with the
+   reading it responds to, and the next `novel_assess operation="evaluate"` back-fills every
+   open iteration against the reading it is evaluating; `judgeIteration` compares the two
+   readings' shared metrics and marks the iteration effective or ineffective, which is what
+   `countIneffectiveIterations` counts in step 4.
 
 That back-fill is the piece the SOP asked for and prose could not supply: "连续 2–3 轮调整无效
 → 切书止损" is only decidable if the earlier rounds were recorded *and* closed. What the tool
@@ -698,13 +732,14 @@ the registered id, the plugin shape, and that nothing unexpected was bundled in.
 
 `pnpm run check` runs the suite (build → typecheck → test; 122 specs across the two packages
 when this was written, and `pnpm test` prints the current count). It covers:
-- the SOP pipeline end to end through the nine tools, using only the tool surface a model
+- the SOP pipeline end to end through the eight tools, using only the tool surface a model
   has (`test/sop-pipeline.test.ts`): the phases in order, the soft gate (a competitor call
   succeeds before a pitch exists *and* says what is missing), the opening-checklist gate, the
-  verdict arithmetic plus the two arguments a non-passing round is refused without, the
-  delivery report and the `final` warning, the iteration rules with their actions and scopes,
-  the outcome back-fill and the ineffective-iteration count, the overdue-promise check, and
-  the retrospective with its cast-free template,
+  launch decision and the two arguments a non-`go` verdict is refused without, the verdict
+  arithmetic an `evaluate` session runs, the appointment it is refused without, the delivery
+  report and the `final` warning, the iteration rules with their actions and scopes,
+  the automatic outcome back-fill and the ineffective-iteration count, the overdue-promise
+  check, and the retrospective with its cast-free template,
 - the domain, the codec and the derived views (`test/novel.test.ts`): id derivation and 字数
   counting, the version-2 defaults, serialization round-trips, the version-1 migration, the
   chapter contract (missing fields, waivers, prose-only revisions), reader promises, derived

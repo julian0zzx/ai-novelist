@@ -12,20 +12,20 @@ Built for [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.
 
 ## What it adds
 
-**Nine model-facing tools**, one per capability, matching the phases of the SOP
-(see [The SOP this implements](#the-sop-this-implements) below). Eight of them
-**compute** — thresholds, gates, arithmetic, identical on every run. The ninth,
+**Eight model-facing tools**, one per capability, matching the phases of the SOP
+(see [The SOP this implements](#the-sop-this-implements) below) — plus one that
+deliberately sits outside them. Seven of them
+**compute** — thresholds, gates, arithmetic, identical on every run. The eighth,
 `novel_review`, **asks a model** to judge prose, because that is the one thing no
 counter can decide; it is registered only where a model route exists.
 
 | Tool | SOP phase | What it owns |
 |---|---|---|
 | `novel_init` | 一 策划 | The project and its commercial frame — platform, mode (paid/free), audience, genre, target readers, monetization — plus the calibration medians (`baselines`, same-genre metric medians from the last 30 days) and the writing parameters: outline window, opening gate chapters, stock target, outline ceiling. The **length plan** (总字数, 单章字数, 是否分卷/分几卷) is asked of the user, never assumed: unanswered questions come back as a checklist repeated every step, `totalChapters` is derived from total ÷ chapter length, and the numbers are cross-checked against each other and against the volume outline. |
-| `novel_plan` | 一/二/四 | The planning pipeline: `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`. |
+| `novel_plan` | 一/二/三/四 | The planning pipeline: `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`, and `launch` — the phase-three go/no-go on the opening package. `go` unlocks the full skeleton; `revise` and `abandon` must name a fallback target and an abandon condition or they are refused. |
 | `novel_bible` | 一/四/六 | Cast, world facts, and reader promises: `character`, `world`, `link`, `review`. A `link` is a promise with a planting point, a due chapter, a payoff and a status; open promises past their due chapter are reported. |
-| `novel_verify` | 三 验证 | The validation gate: `round` records one small-cost test with its metrics and returns the verdict (`pass` / `partial` / `fail`); `assess` compares the latest reading without recording a round. |
 | `novel_write` | 五 连载 | One chapter's prose plus the delivery report: `write`, `read`, `check`. The **first draft is written to 150% of the chapter target** — 去 AI 化 and hand-editing delete a large share of a draft — and the finished chapter is then held to **-5%/+15%** (an asymmetric window: coming in under the promised length is the real failure, so the shortfall is capped at 5%); the tool picks the gate the chapter's status implies and prints both windows. Send the prose with `delivered=[…]` and it reports which planned fields the draft reached, which it missed, and which were never planned. Every write and check also returns the 去 AI 化 statistics (paragraph length, dialogue density, repeated sentence openings) — the tool reports symptoms and never edits the prose, so a revision is yours to make and re-send. |
-| `novel_metrics` | 五 放大 | The feedback loop: `record` (a reading → the rules it fires, each with an action *and* a scope), `iterate` (write the decision into the ledger), `outcome` (attach a later reading and report whether it actually worked), `rules` (the thresholds currently in force). |
+| `novel_assess` | 五 按需 | **Not a phase, and it gates nothing.** The on-demand investment evaluation — started when the author asks whether the book is still worth continuing. `record` (one hand-transcribed reading → the rules it fires, each with an action *and* a scope; it also accepts `baselines` to re-calibrate the medians on the spot), `iterate` (write the decision into the ledger), `evaluate` (the session: compares the reading against the calibrated medians, automatically back-fills every open change against it, and returns a verdict — 继续投入 / 换变量后继续 / 切书止损), `outcome` (the manual override: close one named change against one named reading, for the cases the automatic back-fill cannot infer), `history`, `rules`. A non-passing evaluation must say where to fall back to and what would end the book, and every evaluation must leave an appointment for the next one; a reading whose metrics all lack a median earns no verdict at all. |
 | `novel_status` | 全流程 | The dashboard, entirely derived from the project — no second ledger to maintain: `dashboard` (default), `bible`, `plan`, `chapter`. |
 | `novel_repo` | 六 复盘 | The closing phase: `export` (Markdown manuscript), `retro`, `asset`, `lesson`, `template`. |
 | `novel_review` | 五/六 判断 | **The model-backed tool.** `ai-flavor` diagnoses one chapter against a versioned 去 AI 化 rubric (and, with `rewrite=true`, proposes a rewritten draft as a file — never written into the chapter); `opening` reviews the gate chapters against the SOP opening checklist; `competitor` dismantles pasted competitor text into a record `novel_plan` can take; `retro` reads the project's own numbers and proposes reusable/avoid-this lessons. Every call records the provider, the model and the prompt version, and writes its transcript to `.novel/reviews/`. Nothing a model writes enters the ledger unless you pass `save=true`. |
@@ -48,26 +48,35 @@ re-read after the agent writes.
 
 ## The SOP this implements
 
-The workflow is [`docs/sop.md`](docs/sop.md) — 爆款网文创作全流程 SOP 3.1, whose closed loop
+The workflow is [`docs/sop.md`](docs/sop.md) — 爆款网文创作全流程 SOP 3.2, whose closed loop
 is **假设 → 验证 → 放大 → 复盘 → 复用**: form a hypothesis from a competitor study and a
-memorable point, validate it cheaply with a minimal viable outline and an opening package,
-build the full skeleton only after it passes, iterate while serializing against calibrated
-numbers, then turn the finished book into reusable structure.
+memorable point, put the opening package in front of real readers, record a human go/no-go on
+it, build the full skeleton only after a `go`, iterate while serializing, then turn the
+finished book into reusable structure.
+
+Two axes, and only one of them is the pipeline. The **pipeline** — plan, opening package,
+launch decision, full skeleton, serial — advances on planned and written work alone; it never
+waits for a platform number. The **data evaluation** (`novel_assess`) is started by the author
+at the moment they ask whether the book is still worth continuing, normally once the platform
+has numbers to transcribe by hand; it is what turns readings into the 继续投入 / 换变量后继续
+/ 切书止损 decision. Nothing gates on it: a project nobody has ever measured is a normal
+project, and a missing reading is never a reason to stop.
 
 The plugin's contribution is making that SOP *executable* rather than advisory:
 
 - every step's output becomes a field in one project document, so nothing lives only in
   prose and gets forgotten;
 - thresholds are computed from calibrated medians instead of being mental arithmetic —
-  `novel_init` records the medians, `novel_metrics` and `novel_verify` apply the
-  multipliers;
-- the phase is derived from the data, so the tools always report where the project
+  `novel_init` records the medians, `novel_assess` applies the multipliers when an
+  evaluation is run;
+- the phase is derived from the project, so the tools always report where the project
   actually stands and what the next phase still needs;
 - a call the SOP would rather you made later still succeeds, and returns `warnings` naming
-  what is missing — the soft gate never refuses a call. The one deliberate exception is a
-  validation round that did not pass: it must say where to fall back to and what would make
-  you abandon the concept, or the round is refused, because that record would otherwise be
-  meaningless.
+  what is missing — the soft gate never refuses a call. There are two deliberate exceptions,
+  both about stopping a decision from becoming a formality: a `novel_plan operation="launch"`
+  verdict other than `go` must say where to fall back to and what would end the concept, and
+  a `novel_assess operation="evaluate"` must leave an appointment for the next evaluation
+  (and cannot answer at all when every metric lacks a comparable median).
 
 [`docs/architecture.md`](docs/architecture.md) explains how this is built and why; read it
 before changing anything.
@@ -80,7 +89,7 @@ Stated plainly, because the SOP is explicit that these are human or platform job
   or a human's judgement. The tool records them, compares them with your baselines,
   derives an action and a scope, and warns. If nobody reports a reading, there is no
   reading.
-- **The eight computing tools never judge prose.** The delivery report compares a draft with
+- **The seven computing tools never judge prose.** The delivery report compares a draft with
   the plan it was written against; the 去 AI 化 hints are countable statistics — paragraph
   length, dialogue density, repeated sentence openings — not a verdict on voice; and
   compliance is a checklist you confirm rather than a scanner that reports "clean".
@@ -108,7 +117,7 @@ there with `--workspace-root`.
 
 `dsh plugin add` then reconciles `dsh.profile.bundles`: because `@ai-novelist/novelist-bundle`
 declares `dsh.bundle.patch`, it joins the profile's layer stack automatically. Restart
-`dsh web`; the eight computing tools appear in the next session, `novel_review` joins them
+`dsh web`; the seven computing tools appear in the next session, `novel_review` joins them
 wherever a model is available, and the composer tab appears in the sidebar guide.
 
 That trailing spec is a **package name, not a command name** — `dsh plugin` forwards
@@ -279,12 +288,12 @@ works if the user asks for it explicitly.
 `novel_review` is the only tool that needs a model, and it resolves its route in this order:
 the `provider`/`model` named on the call itself, then the configured `reviewProvider`/
 `reviewModel`, then whatever model the session is using. With no route at all the tool is not
-registered, so a profile without a model keeps eight working tools instead of nine broken ones.
+registered, so a profile without a model keeps seven working tools instead of eight broken ones.
 
 ## Packaging
 
 `pnpm run dist` builds and then produces two distributions in `dist/`, both carrying the
-same nine tools — the tool code is copied from this checkout, never re-implemented.
+same eight tools — the tool code is copied from this checkout, never re-implemented.
 
 ### 1. DSH plugin distribution — `dist/dsh-plugin/ai-novelist-<version>.tgz`
 
@@ -292,7 +301,7 @@ same nine tools — the tool code is copied from this checkout, never re-impleme
 plugin and the browser half:
 
 - it declares `dsh.bundle.patch`, which is what makes DSH append it to `dsh.profile.bundles`;
-- its root export (and the `./host` alias) is the module that registers the nine tools;
+- its root export (and the `./host` alias) is the module that registers the eight tools;
 - its `./client` export is the Web GUI half, served as a `window.__ModuleLoader__` bundle.
 
 ```sh
@@ -317,7 +326,7 @@ registry, no network install, no build step.
 ### 2. SKILL distribution — `dist/skill/ai-novelist/`
 
 A portable Agent Skill bundle: `SKILL.md` with the frontmatter DSH's filesystem provider
-parses and a table of all nine tools, `references/` with the workflow, the tool reference
+parses and a table of all eight tools, `references/` with the workflow, the tool reference
 and the generated thresholds, `scripts/` with the installer, and `tools/` carrying the same
 package as distribution 1.
 
@@ -335,7 +344,7 @@ Copy the directory into any scanned skill root to make it discoverable — for a
 > that registers a tool. A tool exists only once a plugin registers it on `ctx.tools`. So
 > the skill bundle carries the code *and* the script that installs it, and `SKILL.md` says
 > so plainly rather than implying the tools come for free. Its `metadata.tools` line and
-> its "The nine tools" table both list all nine.
+> its "The eight tools" table both list all eight.
 
 ## Development
 

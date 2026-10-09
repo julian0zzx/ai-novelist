@@ -16,6 +16,8 @@
 
 import type {
   ChangeScope,
+  EvaluationAction,
+  EvaluationHint,
   Iteration,
   MetricBaselines,
   MetricKey,
@@ -80,6 +82,17 @@ export const SUSTAINED_DECLINE_CHAPTERS = 5
 
 /** How many ineffective iterations make the next verdict "cut the book". */
 export const INEFFECTIVE_ITERATIONS_FOR_CUT = 2
+
+/**
+ * How many chapters may pass without an evaluation before the dashboard suggests
+ * one.
+ *
+ * The SOP's opening gate reads at chapter 3 and 10, and a volume's worth of
+ * updates is a month or more of writing: ten chapters is the point at which "I
+ * have no idea whether this is working" stops being a reasonable position. It is
+ * a *suggestion* threshold only — see {@link evaluationHint}.
+ */
+export const DEFAULT_EVALUATION_INTERVAL = 10
 
 /**
  * The sustained-depression line for the cut-loss rule: the SOP says "长期低于
@@ -450,21 +463,6 @@ export function countIneffectiveIterations(state: NovelState): number {
   }).length
 }
 
-/**
- * Find the iteration an outcome reading closes, so results can be back-filled.
- *
- * The SOP's cut-loss rule needs "调整是否有效" to be answerable; without linking
- * an outcome back to its iteration, that question has no data.
- *
- * @param state - the project.
- * @param readingId - the reading just recorded.
- * @returns the iteration ids it should close.
- */
-export function openIterationsFor(state: NovelState, readingId: string): string[] {
-  void readingId
-  return state.iterations.filter((iteration) => iteration.outcomeReadingId === '').map((iteration) => iteration.id)
-}
-
 /** One iteration's effect, as reported back to the author. */
 export interface IterationOutcome {
   /** The iteration id. */
@@ -511,5 +509,92 @@ export function judgeIteration(state: NovelState, iteration: Iteration): Iterati
     note:
       `${String(improved)}/${String(deltas.length)} 项改善：`
       + deltas.map((entry) => `${entry.metric} ${String(entry.from)}→${String(entry.to)}`).join('，'),
+  }
+}
+
+/**
+ * The investment action a threshold verdict implies.
+ *
+ * The SOP's three verdicts are about the opening package; the same three answers
+ * a "should I keep writing this" question. Naming both keeps the tool output
+ * honest about which question it just answered.
+ *
+ * @param verdict - the verdict the comparisons produced.
+ * @returns 继续投入 / 换变量 / 切书止损.
+ */
+export function evaluationAction(verdict: VerdictLevel): EvaluationAction {
+  if (verdict === 'pass') return 'continue'
+  if (verdict === 'partial') return 'adjust'
+  return 'cut'
+}
+
+/**
+ * The investment action in Chinese, for tool output.
+ *
+ * @param action - the action.
+ * @returns the label.
+ */
+export function evaluationActionLabel(action: EvaluationAction): string {
+  switch (action) {
+    case 'continue':
+      return '继续投入'
+    case 'adjust':
+      return '换变量后继续'
+    case 'cut':
+      return '切书止损'
+  }
+}
+
+/**
+ * Whether the project suggests asking the data question now.
+ *
+ * This exists because an on-demand check has a failure mode the old gate did not:
+ * nobody ever asks. The reminder is computed from project state alone — chapters
+ * written and the appointment the previous evaluation left — so it works in the
+ * situation that motivated the redesign, where the platform numbers cannot be
+ * fetched and may not even exist yet. It is advice, never a gate: nothing in
+ * {@link assessStage} consults it.
+ *
+ * @param state - the project.
+ * @returns whether an evaluation is suggested, and why.
+ */
+export function evaluationHint(state: NovelState): EvaluationHint {
+  const written = Object.values(state.chapters).filter((chapter) => chapter.body.trim() !== '').length
+  const open = state.iterations.filter((iteration) => iteration.outcomeReadingId === '').length
+  const last = state.evaluations.at(-1)
+
+  if (last === undefined) {
+    if (written < DEFAULT_EVALUATION_INTERVAL) {
+      return {
+        due: false,
+        reason: `已写 ${String(written)} 章；到 ${String(DEFAULT_EVALUATION_INTERVAL)} 章后再考虑首次投入评估`,
+      }
+    }
+    return {
+      due: true,
+      reason: `已写 ${String(written)} 章正文，还没有做过一次投入评估：平台若已有新书期数据，可以抄一次`,
+    }
+  }
+
+  const reading = state.readings.find((entry) => entry.id === last.readingId)
+  const atChapter = reading?.atChapter ?? 0
+  const since = Math.max(0, written - atChapter)
+  const pending = open > 0 ? `，另有 ${String(open)} 次调整尚未回填结果` : ''
+
+  if (last.nextAtChapter > 0 && written >= last.nextAtChapter) {
+    return {
+      due: true,
+      reason: `上次评估约定在第 ${String(last.nextAtChapter)} 章复看，现已写到第 ${String(written)} 章${pending}`,
+    }
+  }
+  if (since >= DEFAULT_EVALUATION_INTERVAL) {
+    return {
+      due: true,
+      reason: `距上次评估（第 ${String(atChapter)} 章）已过 ${String(since)} 章${pending}`,
+    }
+  }
+  return {
+    due: false,
+    reason: `距上次评估（第 ${String(atChapter)} 章）已过 ${String(since)} 章，未到 ${String(DEFAULT_EVALUATION_INTERVAL)} 章的建议间隔`,
   }
 }

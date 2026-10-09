@@ -25,7 +25,9 @@ import {
   type Character,
   type Competitor,
   type ContractField,
+  type Evaluation,
   type Iteration,
+  type LaunchDecision,
   type MetricBaselines,
   type MetricKey,
   type MetricReading,
@@ -47,7 +49,6 @@ import {
   type StorageIndex,
   type StorageLayout,
   type StoryLink,
-  type VerificationRound,
   type VolumePlan,
   type WorldEntry,
   type WritingPlan,
@@ -388,7 +389,8 @@ export function emptyNovel(meta: Partial<NovelMeta> = {}, now: Clock = systemClo
     chapters: {},
     readings: [],
     iterations: [],
-    verifications: [],
+    evaluations: [],
+    launchDecisions: [],
     reviews: [],
     index: emptyIndex(),
     createdAt: stamp,
@@ -853,12 +855,12 @@ function readIteration(value: Record<string, unknown>): Iteration | undefined {
 }
 
 /**
- * Read one validation round.
+ * Read one investment evaluation.
  *
- * @param value - the raw round.
- * @returns the round, or `undefined` without an id.
+ * @param value - the raw evaluation.
+ * @returns the evaluation, or `undefined` without an id.
  */
-function readVerification(value: Record<string, unknown>): VerificationRound | undefined {
+function readEvaluation(value: Record<string, unknown>): Evaluation | undefined {
   const id = readString(value, 'id', '')
   if (id === '') return undefined
   const verdict = readString(value, 'verdict', 'fail')
@@ -872,6 +874,28 @@ function readVerification(value: Record<string, unknown>): VerificationRound | u
     namingId: readString(value, 'namingId', ''),
     verdict: verdict === 'pass' || verdict === 'partial' ? verdict : 'fail',
     reasons: readStringArray(value, 'reasons'),
+    fallback: readString(value, 'fallback', ''),
+    abandonIf: readString(value, 'abandonIf', ''),
+    nextAtChapter: readNumber(value, 'nextAtChapter', 0),
+    nextTrigger: readString(value, 'nextTrigger', ''),
+    note: readString(value, 'note', ''),
+  }
+}
+
+/**
+ * Read one stage-three launch decision.
+ *
+ * @param value - the raw decision.
+ * @returns the decision, or `undefined` without an id.
+ */
+function readLaunchDecision(value: Record<string, unknown>): LaunchDecision | undefined {
+  const id = readString(value, 'id', '')
+  if (id === '') return undefined
+  const verdict = readString(value, 'verdict', 'revise')
+  return {
+    id,
+    at: readString(value, 'at', new Date(0).toISOString()),
+    verdict: verdict === 'go' || verdict === 'abandon' ? verdict : 'revise',
     fallback: readString(value, 'fallback', ''),
     abandonIf: readString(value, 'abandonIf', ''),
     note: readString(value, 'note', ''),
@@ -960,7 +984,10 @@ export function readMetadata(parsed: Record<string, unknown>): NovelMetadata {
     links: readMap(parsed, 'links', readLink),
     readings: readList(parsed['readings'], readReading),
     iterations: readList(parsed['iterations'], readIteration),
-    verifications: readList(parsed['verifications'], readVerification),
+    // `verifications` is the pre-3.2 name of the same ledger. Reading it keeps a
+    // document written before the rename from silently losing its rounds.
+    evaluations: readList(parsed['evaluations'] ?? parsed['verifications'], readEvaluation),
+    launchDecisions: readList(parsed['launchDecisions'], readLaunchDecision),
     reviews: readList(parsed['reviews'], readReview),
     opening: readOpeningList(parsed['opening']),
     index,
@@ -1086,7 +1113,8 @@ export function metadataOf(state: NovelState, index?: StorageIndex): NovelMetada
     links: state.links,
     readings: state.readings,
     iterations: state.iterations,
-    verifications: state.verifications,
+    evaluations: state.evaluations,
+    launchDecisions: state.launchDecisions,
     reviews: state.reviews,
     // The checklist lives beside the plan it gates, but its home is the metadata
     // document — see `NovelMetadata.opening`.
@@ -1236,7 +1264,8 @@ export function migrateV1(parsed: Record<string, unknown>): NovelState {
     chapters: sortChapters(readMap(parsed, 'chapters', readChapter)),
     readings: [],
     iterations: [],
-    verifications: [],
+    evaluations: [],
+    launchDecisions: [],
     reviews: [],
     index: emptyIndex(),
     createdAt: readString(parsed, 'createdAt', stamp),
@@ -1320,7 +1349,8 @@ export function serializeMetadata(metadata: NovelMetadata): string {
     ...metadata,
     readings: [...metadata.readings],
     iterations: [...metadata.iterations],
-    verifications: [...metadata.verifications],
+    evaluations: [...metadata.evaluations],
+    launchDecisions: [...metadata.launchDecisions],
     reviews: [...metadata.reviews],
   }
   return `${JSON.stringify(normalized, null, 2)}\n`
@@ -1341,7 +1371,8 @@ export function serializeNovel(state: NovelState): string {
     chapters: sortChapters(state.chapters),
     readings: [...state.readings],
     iterations: [...state.iterations],
-    verifications: [...state.verifications],
+    evaluations: [...state.evaluations],
+    launchDecisions: [...state.launchDecisions],
     reviews: [...state.reviews],
   }
   return `${JSON.stringify(normalized, null, 2)}\n`
@@ -1416,12 +1447,18 @@ export function progressOf(state: NovelState): NovelProgress {
 }
 
 /**
- * Which SOP phase the project's data currently supports.
+ * Which SOP phase the project has actually reached.
  *
  * The stage is **derived**, never stored: a stored stage is a second source of
  * truth that drifts the moment someone edits a chapter by hand. The blockers
  * name what the next phase still needs, which is exactly what `novel_plan`
  * reports as its soft gate.
+ *
+ * Only planned and written work can move it. Metric readings deliberately cannot:
+ * phase three ends in a declared launch decision, and the data assessment that
+ * used to sit there is now an on-demand action ({@link Evaluation}) that gates
+ * nothing, so a project advances whether or not the platform numbers are
+ * available.
  *
  * @param state - the state to assess.
  * @returns the stage plus the blockers for the next one.
@@ -1434,7 +1471,7 @@ export function assessStage(state: NovelState): StageAssessment {
   const writtenChapters = Object.values(state.chapters).filter((chapter) => chapter.body.trim() !== '')
   const openingDone = state.outline.opening.length > 0 && state.outline.opening.every((check) => check.done)
   const hasMinimalOutline = state.outline.minimal.trim() !== '' || state.outline.logline.trim() !== ''
-  const passedVerification = state.verifications.some((round) => round.verdict === 'pass')
+  const lastDecision = state.launchDecisions.at(-1)
 
   // Phase one → two: the pitch and the competitor study are the SOP's own
   // checkpoint ("能否一句话说清谁看、为什么追、为什么付费？竞品 ≥20 本").
@@ -1444,7 +1481,7 @@ export function assessStage(state: NovelState): StageAssessment {
   if (planningBlockers.length > 0) return { stage: 'planning', blockers: planningBlockers, satisfied }
   satisfied.push('记忆点与竞品拆解已就绪')
 
-  // Phase two → three: the opening verification package.
+  // Phase two → three: the opening package.
   const prepBlockers: string[] = []
   if (!hasMinimalOutline) prepBlockers.push('最小可行大纲未写入（operation="outline"）')
   if (chapterPlans.length === 0 && writtenChapters.length === 0) prepBlockers.push('尚无章节细纲（operation="chapter"）')
@@ -1452,21 +1489,42 @@ export function assessStage(state: NovelState): StageAssessment {
     const pending = state.outline.opening.filter((check) => !check.done).length
     prepBlockers.push(`开篇工程清单尚有 ${String(pending)} 项未确认（operation="opening"）`)
   }
-  if (prepBlockers.length > 0) return { stage: 'verification-prep', blockers: prepBlockers, satisfied }
-  satisfied.push('开篇验证包已就绪')
+  if (prepBlockers.length > 0) return { stage: 'opening-package', blockers: prepBlockers, satisfied }
+  satisfied.push('开篇包已就绪')
 
-  // Phase three → four: a passing round.
-  if (state.readings.length === 0) {
-    return { stage: 'verification-prep', blockers: ['尚无可比对的读数（novel_verify 会录入）'], satisfied }
-  }
-  if (!passedVerification) {
+  // Phase three: the launch decision. A declared judgement, never a reading —
+  // the evidence available here (an editor's read, a handful of readers) is
+  // judgement, and a project whose author cannot transcribe platform numbers
+  // must still be able to move on. What is enforced is the anti-formality rule:
+  // a decision that is not `go` has to say where to fall back to and what would
+  // end the concept.
+  if (lastDecision === undefined) {
     return {
-      stage: 'verifying',
-      blockers: ['验证未通过：改开篇/简介/标签后重验，或按回退目标回到策划'],
+      stage: 'opening-decision',
+      blockers: ['上线决策未记录：开篇包够不够格投入完整骨架？（novel_plan operation="launch"）'],
       satisfied,
     }
   }
-  satisfied.push('验证已通过')
+  if (lastDecision.verdict === 'abandon') {
+    return {
+      stage: 'opening-decision',
+      blockers: [
+        `已判定放弃该概念${lastDecision.abandonIf === '' ? '' : `（放弃条件：${lastDecision.abandonIf}）`}：换概念后从阶段一重来`,
+      ],
+      satisfied,
+    }
+  }
+  if (lastDecision.verdict === 'revise') {
+    return {
+      stage: 'opening-decision',
+      blockers: [
+        `上次决策为「改后再说」：${lastDecision.fallback === '' ? '未写回退目标' : lastDecision.fallback}`
+        + `；放弃条件：${lastDecision.abandonIf === '' ? '未写' : lastDecision.abandonIf}`,
+      ],
+      satisfied,
+    }
+  }
+  satisfied.push('上线决策已通过（go）')
 
   // Phase four → five: the full skeleton.
   const outlineBlockers: string[] = []
@@ -1498,10 +1556,10 @@ export function stageLabel(stage: ProjectStage): string {
   switch (stage) {
     case 'planning':
       return '阶段一 策划'
-    case 'verification-prep':
-      return '阶段二 验证准备'
-    case 'verifying':
-      return '阶段三 小成本验证'
+    case 'opening-package':
+      return '阶段二 开篇包'
+    case 'opening-decision':
+      return '阶段三 上线决策'
     case 'full-outline':
       return '阶段四 完整大纲'
     case 'serializing':
@@ -1618,6 +1676,37 @@ export function addReading(state: NovelState, reading: MetricReading, now: Clock
  */
 export function addIteration(state: NovelState, iteration: Iteration, now: Clock = systemClock): NovelState {
   return { ...state, iterations: [...state.iterations, iteration], updatedAt: now() }
+}
+
+/**
+ * Append one investment evaluation.
+ *
+ * Evaluations accumulate: the point of an on-demand check is to compare this
+ * look at the numbers with the last one, which needs the earlier record to still
+ * exist.
+ *
+ * @param state - the state to derive from.
+ * @param evaluation - the evaluation to append.
+ * @param now - timestamp for `updatedAt`.
+ * @returns a new state.
+ */
+export function addEvaluation(state: NovelState, evaluation: Evaluation, now: Clock = systemClock): NovelState {
+  return { ...state, evaluations: [...state.evaluations, evaluation], updatedAt: now() }
+}
+
+/**
+ * Append one stage-three launch decision.
+ *
+ * Decisions accumulate for the same reason evaluations do: a `revise` followed
+ * by a `go` is the record of what changed between them.
+ *
+ * @param state - the state to derive from.
+ * @param decision - the decision to append.
+ * @param now - timestamp for `updatedAt`.
+ * @returns a new state.
+ */
+export function addLaunchDecision(state: NovelState, decision: LaunchDecision, now: Clock = systemClock): NovelState {
+  return { ...state, launchDecisions: [...state.launchDecisions, decision], updatedAt: now() }
 }
 
 /**

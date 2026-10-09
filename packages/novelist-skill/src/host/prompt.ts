@@ -29,6 +29,7 @@ import {
   assessStage,
   describeWritingPlan,
   emptyWriting,
+  evaluationHint,
   progressOf,
   stageLabel,
   writingPlanGaps,
@@ -77,6 +78,17 @@ export interface NovelSnapshot {
   readonly overdueLinks: number
   /** The latest metric reading's verdict, one line per failing metric. */
   readonly metricNotes: readonly string[]
+  /**
+   * The on-demand evaluation's standing: how many were run, and whether the
+   * project now suggests another.
+   *
+   * Carried in the prompt because it is the one mechanism that keeps an optional
+   * check from being forgotten, and because the model must know the check is
+   * advisory: it is reported as a suggestion, never as a blocker.
+   */
+  readonly evaluations: number
+  readonly evaluationDue: boolean
+  readonly evaluationHint: string
   /** The length plan in one line: 总字数 · 单章字数 · 卷数. */
   readonly planSummary: string
   /** Length questions still unanswered, phrased as what to ask the user. */
@@ -124,6 +136,7 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
       const assessment = assessStage(state)
       const progress = progressOf(state)
       const latest = state.readings.at(-1)
+      const hint = evaluationHint(state)
       cached = {
         title: state.meta.title,
         premise: state.meta.premise,
@@ -145,6 +158,9 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
             : assessReading(latest, state.baselines)
                 .filter((entry) => entry.passed === false)
                 .map((entry) => entry.note),
+        evaluations: state.evaluations.length,
+        evaluationDue: hint.due,
+        evaluationHint: hint.reason,
         planSummary: describeWritingPlan(state.writing),
         planGaps: writingPlanGaps(state.writing).map((gap) => gap.requirement),
         lastNumber: last?.number ?? 0,
@@ -172,6 +188,9 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
           openLinks: 0,
           overdueLinks: 0,
           metricNotes: [],
+          evaluations: 0,
+          evaluationDue: false,
+          evaluationHint: '',
           planSummary: describeWritingPlan(emptyWriting()),
           planGaps: [],
           lastNumber: 0,
@@ -208,9 +227,15 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
 const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
   novel:
     'This is a novel workspace. Follow the SOP pipeline rather than jumping to prose: the stage above is derived from '
-    + 'the recorded data, and the blockers are what the next phase still needs. Plan with novel_plan, record cast, '
-    + 'world and promises with novel_bible, validate with novel_verify before committing to a full outline, write with '
-    + 'novel_write (reporting which contract fields the draft delivered), and drive iteration with novel_metrics. '
+    + 'the planned and written work, and the blockers are what the next phase still needs. Plan with novel_plan, record '
+    + 'cast, world and promises with novel_bible, write with novel_write (reporting which contract fields the draft '
+    + 'delivered). Phase three ends in a declared launch decision — novel_plan operation="launch" — not in a number: '
+    + 'whether the opening package is worth a full skeleton is a judgement, and no platform data is needed to make it. '
+    + 'The data check is novel_assess, and it is ON DEMAND: run it when the user asks whether the book is still worth '
+    + 'continuing, which normally means after the book has been live and the platform has numbers to transcribe by hand. '
+    + 'It is never a gate — do not treat a missing reading as a reason to stop, and do not push the user to fetch '
+    + 'platform numbers they cannot get. When a result carries evaluationDue, that is a suggestion you may pass on, '
+    + 'not a blocker. '
     + 'A chapter is written long and published on target: write the first draft to 150% of the chapter target, because '
     + '去 AI 化 and hand-editing delete a large share of it, then trim the finished chapter back to within '
     + '-5%/+15% of the target (a finished chapter may never come in more than 5% short). '
@@ -330,6 +355,16 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
     }
     if (snapshot !== undefined && snapshot.blockers.length > 0) {
       lines.push(`What the SOP wants before the next phase: ${snapshot.blockers.join('；')}`)
+    }
+    // The data check, on its own axis. Phrased as a suggestion because that is
+    // what it is: the stage above never waits for a reading, and an author who
+    // cannot transcribe platform numbers must not be blocked by this line.
+    if (snapshot !== undefined && snapshot.evaluationDue) {
+      lines.push(
+        `Data evaluation (on demand, not a gate): ${snapshot.evaluationHint}. `
+        + `${String(snapshot.evaluations)} run so far; offer novel_assess when the user asks whether the book is `
+        + 'still worth continuing.',
+      )
     }
     if (snapshot !== undefined && snapshot.metricNotes.length > 0) {
       lines.push(`Metrics below their threshold: ${snapshot.metricNotes.join('；')}`)

@@ -2,7 +2,7 @@
 /**
  * Package the composer into the two distributions the project ships.
  *
- * Both contain the same nine tools — the tool code is copied from this
+ * Both contain the same eight tools — the tool code is copied from this
  * checkout's build, never re-implemented — but they answer different questions:
  *
  * 1. **DSH plugin distribution** (`dist/dsh-plugin/`): one tarball, one package.
@@ -12,7 +12,7 @@
  *
  * 2. **SKILL distribution** (`dist/skill/ai-novelist/`): the portable
  *    Agent Skill bundle. `SKILL.md` carries the frontmatter DSH's filesystem
- *    provider parses and a table of all nine tools, `references/` holds the
+ *    provider parses and a table of all eight tools, `references/` holds the
  *    workflow and the generated tool/threshold references, `scripts/` holds the
  *    installer, and `tools/` carries the same package as distribution 1.
  *
@@ -59,14 +59,13 @@ const STAGE_NAME = 'ai-novelist'
 /** The development package that builds the plugin, named for the filter. */
 const HOST_PACKAGE_NAME = '@ai-novelist/novelist-skill'
 
-/** The nine tools every distribution must carry. */
+/** The eight tools every distribution must carry. */
 const EXPECTED_TOOLS = [
   'novel_init',
   'novel_plan',
   'novel_bible',
-  'novel_verify',
   'novel_write',
-  'novel_metrics',
+  'novel_assess',
   'novel_status',
   'novel_repo',
   'novel_review',
@@ -81,17 +80,19 @@ const TOOL_TABLE = [
   ],
   [
     '`novel_plan`',
-    'competitor, pitch, world, outline, volume, chapter, beat, opening, naming',
-    'the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants',
+    'competitor, pitch, world, outline, volume, chapter, beat, opening, naming, launch',
+    'the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants; '
+      + '`launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition',
   ],
   ['`novel_bible`', 'character, world, link, review', 'cast, world facts, reader promises, and their review'],
-  [
-    '`novel_verify`',
-    'round, assess',
-    'validation: metrics in, pass/partial/fail out; a non-passing round must name its fallback and abandon condition',
-  ],
   ['`novel_write`', 'write, read, check', 'prose, the contract-delivery report, and the automatic 去 AI 化 statistics'],
-  ['`novel_metrics`', 'record, iterate, outcome, rules', 'readings, the SOP iteration rules, and outcome back-fill'],
+  [
+    '`novel_assess`',
+    'record, iterate, evaluate, outcome, history, rules',
+    'the on-demand investment evaluation: readings in, verdict out; it owns no phase and gates nothing. '
+      + '`evaluate` back-fills every open change, refuses to judge a reading with no comparable median, and must '
+      + 'leave a next appointment; a non-passing evaluation must name its fallback and abandon condition',
+  ],
   ['`novel_status`', 'dashboard, bible, plan, chapter', 'the derived SOP dashboard'],
   [
     '`novel_repo`',
@@ -125,7 +126,7 @@ async function manifestOf(dir) {
 }
 
 /**
- * Assert that a built host package really registers the nine tools.
+ * Assert that a built host package really registers the eight tools.
  *
  * The distributions copy build output, so a stale or partial `lib/` would ship
  * silently. Matching the bare name keeps this independent of the emitted
@@ -217,7 +218,7 @@ async function packPluginDistribution(version) {
     version,
     description:
       bundleManifest.description
-      + ' — the bundle and the plugin in one package, so a single tarball installs the nine tools with it.',
+      + ' — the bundle and the plugin in one package, so a single tarball installs the eight tools with it.',
     type: 'module',
     license: bundleManifest.license ?? 'MIT',
     main: './lib/index.js',
@@ -322,7 +323,7 @@ function installNotes(version) {
 - the profile **bundle** — its manifest declares \`dsh.bundle.patch\`, which is what
   makes DSH append the package to \`dsh.profile.bundles\`;
 - the **plugin** — its root export (and the \`./host\` alias) is the module that
-  registers the nine \`novel_*\` tools on \`ctx.tools\`;
+  registers the eight \`novel_*\` tools on \`ctx.tools\`;
 - the **browser half** — \`./client\`, served to the Web GUI as a
   \`window.__ModuleLoader__\` bundle that adds the *Novel Composer* sidebar tab.
 
@@ -348,7 +349,7 @@ session that started earlier keeps the tools it began with.
 
 ## The one tool that needs a model
 
-Eight tools are pure computation and need nothing but a filesystem.
+Seven tools are pure computation and need nothing but a filesystem.
 \`novel_review\` asks a model to judge prose, so it exists only where a model
 route does — in the Web profile, wherever you have selected a model. It follows
 your session's model by default; to pin reviews to something cheaper or stronger,
@@ -380,7 +381,7 @@ Expect a row \`id: ai-novelist\` naming \`${PACKAGE_NAME}\`.
 dsh plugin --profile web remove -w ${PACKAGE_NAME}
 \`\`\`
 
-## The nine tools
+## The eight tools
 
 | tool | operations | purpose |
 |---|---|---|
@@ -411,15 +412,20 @@ metadata:
 
 # AI Web Novel Composer
 
-Drives a Chinese web novel through the 爆款网文 SOP 3.1: **假设 → 验证 → 放大 → 复盘 →
-复用**. It is a pipeline with gates, not a notebook. Eight of the nine tools do the
+Drives a Chinese web novel through the 爆款网文 SOP 3.2: **假设 → 验证 → 放大 → 复盘 →
+复用**. It is a pipeline with gates, not a notebook. Seven of the eight tools do the
 bookkeeping; you do the writing; \`novel_review\` buys a second opinion on it.
 
-## The nine tools
+The pipeline advances on what has been planned and written. Phase three ends in a
+declared \`go\` / \`revise\` / \`abandon\`, not in a metric: the data evaluation
+(\`novel_assess\`) sits outside the phases and is started by the author when they
+ask whether the book is still worth continuing.
 
-Eight compute, and are registered unconditionally. The ninth, \`novel_review\`,
+## The eight tools
+
+Seven compute, and are registered unconditionally. The eighth, \`novel_review\`,
 asks a model — it appears only in a profile that has a model route, and it is the
-only tool here whose answer is a judgement rather than a derived fact. All nine
+only tool here whose answer is a judgement rather than a derived fact. All eight
 travel in the DSH plugin under \`tools/\` — set it up first (see *Set up the
 tools* below). Nothing here works until they exist.
 
@@ -510,9 +516,13 @@ reported rather than silently accepted.
    degrades to "无法比较". Then \`novel_plan\` for the pitch (the one-sentence
    memorable point) and 20–50 competitor dismantles.
 2. **验证** — the minimal viable outline plus the opening package
-   (\`novel_plan operation="outline"\` then \`"chapter"\` then \`"opening"\`), then
-   \`novel_verify\` with real numbers. A round that does not pass **must** name its
-   fallback and its abandon condition; the tool refuses the round otherwise.
+   (\`novel_plan operation="outline"\` then \`"chapter"\` then \`"opening"\`), then the
+   launch decision: \`novel_plan operation="launch"\` with \`verdict\` = \`go\` |
+   \`revise\` | \`abandon\`. It is a judgement, not a computed number, so it needs no
+   platform data — but a verdict that is not \`go\` **must** name its fallback and
+   its abandon condition, and the tool refuses it otherwise. The data check is
+   \`novel_assess\`, run **on demand** when the author asks whether the book is
+   still worth continuing; it owns no phase and nothing gates on it.
 3. **放大** — \`novel_write\` per chapter, writing the first draft to **150% of the
    chapter target** (去 AI 化与手改会成段删减，初稿按成稿字数写必然偏短), reporting
    which contract fields the draft delivered **and the 去 AI 化 statistics**
@@ -522,8 +532,10 @@ reported rather than silently accepted.
    back through \`operation="write"\`, or re-read the numbers later with
    \`operation="check"\` or \`novel_status detail="chapter"\`. When a chapter needs a
    real reading rather than a count, ask \`novel_review operation="ai-flavor"\`.
-   Then \`novel_metrics\` for readings and the SOP's iteration rules, each carrying
-   an action *and a scope*.
+   Then \`novel_assess\` when the author wants the numbers answer: \`record\` a
+   reading, \`iterate\` the decided change with its scope, and \`evaluate\` to get the
+   verdict (继续投入 / 换变量后继续 / 切书止损). An evaluation back-fills every open
+   change and must leave a next appointment; it never moves the project stage.
 4. **复盘** — \`novel_repo operation="retro"\` derives the summary, the IP assets,
    and a structural template; \`novel_review operation="retro"\` reads the same data
    and proposes the reusable and avoid-this lessons, which you accept with
@@ -544,12 +556,12 @@ reported rather than silently accepted.
 
 - They do not measure anything. 点击率, 追读, 留存 and 首订 come from the platform
   or from readers; you record them, the tool compares them.
-- The eight computing tools do not judge prose. The 去 AI 化 statistics report
+- The seven computing tools do not judge prose. The 去 AI 化 statistics report
   countable symptoms (paragraph length, dialogue density, repeated sentence
   openings) and nothing more. \`novel_review\` does judge — that is its whole job —
   but its output is advice recorded as advice, and it never lands in the ledgers
-  (\`iterations\`, \`verifications\`) that thresholds act on.
-- They do not rewrite published chapters. \`novel_metrics\` recommends an action
+  (\`iterations\`, \`evaluations\`, \`launchDecisions\`) that thresholds act on.
+- They do not rewrite published chapters. \`novel_assess\` recommends an action
   and a scope; widening that scope is the author's decision.
 - They do not fabricate thresholds. With no calibrated medians, a reading is
   recorded and reported as incomparable rather than silently judged.
@@ -650,7 +662,7 @@ console.log(\`setup: verify with  dsh --profile \${profile} --dump-config | grep
 /**
  * Generate the tool reference from the shipped source.
  *
- * The nine-tool table comes from the same constant every other distribution
+ * The eight-tool table comes from the same constant every other distribution
  * uses, so it cannot drift from the shipped surface; the parameters-and-behaviour
  * half is lifted from the plugin README's own tool-surface section, up to the
  * next top-level heading.
@@ -669,7 +681,7 @@ async function toolsReference() {
   }
   return `# Tool reference
 
-The nine tools, in the order the SOP uses them:
+The eight tools, in the order the SOP uses them:
 
 | tool | operations | what it owns |
 |---|---|---|

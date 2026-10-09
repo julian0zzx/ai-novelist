@@ -189,11 +189,16 @@ describe('request builders', () => {
       progress: progressOf(state),
       readings: [],
       iterations: [],
+      evaluations: [],
+      launchDecisions: [],
       lessons: [{ id: 'lesson-1', kind: 'avoid', statement: '开篇堆设定', evidence: '第3章读完低', area: 'opening' }],
     })
     expect(request.system).toContain('"lessons"')
     expect(request.system).toContain('不要编造因果')
     expect(request.user).toContain('（没有读数）')
+    // The investment decisions are evidence too, so the retrospective sees them.
+    expect(request.user).toContain('（没有做过投入评估）')
+    expect(request.user).toContain('（没有记录上线决策）')
     expect(request.user).toContain('1. [planned] 山门')
     expect(request.user).toContain('开篇堆设定')
   })

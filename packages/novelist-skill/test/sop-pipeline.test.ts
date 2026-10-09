@@ -222,10 +222,10 @@ describe('phase two: the opening package', () => {
     }
   }
 
-  it('advances to verification-prep and then blocks on the opening checklist', async () => {
+  it('advances to opening-package and then blocks on the opening checklist', async () => {
     await completePlanning()
     const atPrep = await call('novel_status', {})
-    expect(atPrep['stage']).toMatch(/verification-prep/)
+    expect(atPrep['stage']).toMatch(/opening-package/)
     expect((atPrep['blockers'] as string[]).join(' ')).toMatch(/最小可行大纲/)
 
     await call('novel_plan', { operation: 'outline', logline: '少年上山', minimal: '一屏摘要', acts: ['起', '承', '转'] })
@@ -235,7 +235,7 @@ describe('phase two: the opening package', () => {
     expect((blocked['blockers'] as string[]).join(' ')).toMatch(/开篇工程清单/)
   })
 
-  it('will not leave verification-prep until the checklist and the naming candidates exist', async () => {
+  it('will not leave opening-package until the checklist and the naming candidates exist', async () => {
     await completePlanning()
     await call('novel_plan', { operation: 'outline', logline: '少年上山', minimal: '摘要', acts: ['起'] })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
@@ -257,8 +257,10 @@ describe('phase two: the opening package', () => {
     expect((checklistDone['blockers'] as string[]).join(' ')).not.toMatch(/开篇工程清单/)
 
     // The SOP also wants 3–5 naming candidates before the package is testable.
+    // With the package complete the project asks for a launch decision — not for
+    // a reading, which is the whole point of moving the data check off the track.
     const beforeNaming = await call('novel_status', {})
-    expect((beforeNaming['blockers'] as string[]).join(' ')).toMatch(/读数/)
+    expect((beforeNaming['blockers'] as string[]).join(' ')).toMatch(/上线决策/)
     for (const [index, title] of ['断剑问心', '剑有记忆', '宗门底层'].entries()) {
       await call('novel_plan', { operation: 'naming', title, blurb: `简介 ${String(index)}`, tags: ['xianxia'] })
     }
@@ -267,9 +269,9 @@ describe('phase two: the opening package', () => {
   })
 })
 
-describe('phase three: verification', () => {
-  /** A project sitting at the verification gate, with medians calibrated. */
-  async function readyToVerify(): Promise<void> {
+describe('phase three: the launch decision', () => {
+  /** A project sitting at the launch decision, opening package complete. */
+  async function readyToLaunch(): Promise<void> {
     await call('novel_init', {
       title: '青云记',
       premise: '少年携断剑上山。',
@@ -302,75 +304,352 @@ describe('phase three: verification', () => {
     }
   }
 
-  it('computes a passing round when every metric clears its threshold', async () => {
-    await readyToVerify()
-    const result = await call('novel_verify', {
-      operation: 'round',
-      channel: 'readers',
-      sampleSize: 30,
-      atChapter: 3,
-      metrics: { readThrough3: 0.45, followRead10: 0.18 },
+  it('asks for a launch decision once the opening package is complete', async () => {
+    await readyToLaunch()
+    const status = await call('novel_status', {})
+    expect(status['stage']).toMatch(/opening-decision/)
+    expect((status['blockers'] as string[]).join(' ')).toMatch(/上线决策/)
+  })
+
+  it('unlocks the full outline on a declared go, with no reading and no evaluation', async () => {
+    await readyToLaunch()
+    const decided = await call('novel_plan', {
+      operation: 'launch',
+      verdict: 'go',
+      note: '编辑内投反馈正面，开篇包够格',
     })
-    expect(result['detail']).toMatch(/通过/)
-    expect(result['stage']).toMatch(/full-outline/)
+    expect(String(decided['detail'])).toMatch(/进入完整大纲/)
+    // The stage moves on planned work alone: the platform numbers this project
+    // will eventually transcribe are nowhere in the decision.
+    expect(decided['stage']).toMatch(/full-outline/)
+    const stored = JSON.parse(await readFile(join(root, '.novel/novel.json'), 'utf8')) as {
+      readings: unknown[]
+      evaluations: unknown[]
+      launchDecisions: unknown[]
+    }
+    expect(stored.readings).toEqual([])
+    expect(stored.evaluations).toEqual([])
+    expect(stored.launchDecisions).toHaveLength(1)
   })
 
-  it('refuses a failing round that does not say where to fall back to', async () => {
-    await readyToVerify()
-    // readThrough3 0.2 is below median 0.5 × 0.8 = 0.4, and it is a core metric.
-    await expect(
-      call('novel_verify', {
-        operation: 'round',
-        channel: 'readers',
-        metrics: { readThrough3: 0.2 },
-      }),
-    ).rejects.toThrow(/必须给出 fallback/)
+  it('refuses a non-go launch decision that does not say where to fall back to', async () => {
+    await readyToLaunch()
+    await expect(call('novel_plan', { operation: 'launch', verdict: 'revise' })).rejects.toThrow(/必须给出 fallback/)
   })
 
-  it('refuses a failing round that does not say what would make you abandon the concept', async () => {
-    await readyToVerify()
+  it('refuses a non-go launch decision that does not say what would end the concept', async () => {
+    await readyToLaunch()
     await expect(
-      call('novel_verify', {
-        operation: 'round',
-        channel: 'readers',
-        metrics: { readThrough3: 0.2 },
-        fallback: '阶段二 改开篇',
-      }),
+      call('novel_plan', { operation: 'launch', verdict: 'revise', fallback: '阶段二 改开篇' }),
     ).rejects.toThrow(/必须给出 abandonIf/)
   })
 
-  it('records the round, its verdict, and the fallback once both are given', async () => {
-    await readyToVerify()
-    const result = await call('novel_verify', {
-      operation: 'round',
-      channel: 'readers',
-      metrics: { readThrough3: 0.2, followRead10: 0.05 },
+  it('holds the project at the decision and repeats the fallback and abandon condition', async () => {
+    await readyToLaunch()
+    const result = await call('novel_plan', {
+      operation: 'launch',
+      verdict: 'revise',
       fallback: '阶段二：重写开篇三章',
-      abandonIf: '再验一轮仍低于中位 50% 就换概念',
-      note: '读者说前三章信息太密',
+      abandonIf: '再改一轮仍留不住读者就换概念',
+      note: '编辑说前三章信息太密',
     })
-    const detail = String(result['detail'])
-    expect(detail).toMatch(/不通过/)
-    expect(result['stage']).toMatch(/verifying/)
-    // The round's fallback and abandon condition are recorded with the round;
-    // the dashboard is where they resurface.
+    expect(String(result['detail'])).toMatch(/改后再说/)
+    expect(result['stage']).toMatch(/opening-decision/)
+    // The fallback and the abandon condition are recorded with the decision; the
+    // dashboard is where they resurface as a standing instruction.
     const dashboard = await callText('novel_status', {})
     expect(dashboard).toContain('阶段二：重写开篇三章')
-    const assessed = await callText('novel_verify', { operation: 'assess' })
-    expect(assessed).toMatch(/低于阈值/)
-    expect(assessed).toMatch(/rewrite-opening|改开篇/)
+    expect(dashboard).toContain('再改一轮仍留不住读者就换概念')
   })
 
-  it('says a reading cannot be judged when no medians are calibrated', async () => {
+  it('records a later go alongside the earlier revise', async () => {
+    await readyToLaunch()
+    await call('novel_plan', {
+      operation: 'launch',
+      verdict: 'revise',
+      fallback: '阶段二：改开篇',
+      abandonIf: '再改一轮无改善',
+    })
+    const go = await call('novel_plan', { operation: 'launch', verdict: 'go' })
+    expect(go['stage']).toMatch(/full-outline/)
+    const stored = JSON.parse(await readFile(join(root, '.novel/novel.json'), 'utf8')) as {
+      launchDecisions: { verdict: string }[]
+    }
+    expect(stored.launchDecisions.map((entry) => entry.verdict)).toEqual(['revise', 'go'])
+  })
+})
+
+describe('phase five: the on-demand investment evaluation', () => {
+  /** A serializing project with medians calibrated. */
+  async function serializingWithMedians(): Promise<void> {
+    await call('novel_init', {
+      title: '青云记',
+      premise: '少年携断剑上山。',
+      baselines: { followRead10: 0.2, averageReadPerChapter: 0.4, chapterScore: 60 },
+      baselineSource: '同榜中位',
+    })
+    await call('novel_plan', { operation: 'outline', logline: '少年上山', minimal: '摘要', acts: ['起'] })
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1, plotTask: '抵达山门' })
+  }
+
+  it('fires the SOP rules with an action and a scope when a reading is recorded', async () => {
+    await serializingWithMedians()
+    const result = await call('novel_assess', {
+      operation: 'record',
+      period: 'new-book',
+      atChapter: 10,
+      metrics: { followRead10: 0.05 },
+    })
+    const text = String((result['body'] as string[]).join('\n'))
+    expect(text).toContain('触发的规则与动作')
+    expect(text).toMatch(/改节奏|钩子|加速/u)
+    expect(text).toMatch(/范围：(chapter|volume|whole-book)/)
+    // Recording is not deciding.
+    expect(text).toMatch(/不会自动发生/)
+  })
+
+  it('evaluates on demand and hands back a verdict with an appointment', async () => {
+    await serializingWithMedians()
+    // followRead10 clears its line; followRead24h does not. Only a *core* metric
+    // failing is a 不通过, so this is a 部分通过 — change a variable, keep going.
+    await call('novel_assess', {
+      operation: 'record',
+      period: 'new-book',
+      atChapter: 10,
+      metrics: { followRead10: 0.19, followRead24h: 0.01 },
+      baselines: { followRead24h: 0.2 },
+    })
+    const evaluated = await call('novel_assess', {
+      operation: 'evaluate',
+      channel: 'platform',
+      sampleSize: 400,
+      fallback: '阶段二：重写开篇三章',
+      abandonIf: '连续两轮调整无效就切书',
+      nextAtChapter: 30,
+      note: '追读只有中位的四分之一',
+    })
+    const detail = String(evaluated['detail'])
+    expect(detail).toMatch(/第 1 次投入评估/)
+    expect(detail).toMatch(/部分通过/)
+    expect(detail).toMatch(/换变量后继续/)
+    const text = String((evaluated['body'] as string[]).join('\n'))
+    expect(text).toContain('下次评估')
+    expect(text).toContain('第 30 章')
+  })
+
+  it('requires a fallback, an abandon condition, and a next appointment', async () => {
+    await serializingWithMedians()
+    await call('novel_assess', {
+      operation: 'record',
+      atChapter: 10,
+      metrics: { followRead10: 0.05 },
+    })
+    await expect(call('novel_assess', { operation: 'evaluate' })).rejects.toThrow(/必须给出 fallback/)
+    await expect(
+      call('novel_assess', { operation: 'evaluate', fallback: '阶段二' }),
+    ).rejects.toThrow(/必须给出 abandonIf/)
+    await expect(
+      call('novel_assess', { operation: 'evaluate', fallback: '阶段二', abandonIf: '再降就切' }),
+    ).rejects.toThrow(/下一次评估的约定/)
+  })
+
+  it('does not need a fallback for a passing evaluation, but still asks for an appointment', async () => {
+    await serializingWithMedians()
+    await call('novel_assess', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.19 } })
+    await expect(call('novel_assess', { operation: 'evaluate' })).rejects.toThrow(/下一次评估的约定/)
+    const passed = await call('novel_assess', { operation: 'evaluate', nextTrigger: '卷末再看' })
+    expect(String(passed['detail'])).toMatch(/通过/)
+    expect(String(passed['detail'])).toMatch(/继续投入/)
+  })
+
+  it('never moves the project stage: the data check is not a phase', async () => {
+    await serializingWithMedians()
+    const before = await call('novel_status', {})
+    await call('novel_assess', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.05 } })
+    await call('novel_assess', {
+      operation: 'evaluate',
+      fallback: '阶段二',
+      abandonIf: '再降就切',
+      nextAtChapter: 30,
+    })
+    const after = await call('novel_status', {})
+    expect(after['stage']).toBe(before['stage'])
+  })
+
+  it('back-fills the earlier change, so the cut-loss rule is decidable', async () => {
+    await serializingWithMedians()
+    await call('novel_assess', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.05 } })
+    const written = await call('novel_assess', {
+      operation: 'iterate',
+      trigger: 'tighten-hooks',
+      action: '逐章补强章末钩子',
+      scope: 'chapter',
+      evidence: 'followRead10 = 0.05，低于中位 0.2 × 0.7',
+    })
+    expect(String(written['detail'])).toMatch(/iteration-1/)
+
+    await call('novel_assess', { operation: 'record', atChapter: 15, metrics: { followRead10: 0.19 } })
+    // The evaluation is where the previous change is judged: an on-demand check
+    // inherits the job the per-reading outcome operation used to do.
+    const evaluated = await call('novel_assess', { operation: 'evaluate', nextAtChapter: 40 })
+    const text = String((evaluated['body'] as string[]).join('\n'))
+    expect(text).toContain('上次调整的结果')
+    expect(text).toMatch(/iteration-1：有效/)
+  })
+
+  it('counts ineffective adjustments so the cut-loss rule is decidable', async () => {
+    await serializingWithMedians()
+    for (let index = 0; index < 3; index += 1) {
+      await call('novel_assess', { operation: 'record', atChapter: 10 + index, metrics: { followRead10: 0.05 } })
+      await call('novel_assess', { operation: 'iterate', action: `第 ${String(index)} 轮调整`, scope: 'chapter' })
+      await call('novel_assess', { operation: 'record', atChapter: 20 + index, metrics: { followRead10: 0.04 } })
+      await call('novel_assess', {
+        operation: 'evaluate',
+        fallback: '阶段二',
+        abandonIf: '再降就切',
+        nextAtChapter: 20 + index,
+      })
+    }
+    // Two ineffective adjustments plus a failing core metric is the SOP's
+    // cut-loss condition; the next reading must name it.
+    const text = await callText('novel_assess', {
+      operation: 'record',
+      atChapter: 40,
+      metrics: { followRead10: 0.03, averageReadPerChapter: 0.1 },
+    })
+    expect(text).toMatch(/切书止损/)
+    expect(text).toMatch(/whole-book/)
+    const rules = await callText('novel_assess', { operation: 'rules' })
+    expect(rules).toContain('触发线')
+  })
+
+  it('does not recommend cutting a book that merely dipped below its trigger line', async () => {
+    // The SOP requires BOTH halves: ineffective adjustment AND a core metric at
+    // half the market median. 0.09 is below the ×0.7 trigger (0.14) but well
+    // above half the median (0.1 is the line), so the book is fixable.
+    await serializingWithMedians()
+    for (let index = 0; index < 3; index += 1) {
+      await call('novel_assess', { operation: 'record', atChapter: 10 + index, metrics: { followRead10: 0.09 } })
+      await call('novel_assess', { operation: 'iterate', action: `第 ${String(index)} 轮微调`, scope: 'chapter' })
+      await call('novel_assess', { operation: 'record', atChapter: 20 + index, metrics: { followRead10: 0.11 } })
+      await call('novel_assess', {
+        operation: 'evaluate',
+        fallback: '阶段二',
+        abandonIf: '再降就切',
+        nextAtChapter: 20 + index,
+      })
+    }
+    const text = await callText('novel_assess', { operation: 'record', atChapter: 40, metrics: { followRead10: 0.11 } })
+    expect(text).not.toMatch(/切书止损/)
+  })
+
+  it('reports the thresholds it is actually enforcing', async () => {
+    await serializingWithMedians()
+    const text = await callText('novel_assess', { operation: 'rules' })
+    expect(text).toContain('followRead10：中位 0.2 × 0.7 = 触发线 0.14')
+    expect(text).toMatch(/未校准/)
+  })
+
+  it('will not judge a reading whose medians are all missing', async () => {
     await call('novel_init', { title: '无校准' })
-    const result = await call('novel_metrics', {
+    const result = await call('novel_assess', {
       operation: 'record',
       period: 'new-book',
       metrics: { readThrough3: 0.4 },
     })
     expect((result['warnings'] as string[]).join(' ')).toMatch(/尚未校准同类中位/)
-    const text = await callText('novel_metrics', { operation: 'record', metrics: { readThrough3: 0.4 } })
+    const text = await callText('novel_assess', { operation: 'record', metrics: { readThrough3: 0.4 } })
     expect(text).toContain('无法比较')
+    // Answering "继续投入" on zero comparable metrics would be inventing a
+    // verdict, so the evaluation refuses instead.
+    await expect(call('novel_assess', { operation: 'evaluate', nextAtChapter: 20 })).rejects.toThrow(/没有可比的同类中位/)
+  })
+
+  it('re-calibrates the medians at the moment the numbers are transcribed', async () => {
+    await serializingWithMedians()
+    const result = await call('novel_assess', {
+      operation: 'record',
+      atChapter: 10,
+      metrics: { followRead10: 0.05 },
+      baselines: { followRead10: 0.25 },
+      baselineSource: '本期同榜中位',
+    })
+    expect(((result['warnings'] as string[] | undefined) ?? []).join(' ')).not.toMatch(/尚未校准/)
+    const text = await callText('novel_assess', { operation: 'rules' })
+    expect(text).toContain('followRead10：中位 0.25 × 0.7 = 触发线 0.175')
+  })
+
+  it('lets the author close one adjustment manually against a named reading', async () => {
+    await serializingWithMedians()
+    await call('novel_assess', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.05 } })
+    await call('novel_assess', { operation: 'iterate', action: '补强钩子', scope: 'chapter' })
+    // A reading recorded after the change, judged by hand rather than by the
+    // automatic back-fill — the case `evaluate` cannot infer on its own.
+    await call('novel_assess', { operation: 'record', atChapter: 15, metrics: { followRead10: 0.18 } })
+    await call('novel_assess', { operation: 'evaluate', nextAtChapter: 40 })
+    await call('novel_assess', { operation: 'record', atChapter: 22, metrics: { followRead10: 0.19 } })
+
+    const closed = await call('novel_assess', {
+      operation: 'outcome',
+      iterationId: 'iteration-1',
+      outcomeReadingId: 'reading-3',
+      note: '第 22 章复查',
+    })
+    expect(String(closed['detail'])).toMatch(/调整 iteration-1 结果：有效/)
+    const stored = JSON.parse(await readFile(join(root, '.novel/novel.json'), 'utf8')) as {
+      iterations: { id: string; outcome: string; outcomeReadingId: string; note: string }[]
+    }
+    const iteration = stored.iterations.find((entry) => entry.id === 'iteration-1')
+    expect(iteration?.outcome).toBe('effective')
+    expect(iteration?.outcomeReadingId).toBe('reading-3')
+    expect(iteration?.note).toBe('第 22 章复查')
+  })
+
+  it('refuses to close an adjustment with the reading it started from', async () => {
+    await serializingWithMedians()
+    await call('novel_assess', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.05 } })
+    await call('novel_assess', { operation: 'iterate', action: '补强钩子', scope: 'chapter' })
+    // reading-1 is the baseline of iteration-1; closing against it would compare
+    // a reading with itself and report nothing. The default reading (the latest,
+    // which is also reading-1 here) hits the same guard.
+    await expect(
+      call('novel_assess', { operation: 'outcome', iterationId: 'iteration-1', outcomeReadingId: 'reading-1' }),
+    ).rejects.toThrow(/等于没比较/)
+    await expect(call('novel_assess', { operation: 'outcome' })).rejects.toThrow(/等于没比较/)
+  })
+
+  it('refuses to close an adjustment when there is nothing to judge against', async () => {
+    await call('novel_init', { title: '无读数' })
+    await call('novel_assess', { operation: 'iterate', action: '凭直觉改一次', scope: 'chapter' })
+    await expect(call('novel_assess', { operation: 'outcome' })).rejects.toThrow(/没有可用于结项的读数/)
+  })
+
+  it('judges against the medians transcribed in the same call', async () => {
+    await serializingWithMedians()
+    await call('novel_assess', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.18 } })
+    // 0.18 clears the stored median's line (0.2 × 0.7 = 0.14) but not the one
+    // just read off the platform (0.5 × 0.7 = 0.35). The verdict must use the
+    // numbers the author transcribed in this call, not last month's.
+    const evaluated = await call('novel_assess', {
+      operation: 'evaluate',
+      baselines: { followRead10: 0.5 },
+      fallback: '阶段二',
+      abandonIf: '再降就切',
+      nextAtChapter: 30,
+    })
+    expect(String(evaluated['detail'])).toMatch(/不通过/)
+    const rules = await callText('novel_assess', { operation: 'rules' })
+    expect(rules).toContain('followRead10：中位 0.5 × 0.7 = 触发线 0.35')
+  })
+
+  it('suggests an evaluation from project state alone, and never gates on it', async () => {
+    await serializingWithMedians()
+    // The hint is derived, not measured: it fires on chapter count and on the
+    // appointment the previous evaluation left, so it works with no platform
+    // access at all.
+    const early = await callText('novel_assess', { operation: 'history' })
+    expect(early).toContain('还没有做过投入评估')
+    expect(early).toMatch(/评估提示：暂不需要/)
   })
 })
 
@@ -506,79 +785,6 @@ describe('phase five: serialization and iteration', () => {
     expect(await readFile(join(root, '.novel/novel.json'), 'utf8')).toBe(before)
   })
 
-  it('fires the SOP iteration rules with an action and a scope', async () => {
-    await serializing()
-    const result = await call('novel_metrics', {
-      operation: 'record',
-      period: 'new-book',
-      atChapter: 10,
-      metrics: { followRead10: 0.05 },
-    })
-    const text = String((result['body'] as string[]).join('\n'))
-    expect(text).toContain('触发的规则与动作')
-    expect(text).toMatch(/改节奏|钩子|加速/u)
-    expect(text).toMatch(/范围：(chapter|volume|whole-book)/)
-  })
-
-  it('closes the loop: an iteration is written, then judged effective by a later reading', async () => {
-    await serializing()
-    await call('novel_metrics', { operation: 'record', atChapter: 10, metrics: { followRead10: 0.05 } })
-    const written = await call('novel_metrics', {
-      operation: 'iterate',
-      trigger: 'tighten-hooks',
-      action: '逐章补强章末钩子',
-      scope: 'chapter',
-      evidence: 'followRead10 = 0.05，低于中位 0.2 × 0.7',
-    })
-    expect(String(written['detail'])).toMatch(/iteration-1/)
-
-    await call('novel_metrics', { operation: 'record', atChapter: 15, metrics: { followRead10: 0.16 } })
-    const closed = await call('novel_metrics', { operation: 'outcome', iterationId: 'iteration-1' })
-    expect(String(closed['detail'])).toMatch(/有效/)
-  })
-
-  it('counts ineffective iterations so the cut-loss rule is decidable', async () => {
-    await serializing()
-    for (let index = 0; index < 3; index += 1) {
-      await call('novel_metrics', { operation: 'record', atChapter: 10 + index, metrics: { followRead10: 0.05 } })
-      await call('novel_metrics', { operation: 'iterate', action: `第 ${String(index)} 轮调整`, scope: 'chapter' })
-      await call('novel_metrics', { operation: 'record', atChapter: 20 + index, metrics: { followRead10: 0.04 } })
-      await call('novel_metrics', { operation: 'outcome', iterationId: `iteration-${String(index + 1)}` })
-    }
-    // Two ineffective iterations plus a failing core metric is the SOP's
-    // cut-loss condition; the next reading must name it.
-    const text = await callText('novel_metrics', {
-      operation: 'record',
-      atChapter: 40,
-      metrics: { followRead10: 0.03, averageReadPerChapter: 0.1 },
-    })
-    expect(text).toMatch(/切书止损/)
-    expect(text).toMatch(/whole-book/)
-    const rules = await callText('novel_metrics', { operation: 'rules' })
-    expect(rules).toContain('触发线')
-  })
-
-  it('does not recommend cutting a book that merely dipped below its trigger line', async () => {
-    // The SOP requires BOTH halves: ineffective adjustment AND a core metric at
-    // half the market median. 0.09 is below the ×0.7 trigger (0.14) but well
-    // above half the median (0.1 is the line), so the book is fixable.
-    await serializing()
-    for (let index = 0; index < 3; index += 1) {
-      await call('novel_metrics', { operation: 'record', atChapter: 10 + index, metrics: { followRead10: 0.09 } })
-      await call('novel_metrics', { operation: 'iterate', action: `第 ${String(index)} 轮微调`, scope: 'chapter' })
-      await call('novel_metrics', { operation: 'record', atChapter: 20 + index, metrics: { followRead10: 0.11 } })
-      await call('novel_metrics', { operation: 'outcome', iterationId: `iteration-${String(index + 1)}` })
-    }
-    const text = await callText('novel_metrics', { operation: 'record', atChapter: 40, metrics: { followRead10: 0.11 } })
-    expect(text).not.toMatch(/切书止损/)
-  })
-
-  it('reports the thresholds it is actually enforcing', async () => {
-    await serializing()
-    const text = await callText('novel_metrics', { operation: 'rules' })
-    expect(text).toContain('followRead10：中位 0.2 × 0.7 = 触发线 0.14')
-    expect(text).toMatch(/未校准/)
-  })
 })
 
 describe('phase six: promises, retrospective, and reuse', () => {
@@ -655,7 +861,9 @@ describe('phase six: promises, retrospective, and reuse', () => {
     for (const key of ['chapter-1-conflict-300', 'chapter-1-hook', 'chapter-2-golden-finger', 'chapter-3-payoff', 'first-10-goal-rival', 'first-10-climax', 'first-30k-unit']) {
       await call('novel_plan', { operation: 'opening', key, done: true })
     }
-    await call('novel_verify', { operation: 'round', channel: 'readers', metrics: { readThrough3: 0.45 } })
+    // The stage machine reaches serialization on written work alone — a launch
+    // decision, no reading, no evaluation.
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。' })
 
     const before = await call('novel_status', {})
