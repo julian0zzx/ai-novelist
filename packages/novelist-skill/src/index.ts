@@ -24,6 +24,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { adoptableVerdict, hasNovelSignals, type WorkspaceKind, type WorkspaceVerdict } from './core/workspace.ts'
 import type { ReviewSettings } from './host/llm.ts'
+import { DEFAULT_REVIEW_REASONING_EFFORT, REVIEW_REASONING_EFFORTS } from './host/llm.ts'
 import { registerWorkspacePrompt } from './host/prompt.ts'
 import { createProjectResolver } from './host/resolver.ts'
 import { registerReviewTool, registerTools } from './host/tools.ts'
@@ -93,6 +94,26 @@ export const Config = z.object({
   reviewModel: z.string().default(''),
   /** How long one review call may take before it is abandoned. */
   reviewTimeoutMs: z.number().step(1).min(1000).default(120000),
+  /**
+   * Output budget in tokens for one review call.
+   *
+   * Deliberately not the model's own maximum: a review call answers with one
+   * JSON object, and an answer that hits this ceiling is reported as truncated
+   * instead of being read as complete. It must be large enough for a whole
+   * chapter rewrite, and for an opening review that answers with a summary plus
+   * a dozen findings — 8192 was reached in practice, so it is not the ceiling.
+   */
+  reviewMaxTokens: z.number().step(1).min(256).default(16384),
+  /**
+   * Reasoning effort a review asks for; `off` by default.
+   *
+   * Thinking tokens are billed against {@link Config.reviewMaxTokens} together
+   * with the answer, so a reviewing model left on its own default can spend the
+   * entire budget thinking and return no text at all. Set `''` to send no effort
+   * and let the adapter decide, or another level to let the reviewer think first.
+   * A value the exact route does not offer is not sent (see `host/llm.ts`).
+   */
+  reviewReasoningEffort: z.union([...REVIEW_REASONING_EFFORTS]).default(DEFAULT_REVIEW_REASONING_EFFORT),
 })
 
 /** Parsed {@link Config}, derived through Schemastery's global type namespace. */
@@ -186,6 +207,8 @@ export function apply(ctx: Context, config: ComposerConfig): void {
     provider: config.reviewProvider,
     model: config.reviewModel,
     timeoutMs: config.reviewTimeoutMs,
+    maxTokens: config.reviewMaxTokens,
+    reasoningEffort: config.reviewReasoningEffort,
   }
   let reviewMounted = false
   const mountReview = (): void => {
@@ -226,7 +249,11 @@ export { createProjectResolver } from './host/resolver.ts'
 export type { ProjectResolver, ProjectsView, WorkspaceRef } from './host/resolver.ts'
 export { DEFAULT_MANUSCRIPT_PATH, DEFAULT_REVIEW_PATH, DEFAULT_TEMPLATE_PATH, registerReviewTool, registerTools } from './host/tools.ts'
 export { NovelReviewError, resolveRoute, runReview } from './host/llm.ts'
-export type { LlmRoute, ReviewResult, ReviewSettings } from './host/llm.ts'
+export {
+  DEFAULT_REVIEW_REASONING_EFFORT,
+  REVIEW_REASONING_EFFORTS,
+} from './host/llm.ts'
+export type { LlmRoute, ReviewReasoningEffort, ReviewResult, ReviewSettings } from './host/llm.ts'
 export { registerWorkspacePrompt } from './host/prompt.ts'
 export { createWorkspaceViews, onSessionCreated } from './host/views.ts'
 export type { SessionRef, WorkspacePolicy, WorkspaceView, WorkspaceViews } from './host/views.ts'

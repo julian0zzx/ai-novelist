@@ -32,6 +32,7 @@
  */
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   BEAT_KINDS,
@@ -2312,6 +2313,22 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
 }
 
 /**
+ * Token accounting as a warning suffix, when the provider reported any.
+ *
+ * A truncated answer is only actionable if the author can see how the budget was
+ * spent: reasoning tokens and answer tokens share one ceiling, and an answer cut
+ * off after a long think is a different problem from an answer cut off mid-JSON.
+ *
+ * @param usage - token accounting from the review call.
+ * @returns `，输出 N tokens（推理 M）`, or an empty string without usage.
+ */
+function tokenSpend(usage: TokenUsage | undefined): string {
+  if (usage === undefined) return ''
+  const reasoning = usage.reasoningTokens === undefined ? '' : `（推理 ${String(usage.reasoningTokens)}）`
+  return `，输出 ${String(usage.outputTokens)} tokens${reasoning}`
+}
+
+/**
  * Register `novel_review`: the one tool that asks a model instead of computing.
  *
  * It is registered separately from {@link registerTools} because it depends on a
@@ -2328,7 +2345,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
  *
  * @param ctx - plugin context carrying the tool registry and a model route.
  * @param projects - resolves the novel store per calling session.
- * @param settings - configured review route and timeout.
+ * @param settings - configured review route, timeout, output budget and reasoning effort.
  */
 export function registerReviewTool(ctx: Context, projects: ProjectResolver, settings: ReviewSettings): void {
   const storeFor = (session: { readonly header: { readonly cwd?: string } } | undefined): SessionStore =>
@@ -2410,13 +2427,31 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
         const result = await runReview(ctx, route, request, {
           signal: exec.signal,
           timeoutMs: settings.timeoutMs,
+          maxTokens: settings.maxTokens,
+          reasoningEffort: settings.reasoningEffort,
         })
         const output = parseReviewOutput(result.text)
         if (!output.parsed) {
           warnings.push('模型没有按 JSON 约定回复：findings 无法入库，请查看记录文件里的完整回复')
+        } else if (output.findings.length === 0 && /"(dimension|fix)"\s*:/.test(result.text)) {
+          // A parsed-but-empty envelope is the dangerous half of this failure:
+          // the reply plainly carried findings, so "0 条问题" would read as a
+          // clean pass. Say so rather than letting it through silently.
+          warnings.push(
+            '解析到的 findings 为 0，但回复里出现了 finding 字段：'
+            + '结论可能是空的，请核对记录文件里的完整回复',
+          )
         }
         if (result.truncated) {
-          warnings.push(`模型输出被 maxTokens 截断（${String(result.finish)}），结论可能不完整`)
+          warnings.push(
+            `模型输出被 maxTokens 截断（${String(result.finish)}${tokenSpend(result.usage)}），结论可能不完整`,
+          )
+        }
+        if (result.reasoningChars > 0) {
+          warnings.push(
+            `本次回复含 ${String(result.reasoningChars)} 字推理内容，不计入评审结果（reviewReasoningEffort=`
+            + `${result.reasoningEffort ?? '（跟随适配器默认）'}）`,
+          )
         }
         const artifact = await store.writeDerived(
           `${DEFAULT_REVIEW_PATH}/${id}-${operation}.md`,
@@ -2430,7 +2465,12 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
             ctx,
             route,
             buildRewriteRequest({ state, chapter, findings: output.findings }),
-            { signal: exec.signal, timeoutMs: settings.timeoutMs },
+            {
+              signal: exec.signal,
+              timeoutMs: settings.timeoutMs,
+              maxTokens: settings.maxTokens,
+              reasoningEffort: settings.reasoningEffort,
+            },
           )
           rewritten = await store.writeDerived(
             `${DEFAULT_REVIEW_PATH}/${id}-rewrite.md`,
@@ -2453,7 +2493,12 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
         }
         const next = await store.update((current) => addReview(current, review))
 
-        body.push(`模型：${route.provider}/${route.model}（${route.source === 'call' ? '本次指定' : route.source === 'config' ? '插件配置' : '会话默认'}）`)
+        body.push(
+          `模型：${route.provider}/${route.model}`
+            + `（${route.source === 'call' ? '本次指定' : route.source === 'config' ? '插件配置' : '会话默认'}）`
+            + `｜推理：${result.reasoningEffort ?? '跟随适配器默认'}`
+            + `｜输出预算：${String(settings.maxTokens > 0 ? settings.maxTokens : request.maxTokens)} tokens`,
+        )
         body.push(...renderReview(output, `${operation} 诊断`))
         if (output.lessons !== undefined && output.lessons.length > 0) {
           body.push('', `## 经验（${String(output.lessons.length)} 条）`)

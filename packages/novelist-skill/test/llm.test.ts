@@ -12,7 +12,8 @@ import { NovelReviewError, resolveRoute, runReview, type ReviewSettings } from '
  * missing service names the service, and a truncated answer is reported as
  * truncated rather than read as complete.
  */
-const settings = (provider = '', model = ''): ReviewSettings => ({ provider, model, timeoutMs: 50 })
+const settings = (provider = '', model = ''): ReviewSettings =>
+  ({ provider, model, timeoutMs: 50, maxTokens: 0, reasoningEffort: '' })
 
 /** Chunks as the harness's own assembler expects them. */
 function reply(text: string, finish: 'stop' | 'max-tokens' | 'tool-calls' = 'stop'): unknown[] {
@@ -24,16 +25,62 @@ function reply(text: string, finish: 'stop' | 'max-tokens' | 'tool-calls' = 'sto
   ]
 }
 
-/** A context with a fake `llm` service, and optionally a default selection. */
+/** A reply that thought first, and optionally said something afterwards. */
+function thinkingReply(thinking: string, text: string, finish: 'stop' | 'max-tokens' = 'stop'): unknown[] {
+  return [
+    { type: 'block-start', index: 0, blockType: 'reasoning' },
+    { type: 'reasoning-delta', index: 0, text: thinking },
+    { type: 'block-end', index: 0, block: { type: 'reasoning', text: thinking } },
+    ...(text === ''
+      ? []
+      : [
+          { type: 'block-start', index: 1, blockType: 'text' },
+          { type: 'text-delta', index: 1, text },
+          { type: 'block-end', index: 1, block: { type: 'text', text } },
+        ]),
+    { type: 'usage', usage: { inputTokens: 10, outputTokens: 128, reasoningTokens: 120 } },
+    { type: 'finish', reason: { kind: finish } },
+  ]
+}
+
+/** Model metadata a reasoning-capable route returns, as the runtime detaches it. */
+const capable = (provider: string, model: string, efforts: string[]): Record<string, unknown> => ({
+  provider,
+  id: model,
+  name: model,
+  inputModalities: ['text'],
+  reasoning: { efforts: efforts.map((id) => ({ id, name: id })), defaultEffort: efforts.includes('high') ? 'high' : undefined },
+})
+
+/** Every request the fake runtime was handed, in order. */
+let sent: Record<string, unknown>[] = []
+
+/**
+ * A context with a fake `llm` service, and optionally a default selection or a
+ * capability answer.
+ *
+ * The capability answer is optional because a minimal runtime — and the fake in
+ * `review-tool.test.ts` — exposes `stream` and nothing else, which the seam has
+ * to survive.
+ */
 async function contextWith(
   stream: (options: { signal?: AbortSignal }) => AsyncIterable<unknown>,
   selection?: { provider: string; model: string },
+  capability?: (provider: string, model: string) => unknown,
 ): Promise<Context> {
   const ctx = new Context()
   ctx.plugin({
     name: 'fake-llm',
     apply(target: Context) {
-      target.provide('llm', { stream })
+      target.provide('llm', {
+        stream: (options: Record<string, unknown>) => {
+          sent.push(options)
+          return stream(options as { signal?: AbortSignal })
+        },
+        ...(capability === undefined
+          ? {}
+          : { resolveModelInfo: (provider: string, model: string) => Promise.resolve(capability(provider, model)) }),
+      })
     },
   })
   if (selection !== undefined) {
@@ -58,6 +105,7 @@ let live: Context[] = []
 
 afterEach(() => {
   live = []
+  sent = []
 })
 
 describe('resolveRoute', () => {
@@ -108,6 +156,20 @@ describe('resolveRoute', () => {
     live.push(ctx)
     expect(resolveRoute(ctx, settings())).toBeUndefined()
   })
+
+  it('refuses half a per-call override instead of dropping it in silence', async () => {
+    const ctx = await contextWith(() => from([]), { provider: 'deepseek', model: 'deepseek-chat' })
+    live.push(ctx)
+    // Only a model: the old behaviour quietly reviewed on the session's model.
+    expect(() => resolveRoute(ctx, settings(), { model: 'deepseek-reasoner' })).toThrow(/provider and model/)
+    expect(() => resolveRoute(ctx, settings(), { provider: 'deepseek' })).toThrow(/provider and model/)
+    // An empty string is "not named", so these are half a pair too — not a
+    // route whose provider happens to be spelled "".
+    expect(() => resolveRoute(ctx, settings(), { provider: '', model: 'deepseek-reasoner' })).toThrow(/provider and model/)
+    expect(() => resolveRoute(ctx, settings(), { provider: 'deepseek', model: '' })).toThrow(/provider and model/)
+    // Both empty is no override at all.
+    expect(resolveRoute(ctx, settings(), { provider: '', model: '' })?.source).toBe('default')
+  })
 })
 
 describe('runReview', () => {
@@ -154,6 +216,94 @@ describe('runReview', () => {
     const ctx = await contextWith(() => from(reply('   ')))
     live.push(ctx)
     await expect(runReview(ctx, route, request, { timeoutMs: 1000 })).rejects.toThrow(/returned no text/)
+  })
+
+  it('reports a budget spent before any text as truncation, not as an empty stop', async () => {
+    const ctx = await contextWith(() => from(thinkingReply('想', '', 'max-tokens')))
+    live.push(ctx)
+    const error = await runReview(ctx, route, request, { timeoutMs: 1000, maxTokens: 128 }).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(NovelReviewError)
+    // The whole point: the old message said "returned no text" and hid the cause.
+    expect((error as Error).message).toMatch(/exhausted its 128-token output budget/)
+    expect((error as Error).message).toContain('reviewMaxTokens')
+    expect((error as Error).message).toContain('推理 120 tokens')
+  })
+
+  it('names the reasoning channel when that is where the answer went', async () => {
+    const ctx = await contextWith(() => from(thinkingReply('一段很长的推理', '')))
+    live.push(ctx)
+    await expect(runReview(ctx, route, request, { timeoutMs: 1000 })).rejects.toThrow(/only in its reasoning channel/)
+  })
+
+  it('reports a provider error finish with its failure message', async () => {
+    const ctx = await contextWith(() =>
+      from([{ type: 'finish', reason: { kind: 'error', failure: { message: 'provider exploded' } } }]),
+    )
+    live.push(ctx)
+    await expect(runReview(ctx, route, request, { timeoutMs: 1000 })).rejects.toThrow(/provider exploded/)
+  })
+
+  it('counts the reasoning it discards instead of dropping it in silence', async () => {
+    const ctx = await contextWith(() => from(thinkingReply('想了 4 个字', '{"summary":"ok","findings":[]}')))
+    live.push(ctx)
+    const result = await runReview(ctx, route, request, { timeoutMs: 1000 })
+    expect(result.text).toBe('{"summary":"ok","findings":[]}')
+    expect(result.reasoningChars).toBe('想了 4 个字'.length)
+  })
+
+  it('asks a reasoning-capable route for the configured effort', async () => {
+    const ctx = await contextWith(
+      () => from(reply('{"summary":"ok","findings":[]}')),
+      undefined,
+      (provider, model) => capable(provider, model, ['off', 'high']),
+    )
+    live.push(ctx)
+    await runReview(ctx, route, request, { timeoutMs: 1000, reasoningEffort: 'off' })
+    expect(sent[0]?.reasoningEffort).toBe('off')
+  })
+
+  it('sends no effort to a route that declares no reasoning', async () => {
+    const ctx = await contextWith(
+      () => from(reply('{"summary":"ok","findings":[]}')),
+      undefined,
+      (provider, model) => ({ provider, id: model, name: model, inputModalities: ['text'] }),
+    )
+    live.push(ctx)
+    // Sending one here is rejected outright by the runtime (UNSUPPORTED_REASONING_EFFORT).
+    await runReview(ctx, route, request, { timeoutMs: 1000, reasoningEffort: 'off' })
+    expect('reasoningEffort' in (sent[0] ?? {})).toBe(false)
+  })
+
+  it('sends no effort when the deployment leaves the choice to the adapter', async () => {
+    const ctx = await contextWith(
+      () => from(reply('{"summary":"ok","findings":[]}')),
+      undefined,
+      (provider, model) => capable(provider, model, ['off', 'high']),
+    )
+    live.push(ctx)
+    const result = await runReview(ctx, route, request, { timeoutMs: 1000, reasoningEffort: '' })
+    expect('reasoningEffort' in (sent[0] ?? {})).toBe(false)
+    expect(result.reasoningEffort).toBeUndefined()
+  })
+
+  it('falls back to the lowest effort the route does offer', async () => {
+    const ctx = await contextWith(
+      () => from(reply('{"summary":"ok","findings":[]}')),
+      undefined,
+      (provider, model) => capable(provider, model, ['off', 'low']),
+    )
+    live.push(ctx)
+    await runReview(ctx, route, request, { timeoutMs: 1000, reasoningEffort: 'max' })
+    expect(sent[0]?.reasoningEffort).toBe('off')
+  })
+
+  it('uses the caller budget when one is given, and the request fallback when not', async () => {
+    const ctx = await contextWith(() => from(reply('{"summary":"ok","findings":[]}')))
+    live.push(ctx)
+    await runReview(ctx, route, request, { timeoutMs: 1000, maxTokens: 512 })
+    await runReview(ctx, route, request, { timeoutMs: 1000, maxTokens: 0 })
+    expect(sent[0]?.maxTokens).toBe(512)
+    expect(sent[1]?.maxTokens).toBe(request.maxTokens)
   })
 
   it('wraps a transport failure with the route that failed', async () => {

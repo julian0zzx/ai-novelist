@@ -280,15 +280,25 @@ regardless of detection:
     reviewProvider: ''                        # empty: reviews follow the session's model
     reviewModel: ''                           # set both to pin novel_review to one model
     reviewTimeoutMs: 120000                   # per-call ceiling for a review
+    reviewMaxTokens: 8192                     # output budget for one review call
+    reviewReasoningEffort: off                # off | low | high | max | '' (adapter default)
 ```
 
 `off` never writes anything at boot — the tools are still registered, and `novel_init`
 works if the user asks for it explicitly.
 
 `novel_review` is the only tool that needs a model, and it resolves its route in this order:
-the `provider`/`model` named on the call itself, then the configured `reviewProvider`/
-`reviewModel`, then whatever model the session is using. With no route at all the tool is not
-registered, so a profile without a model keeps seven working tools instead of eight broken ones.
+the `provider`/`model` named on the call itself (both, or the call is refused rather than
+silently falling back), then the configured `reviewProvider`/`reviewModel`, then whatever
+model the session is using. With no route at all the tool is not registered, so a profile
+without a model keeps seven working tools instead of eight broken ones.
+
+`reviewReasoningEffort` defaults to `off` for a reason worth knowing: a route that supports
+reasoning applies its own default (high, for DeepSeek) when the caller asks for nothing, and
+thinking tokens are billed against `reviewMaxTokens` together with the answer. A reviewer
+left on its default could spend the entire budget thinking and return no text at all. The
+effort is only sent when the exact route declares it, so pinning reviews to a non-reasoning
+model is safe. Raise `reviewMaxTokens` if a whole-chapter rewrite comes back truncated.
 
 ## Packaging
 

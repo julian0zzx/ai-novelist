@@ -252,17 +252,35 @@ spec.
 - **Routing is a resolution, not a guess.** A per-call `provider`/`model` wins, then the
   configured `reviewProvider`/`reviewModel`, then `agentDefaultModel.currentSelection()` —
   the model the session is already using, so switching models in the GUI switches the
-  reviewer. With none of the three, the tool is **not registered at all** (the plugin
-  injects the capability inside `ctx.inject(['llm'], …)`); a profile with no model keeps
-  seven working tools rather than an eighth that can only fail. That injection is used as a
-  *trigger*, not as the mounting context: a service context exposes the injected dependency
-  and nothing else, so registration happens against the plugin's own ctx, which carries
-  `tools`.
+  reviewer. A per-call override must name **both** halves; one half alone used to be dropped
+  in silence, which left the author reviewing on a different model than the one they asked
+  for. With none of the three, the tool is **not registered at all** (the plugin injects the
+  capability inside `ctx.inject(['llm'], …)`); a profile with no model keeps seven working
+  tools rather than an eighth that can only fail. That injection is used as a *trigger*, not
+  as the mounting context: a service context exposes the injected dependency and nothing
+  else, so registration happens against the plugin's own ctx, which carries `tools`.
+- **The output budget and the reasoning effort are the caller's call, not the adapter's.**
+  A route that declares reasoning materializes its own default effort when the caller omits
+  one — `deepseek-official` defaults to `high` — and thinking tokens are billed against the
+  same `maxTokens` ceiling as the answer. That combination is a trap for a one-shot judging
+  call: with the old hardcoded `4096` and no effort, a reviewer could spend the whole budget
+  thinking and emit *no text block at all*, which the seam then reported as "returned no
+  text". Reviews therefore send an explicit effort (`reviewReasoningEffort`, `off` by
+  default) and an explicit budget (`reviewMaxTokens`). The effort is sent only after asking
+  the adapter what the exact route offers, because an effort a route does not declare is
+  rejected outright (`UNSUPPORTED_REASONING_EFFORT`); a route that declares no reasoning, or
+  whose capabilities cannot be read, is sent none.
 - **One streamed call per request.** `ctx.llm.stream` is the only call shape the service
   offers, so a one-shot is assembled with the harness's own `BlockAssembler` — the same
   interpreter the agent loop uses. A truncated answer (`max-tokens`) is reported as
   truncated rather than read as complete; a `tool-calls` finish is an error, because no
-  tools were offered.
+  tools were offered; an `error` finish carries its failure message. An empty reply is
+  diagnosed by cause instead of lumped together: a budget exhausted before a word was
+  written, a model that answered entirely in its reasoning channel, and a genuinely empty
+  stop name different settings. Reasoning blocks are never part of the answer, and the
+  number of characters dropped that way is returned and warned about instead of vanishing.
+  A call cancelled before it starts is reported as cancelled, not left to the adapter to
+  notice an abort that already fired.
 - **The judgement is recorded with its provenance.** `ReviewRecord` carries the provider,
   the model and `REVIEW_PROMPT_VERSION`, which is why the rubric lives in `core/review.ts`
   as versioned data rather than as a string inside a tool. A second opinion on the same
@@ -274,7 +292,11 @@ spec.
 - **A reply that ignores the JSON contract is still a reply.** Parsing takes the first `{`
   to the last `}`, tolerates code fences and surrounding prose, drops findings that carry
   nothing actionable, and — when there is no object at all — keeps the model's text as the
-  summary, warns, and writes the verbatim answer to the transcript.
+  summary, warns, and writes the verbatim answer to the transcript. A contract split across
+  *sibling* objects (`{"summary": …}` then `{"findings": …}`, observed on a real opening
+  review) is merged, with string-aware brace matching so braces inside quoted prose do not
+  move the boundaries; if any sibling fails to decode, the whole reply is treated as
+  unparsed rather than half-merged.
 
 ### `client/index.tsx` — the browser half
 

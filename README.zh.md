@@ -235,11 +235,20 @@ rm -rf <那个目录>/.novel
     reviewProvider: ''                        # 留空：评审跟随当前会话的模型
     reviewModel: ''                           # 两项都填：把 novel_review 固定到某个模型
     reviewTimeoutMs: 120000                   # 单次评审的超时上限
+    reviewMaxTokens: 8192                     # 单次评审的输出预算（tokens）
+    reviewReasoningEffort: off                # off | low | high | max | ''（跟随适配器默认）
 ```
 
 `novel_review` 是唯一需要模型的工具，路由按此顺序解析：调用参数里的 `provider`/`model`
-→ 配置的 `reviewProvider`/`reviewModel` → 当前会话正在用的模型。三者都没有时它**不注册**，
+（**两项必须同时给**，只给一项会被明确拒绝，而不是静默回落）→ 配置的
+`reviewProvider`/`reviewModel` → 当前会话正在用的模型。三者都没有时它**不注册**，
 于是一个没有模型的环境仍然是七个可用工具，而不是八个坏工具。
+
+`reviewReasoningEffort` 默认 `off`，原因值得知道：支持推理的路由在调用方不指定时会套用自己的
+默认等级（DeepSeek 是 `high`），而推理 tokens 与正文**共用** `reviewMaxTokens` 这一个上限。
+评审这种一次性打分调用可能把整个预算烧在思考上，一个字的正文都没写就结束。该等级只在该路由
+明确声明时才发送，所以把评审固定到非推理模型也是安全的。整章改写被截断时，调大
+`reviewMaxTokens`。
 
 `off` 在启动时什么都不写——工具仍然注册，用户明确要求时 `novel_init` 依旧可用。
 

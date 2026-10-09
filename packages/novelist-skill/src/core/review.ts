@@ -42,8 +42,21 @@ import { REVIEW_SEVERITIES } from './types.ts'
  */
 export const REVIEW_PROMPT_VERSION = 'review-rubric-1'
 
-/** Output ceiling for one review call. */
-export const REVIEW_MAX_TOKENS = 4096
+/**
+ * Fallback output ceiling for one review call, in tokens.
+ *
+ * This is what a request carries when the caller supplies no budget of its own.
+ * The deployed tool passes `reviewMaxTokens` instead, because the ceiling is a
+ * deployment decision (a whole chapter rewrite needs more room than a JSON
+ * diagnosis) and because reasoning tokens are billed against it — see
+ * `host/llm.ts`.
+ *
+ * It matches the deployed default rather than sitting below it: a fallback that
+ * is *smaller* than the configured ceiling is a trap, because a direct caller
+ * silently gets the tighter budget and an opening review that answers with nine
+ * findings does not fit in the old 4096.
+ */
+export const REVIEW_MAX_TOKENS = 16384
 
 /** How much prose one review may carry, in characters, before it is clipped. */
 export const REVIEW_MAX_INPUT_CHARS = 24000
@@ -455,6 +468,13 @@ export function buildRetroRequest(input: {
  * Taking the first `{` to the last `}` handles all three without pretending the
  * reply was clean.
  *
+ * One more failure is real enough to handle rather than report: the model
+ * sometimes splits the contract across *sibling* objects — `{"summary": …}`
+ * followed by `{"findings": …}` — and the first-to-last brace slice is then not
+ * one JSON document. Both are valid parts of the same answer, so they are merged
+ * instead of being discarded as unparseable. A single well-formed object is
+ * unaffected.
+ *
  * @param text - the verbatim reply.
  * @returns the parsed object, or `undefined` when there is none.
  */
@@ -462,14 +482,96 @@ export function extractReviewJson(text: string): Record<string, unknown> | undef
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start === -1 || end <= start) return undefined
+  const slice = text.slice(start, end + 1)
+  const single = decodeObject(slice)
+  if (single !== undefined) return single
+  const parts = topLevelObjects(slice)
+  if (parts.length < 2) return undefined
+  const merged: Record<string, unknown> = {}
+  // Findings that arrive as their own top-level objects rather than inside a
+  // `findings` array are collected in reply order instead of merged. Merging
+  // them collides on dimension/quote/why/fix and keeps only the last one, which
+  // turned a nine-finding review into a silent "0 problems, nothing to fix".
+  const loose: unknown[] = []
+  for (const part of parts) {
+    const decoded = decodeObject(part)
+    // All or nothing: half an answer under the right keys is worse than none,
+    // because it would record findings the model never actually stated.
+    if (decoded === undefined) return undefined
+    const isEnvelope = 'summary' in decoded || 'findings' in decoded
+      || 'dismantle' in decoded || 'lessons' in decoded
+    const isFinding = !isEnvelope
+      && ('dimension' in decoded || 'fix' in decoded || ('quote' in decoded && 'why' in decoded))
+    if (isFinding) {
+      loose.push(decoded)
+      continue
+    }
+    const explicit = decoded['findings']
+    if (Array.isArray(explicit)) {
+      loose.push(...explicit)
+      const { findings: _findings, ...envelope } = decoded
+      Object.assign(merged, envelope)
+      continue
+    }
+    Object.assign(merged, decoded)
+  }
+  if (loose.length > 0) merged['findings'] = loose
+  return merged
+}
+
+/**
+ * Decode one JSON document that must be an object.
+ *
+ * @param source - the candidate text.
+ * @returns the object, or `undefined` when it is not one.
+ */
+function decodeObject(source: string): Record<string, unknown> | undefined {
   try {
-    const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+    const parsed: unknown = JSON.parse(source)
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : undefined
   } catch {
     return undefined
   }
+}
+
+/**
+ * Split a region into its top-level `{…}` documents.
+ *
+ * Brace counting is string-aware, so a `{` inside a quoted summary or a quote
+ * inside a finding does not move the boundaries.
+ *
+ * @param slice - the region between the first `{` and the last `}`.
+ * @returns every complete top-level object, in order.
+ */
+function topLevelObjects(slice: string): string[] {
+  const objects: string[] = []
+  let depth = 0
+  let opened = -1
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < slice.length; index += 1) {
+    const character = slice[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') inString = true
+    else if (character === '{') {
+      if (depth === 0) opened = index
+      depth += 1
+    } else if (character === '}') {
+      depth -= 1
+      if (depth === 0 && opened !== -1) {
+        objects.push(slice.slice(opened, index + 1))
+        opened = -1
+      }
+    }
+  }
+  return objects
 }
 
 /**

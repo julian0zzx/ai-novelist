@@ -362,7 +362,15 @@ add to the profile's row:
     reviewProvider: deepseek
     reviewModel: deepseek-chat
     reviewTimeoutMs: 120000
+    reviewMaxTokens: 8192
+    reviewReasoningEffort: off
 \`\`\`
+
+\`reviewReasoningEffort\` defaults to \`off\`, because thinking tokens share
+\`reviewMaxTokens\` with the answer: a reasoning model left on its own default
+effort can spend the whole budget thinking and return no text at all. The effort
+is sent only when the exact route declares it, so pointing reviews at a
+non-reasoning model is safe.
 
 Every review records the provider, the model and the prompt version it used, and
 writes its full transcript to \`.novel/reviews/\` beside the project.

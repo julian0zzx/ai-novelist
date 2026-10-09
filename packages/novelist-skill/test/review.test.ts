@@ -251,6 +251,63 @@ describe('parseReviewOutput', () => {
     expect(output.parsed).toBe(true)
   })
 
+  it('merges a contract the model split across sibling objects', () => {
+    // Observed on a real opening review: `{"summary": …}` then `{"findings": …}`.
+    const output = parseReviewOutput(`{"summary":"三章能读"}\n\n{"findings":[${finding('high')}]}`)
+    expect(output.parsed).toBe(true)
+    expect(output.summary).toBe('三章能读')
+    expect(output.findings).toHaveLength(1)
+  })
+
+  it('collects findings that arrive as sibling objects instead of a findings array', () => {
+    // Also observed on a real opening review, and the dangerous shape: a summary
+    // object followed by nine bare finding objects. Merging them collided on
+    // dimension/quote/why/fix and kept only the last, so a nine-finding review
+    // was recorded as "0 条问题 / 没有发现需要修改的问题" while reporting a
+    // successful parse.
+    const output = parseReviewOutput(
+      [
+        '{"summary":"三章能读"}',
+        finding('high', '主角欲望缺失'),
+        finding('medium', '爽点节奏失控'),
+        finding('low', '翻译腔'),
+      ].join('\n\n'),
+    )
+    expect(output.parsed).toBe(true)
+    expect(output.summary).toBe('三章能读')
+    expect(output.findings).toHaveLength(3)
+    expect(output.findings.map((entry) => entry.dimension)).toEqual([
+      '主角欲望缺失',
+      '爽点节奏失控',
+      '翻译腔',
+    ])
+  })
+
+  it('keeps an explicit findings array and sibling findings together', () => {
+    const output = parseReviewOutput(
+      [
+        '{"summary":"x"}',
+        `{"findings":[${finding('low', '段一')}]}`,
+        finding('high', '段二'),
+      ].join('\n'),
+    )
+    expect(output.parsed).toBe(true)
+    expect(output.findings).toHaveLength(2)
+    expect(output.findings.map((entry) => entry.dimension).sort()).toEqual(['段一', '段二'])
+  })
+
+  it('does not let braces inside quoted text move the object boundaries', () => {
+    const output = parseReviewOutput(`{"summary":"他把 {断剑} 握紧了"}\n{"findings":[${finding('medium')}]}`)
+    expect(output.parsed).toBe(true)
+    expect(output.summary).toBe('他把 {断剑} 握紧了')
+    expect(output.findings).toHaveLength(1)
+  })
+
+  it('refuses to half-merge when one sibling object is broken', () => {
+    const output = parseReviewOutput('{"summary":"可以"}\n{"findings":[}')
+    expect(output.parsed).toBe(false)
+  })
+
   it('reads a competitor dismantle', () => {
     const output = parseReviewOutput(
       `{"summary":"x","findings":[],"dismantle":{"tags":["玄幻"],"goldenFinger":"断剑认主","commentKeywords":["断剑","热血"]}}`,
