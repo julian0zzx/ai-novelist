@@ -17,14 +17,22 @@
 import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from './paths.ts'
 import {
   CHAPTER_STATUSES,
+  CONFIRMATION_KINDS,
+  CONFIRMATION_MIN_ROUNDS,
   CONTRACT_FIELDS,
   NOVEL_SCHEMA_VERSION,
   REVIEW_SEVERITIES,
+  SETTINGS_LAYERS,
+  STYLE_GATE_CHAPTER,
   type Chapter,
   type ChapterStatus,
   type Character,
   type Competitor,
+  type Confirmation,
+  type ConfirmationKind,
+  type ConfirmationStanding,
   type ContractField,
+  type DiscussionRound,
   type Evaluation,
   type Iteration,
   type LaunchDecision,
@@ -41,6 +49,8 @@ import {
   type Premise,
   type ProjectStage,
   type Retrospective,
+  type SettingsLayerKey,
+  type SettingsLayerStanding,
   type ReviewFinding,
   type ReviewKind,
   type ReviewRecord,
@@ -343,7 +353,16 @@ export function emptyWriting(): WritingPlan {
 
 /** An outline with no decisions in it. */
 export function emptyOutline(): Outline {
-  return { logline: '', acts: [], minimal: '', volumes: [], beats: [], opening: [], fullOutlineDone: false }
+  return {
+    logline: '',
+    fullOutline: '',
+    acts: [],
+    minimal: '',
+    volumes: [],
+    beats: [],
+    opening: [],
+    fullOutlineDone: false,
+  }
 }
 
 /**
@@ -391,6 +410,8 @@ export function emptyNovel(meta: Partial<NovelMeta> = {}, now: Clock = systemClo
     iterations: [],
     evaluations: [],
     launchDecisions: [],
+    discussions: [],
+    confirmations: [],
     reviews: [],
     index: emptyIndex(),
     createdAt: stamp,
@@ -415,6 +436,7 @@ export function emptyIndex(layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): Stor
     worldFile: layout.worldFile,
     volumeFile: layout.volumeFile,
     chapterPlanFile: layout.chapterPlanFile,
+    competitorFile: layout.competitorFile,
     chapters: {},
     files: {},
   }
@@ -718,6 +740,7 @@ function readVolume(value: Record<string, unknown>): VolumePlan | undefined {
   return {
     number,
     title: readString(value, 'title', ''),
+    detail: readString(value, 'detail', ''),
     goal: readString(value, 'goal', ''),
     conflict: readString(value, 'conflict', ''),
     climax: readString(value, 'climax', ''),
@@ -753,6 +776,7 @@ function readOutline(value: unknown): Outline {
   const opening = readList(value['opening'], readOpeningCheck)
   return {
     logline: readString(value, 'logline', ''),
+    fullOutline: readString(value, 'fullOutline', ''),
     acts: readStringArray(value, 'acts'),
     minimal: readString(value, 'minimal', ''),
     volumes: readList(value['volumes'], readVolume),
@@ -903,6 +927,56 @@ function readLaunchDecision(value: Record<string, unknown>): LaunchDecision | un
 }
 
 /**
+ * Read one round of the settings/style conversation.
+ *
+ * A round without the author's own answer is dropped, exactly as the writer
+ * refuses to record one: the record's whole value is that a round means the
+ * author spoke, and a stored round that does not say so would launder a
+ * monologue into a discussion.
+ *
+ * @param value - the decoded entry.
+ * @returns the round, or `undefined` when it carries no feedback.
+ */
+function readDiscussionRound(value: Record<string, unknown>): DiscussionRound | undefined {
+  const id = readString(value, 'id', '')
+  if (id === '') return undefined
+  const feedback = readString(value, 'feedback', '')
+  if (feedback === '') return undefined
+  const kind = readString(value, 'kind', 'settings')
+  return {
+    id,
+    kind: (CONFIRMATION_KINDS as readonly string[]).includes(kind) ? (kind as ConfirmationKind) : 'settings',
+    at: readString(value, 'at', new Date(0).toISOString()),
+    proposal: readString(value, 'proposal', ''),
+    feedback,
+    topics: readStringArray(value, 'topics'),
+  }
+}
+
+/**
+ * Read one author sign-off.
+ *
+ * Dropped when it names no id or no checkpoint: an entry that cannot say what
+ * the author approved must not be read as "the author approved".
+ *
+ * @param value - the decoded entry.
+ * @returns the confirmation, or `undefined` when it is unusable.
+ */
+function readConfirmation(value: Record<string, unknown>): Confirmation | undefined {
+  const id = readString(value, 'id', '')
+  if (id === '') return undefined
+  const kind = readString(value, 'kind', 'settings')
+  return {
+    id,
+    kind: (CONFIRMATION_KINDS as readonly string[]).includes(kind) ? (kind as ConfirmationKind) : 'settings',
+    at: readString(value, 'at', new Date(0).toISOString()),
+    summary: readString(value, 'summary', ''),
+    note: readString(value, 'note', ''),
+    rounds: readNumber(value, 'rounds', 0),
+  }
+}
+
+/**
  * Read the retrospective.
  *
  * @param value - the raw `retro` field.
@@ -988,6 +1062,8 @@ export function readMetadata(parsed: Record<string, unknown>): NovelMetadata {
     // document written before the rename from silently losing its rounds.
     evaluations: readList(parsed['evaluations'] ?? parsed['verifications'], readEvaluation),
     launchDecisions: readList(parsed['launchDecisions'], readLaunchDecision),
+    discussions: readList(parsed['discussions'], readDiscussionRound),
+    confirmations: readList(parsed['confirmations'], readConfirmation),
     reviews: readList(parsed['reviews'], readReview),
     opening: readOpeningList(parsed['opening']),
     index,
@@ -1041,6 +1117,7 @@ function readIndex(value: unknown, meta: NovelMeta): StorageIndex {
     worldFile: readString(value, 'worldFile', base.worldFile),
     volumeFile: readString(value, 'volumeFile', base.volumeFile),
     chapterPlanFile: readString(value, 'chapterPlanFile', base.chapterPlanFile),
+    competitorFile: readString(value, 'competitorFile', base.competitorFile),
     chapters,
     files,
   }
@@ -1070,6 +1147,7 @@ export function stateOf(
     readonly outline: Outline
     readonly characters: Readonly<Record<string, Character>>
     readonly world: Readonly<Record<string, WorldEntry>>
+    readonly competitors?: readonly Competitor[]
     readonly chapters: Readonly<Record<string, Chapter>>
   },
 ): NovelState {
@@ -1077,6 +1155,11 @@ export function stateOf(
   void opening
   return {
     ...rest,
+    // The competitor file is the content half's home for the dismantles; the
+    // metadata document keeps them as the fallback a project that predates the
+    // file reads from. An explicitly empty file therefore falls back rather than
+    // wiping research.
+    competitors: content.competitors ?? rest.competitors,
     outline: content.outline,
     characters: content.characters,
     world: content.world,
@@ -1115,6 +1198,8 @@ export function metadataOf(state: NovelState, index?: StorageIndex): NovelMetada
     iterations: state.iterations,
     evaluations: state.evaluations,
     launchDecisions: state.launchDecisions,
+    discussions: state.discussions,
+    confirmations: state.confirmations,
     reviews: state.reviews,
     // The checklist lives beside the plan it gates, but its home is the metadata
     // document — see `NovelMetadata.opening`.
@@ -1266,6 +1351,8 @@ export function migrateV1(parsed: Record<string, unknown>): NovelState {
     iterations: [],
     evaluations: [],
     launchDecisions: [],
+    discussions: [],
+    confirmations: [],
     reviews: [],
     index: emptyIndex(),
     createdAt: readString(parsed, 'createdAt', stamp),
@@ -1351,6 +1438,8 @@ export function serializeMetadata(metadata: NovelMetadata): string {
     iterations: [...metadata.iterations],
     evaluations: [...metadata.evaluations],
     launchDecisions: [...metadata.launchDecisions],
+    discussions: [...metadata.discussions],
+    confirmations: [...metadata.confirmations],
     reviews: [...metadata.reviews],
   }
   return `${JSON.stringify(normalized, null, 2)}\n`
@@ -1373,6 +1462,8 @@ export function serializeNovel(state: NovelState): string {
     iterations: [...state.iterations],
     evaluations: [...state.evaluations],
     launchDecisions: [...state.launchDecisions],
+    discussions: [...state.discussions],
+    confirmations: [...state.confirmations],
     reviews: [...state.reviews],
   }
   return `${JSON.stringify(normalized, null, 2)}\n`
@@ -1447,6 +1538,254 @@ export function progressOf(state: NovelState): NovelProgress {
 }
 
 /**
+ * The latest sign-off of one checkpoint.
+ *
+ * @param state - the project.
+ * @param kind - which checkpoint.
+ * @returns the newest sign-off, or `undefined` when the author never gave one.
+ */
+export function latestConfirmation(state: NovelState, kind: ConfirmationKind): Confirmation | undefined {
+  return state.confirmations.filter((entry) => entry.kind === kind).at(-1)
+}
+
+/**
+ * How many discussion rounds of one kind were recorded after its last sign-off.
+ *
+ * A sign-off stores how many rounds of that kind existed when it was given, so
+ * the distance is a subtraction rather than a search: the ledgers are
+ * append-only, and re-opening a checkpoint means recording new rounds.
+ *
+ * @param state - the project.
+ * @param kind - which checkpoint.
+ * @returns the round count, never negative.
+ */
+function roundsSince(state: NovelState, kind: ConfirmationKind, confirmation: Confirmation | undefined): number {
+  const total = state.discussions.filter((round) => round.kind === kind).length
+  return Math.max(0, total - (confirmation?.rounds ?? 0))
+}
+
+/**
+ * Whether the chapter the style gate names already has prose.
+ *
+ * The style checkpoint is not "due" until then: before the first chapter exists
+ * there is no voice to judge, and reporting it as open would be noise.
+ *
+ * @param state - the project.
+ * @returns whether the gate chapter is written.
+ */
+export function styleGateReached(state: NovelState): boolean {
+  return Object.values(state.chapters).some(
+    (chapter) => chapter.number <= STYLE_GATE_CHAPTER && chapter.body.trim() !== '',
+  )
+}
+
+/**
+ * How many discussion rounds of one settings layer were recorded after its last sign-off.
+ *
+ * The premise layer has two spellings — `settings`, the SOP's umbrella name for
+ * the pre-prose checkpoint, and `premise`, the layer's own key — and a project
+ * talked through under one spelling must not be asked to repeat itself because
+ * the tooling later preferred the other. So both count, and only for the premise:
+ * the later layers never had an alias.
+ *
+ * @param state - the project.
+ * @param layer - which settings layer.
+ * @param confirmation - the layer's latest sign-off, or `undefined`.
+ * @returns the round count, never negative.
+ */
+export function settingsLayerRounds(
+  state: NovelState,
+  layer: SettingsLayerKey,
+  confirmation: Confirmation | undefined,
+): number {
+  if (layer !== 'premise') return roundsSince(state, layer, confirmation)
+  const total = state.discussions.filter((round) => round.kind === 'settings' || round.kind === 'premise').length
+  return Math.max(0, total - (confirmation?.rounds ?? 0))
+}
+
+/**
+ * The phase-one blocker for the settings layer that is next in turn.
+ *
+ * Phase one is not finished until the layers are settled, but the useful thing
+ * to report is the **next** layer rather than all of them: a model told "世界观
+ * still needs talking about" can act, whereas a list of four open layers invites
+ * it to batch them — which is the failure the ordering exists to prevent.
+ *
+ * @param standing - the derived checkpoint standing.
+ * @returns the blocker line, or `undefined` when every layer is closed.
+ */
+export function nextLayerBlocker(standing: ConfirmationStanding): string | undefined {
+  const layer = standing.nextLayer
+  if (layer === undefined) return undefined
+  const missing = layer.roundsRequired - layer.rounds
+  const kind = layer.key === 'premise' ? 'settings' : layer.kind
+  return missing > 0
+    ? `${layer.label}尚未与用户讨论：还差 ${String(missing)} 轮（novel_confirm operation="discuss" kind="${kind}"），再由用户确认`
+    : `${layer.label}已讨论但用户尚未确认（novel_confirm operation="confirm" kind="${kind}"）`
+}
+
+/**
+ * Which author checkpoints are closed, and what is still open.
+ *
+ * The two top-level checkpoints answer the two ways the pipeline used to run
+ * away from the author: settings announced rather than discussed, and a voice
+ * chosen by the model alone. Neither is a judgement this function makes — it
+ * reads what the author said, and reports what has not been asked.
+ *
+ * The settings checkpoint is decomposed one level further. 世界观、人物设定、全书大纲、
+ * 分卷大纲 are each settled on their own, in order, so a layer's standing is a
+ * function of the confirmations *before* it: the order is derived, not stored.
+ * `settingsConfirmed` is therefore true only once every layer is closed, while
+ * `preProseConfirmed` — the one `novel_write` hard-gates on — is true once the
+ * premise layer is, because chapter 1 does not need the volume outline to exist.
+ *
+ * @param state - the project.
+ * @returns the sign-offs, the per-layer standing, the round counts, and the open checkpoints.
+ */
+export function confirmationStanding(state: NovelState): ConfirmationStanding {
+  const settings = latestConfirmation(state, 'settings')
+  const style = latestConfirmation(state, 'style')
+  const settingsRounds = roundsSince(state, 'settings', settings)
+  const styleRounds = roundsSince(state, 'style', style)
+  const settingsReady = settingsRounds >= CONFIRMATION_MIN_ROUNDS.settings
+  const styleReady = styleRounds >= CONFIRMATION_MIN_ROUNDS.style
+
+  const layers: SettingsLayerStanding[] = []
+  for (const layer of SETTINGS_LAYERS) {
+    // The premise layer is closed by the umbrella `settings` sign-off; every
+    // layer after it carries its own kind. One checkpoint, two spellings, so an
+    // existing project's `settings` confirmation keeps counting.
+    const confirmation = layer.kind === 'premise' ? settings : latestConfirmation(state, layer.kind)
+    const rounds = settingsLayerRounds(state, layer.key, confirmation)
+    // "按顺序" falls out of the confirmations that already exist: a layer is
+    // blocked when any earlier layer is still open.
+    const earlier = layers.find((entry) => !entry.confirmed)
+    layers.push({
+      key: layer.key,
+      kind: layer.kind,
+      label: layer.label,
+      confirmed: confirmation !== undefined,
+      rounds,
+      roundsRequired: CONFIRMATION_MIN_ROUNDS[layer.kind],
+      blockedBy: earlier?.key,
+      ready: earlier === undefined,
+      gatesProse: layer.gatesProse,
+    })
+  }
+
+  const preProse = layers.filter((layer) => layer.gatesProse)
+  const preProseConfirmed = preProse.every((layer) => layer.confirmed)
+  const settingsConfirmed = layers.every((layer) => layer.confirmed)
+  const nextLayer = layers.find((layer) => !layer.confirmed)
+
+  const blockers: string[] = []
+  for (const layer of layers) {
+    if (layer.confirmed) continue
+    const missing = layer.roundsRequired - layer.rounds
+    const discuss = `novel_confirm operation="discuss" kind="${layer.kind}"`
+    const confirm = `novel_confirm operation="confirm" kind="${layer.kind}"`
+    if (layer.key === 'premise') {
+      // The pre-prose checkpoint keeps the SOP's own wording: it is the layer the
+      // author is asked about first and the one that blocks `novel_write`.
+      blockers.push(
+        missing > 0
+          ? `设定尚未与用户讨论：还差 ${String(missing)} 轮（${discuss}），再由用户确认`
+          : `设定已讨论但用户尚未确认（${confirm}）`,
+      )
+      continue
+    }
+    const order = layer.ready ? '' : `（顺序上先关掉「${labelOf(layers, layer.blockedBy)}」）`
+    blockers.push(
+      missing > 0
+        ? `${layer.label}尚未与用户讨论${order}：还差 ${String(missing)} 轮（${discuss}），再由用户确认`
+        : `${layer.label}已讨论但用户尚未确认${order}（${confirm}）`,
+    )
+  }
+  if (style === undefined && styleGateReached(state)) {
+    blockers.push(
+      styleReady
+        ? `第 ${String(STYLE_GATE_CHAPTER)} 章已成稿，文风待用户确认（novel_confirm operation="confirm" kind="style"）`
+        : `第 ${String(STYLE_GATE_CHAPTER)} 章已成稿，请让用户读过后确认文风（novel_confirm operation="discuss" 再 operation="confirm" kind="style"）`,
+    )
+  }
+
+  return {
+    settings,
+    style,
+    settingsRounds,
+    styleRounds,
+    layers,
+    settingsConfirmed,
+    styleConfirmed: style !== undefined,
+    preProseConfirmed,
+    settingsReady,
+    styleReady,
+    nextLayer,
+    blockers,
+  }
+}
+
+/** The label of one settings layer, for a blocker that names what comes first. */
+function labelOf(layers: readonly SettingsLayerStanding[], key: SettingsLayerKey | undefined): string {
+  return layers.find((layer) => layer.key === key)?.label ?? String(key ?? '')
+}
+
+/** Whether prose may be written, and what has to happen first when it may not. */
+export interface ProseGate {
+  /** Whether the chapter may be written. */
+  readonly allowed: boolean
+  /** Why it may not, in the SOP's own terms. */
+  readonly reasons: readonly string[]
+  /** The calls that open the gate. */
+  readonly next: readonly string[]
+}
+
+/**
+ * The checkpoint gate in front of the prose.
+ *
+ * This is the one hard gate in the pipeline, and it is hard on purpose: the soft
+ * gates elsewhere report a disagreement and let the call stand, which is exactly
+ * how a model ran from an inspiration to four finished chapters without the
+ * author ever being asked. What is enforced here is narrow and cheap — the
+ * author must have signed the **premise** layer off before chapter one exists,
+ * and the voice off after it — so an author who talks to the tool is never
+ * stopped, and a chapter 1 that is drafted while the volume outline is still
+ * being argued about is not blocked by this gate. The layers after the premise
+ * are enforced by order, not by refusal: `confirmationStanding` reports them as
+ * blockers for the *next* layer, and `novel_confirm` refuses to skip ahead.
+ *
+ * @param state - the project.
+ * @param chapterNumber - the chapter about to be written.
+ * @returns whether the write may proceed.
+ */
+export function proseGate(state: NovelState, chapterNumber: number): ProseGate {
+  const standing = confirmationStanding(state)
+  const reasons: string[] = []
+  const next: string[] = []
+  if (!standing.preProseConfirmed) {
+    const layer = standing.nextLayer
+    // The premise layer answers to both names; `settings` is the one the SOP and
+    // the error messages have always used, so the gate points at that spelling.
+    const kind = layer === undefined || layer.key === 'premise' ? 'settings' : layer.kind
+    reasons.push(
+      '设定还没有经过用户确认：用户给的灵感只是起点，书名/立意/人设/世界观/篇幅必须**先与用户讨论并确认**，'
+      + '确认之后才写正文',
+    )
+    next.push(`novel_confirm operation="discuss" kind="${kind}"（每一轮都写下用户的原话）`)
+    next.push(`novel_confirm operation="confirm" kind="${kind}"（用户认可后才能确认）`)
+  }
+  if (!standing.styleConfirmed && chapterNumber > STYLE_GATE_CHAPTER) {
+    reasons.push(
+      `第 ${String(STYLE_GATE_CHAPTER)} 章之后要先让用户确认文风：把已写的章节交给用户读，`
+      + '确认文风之后再往下写，避免整本书跑偏后才返工',
+    )
+    next.push('novel_confirm operation="discuss" kind="style"（用户读稿后的原话）')
+    next.push('novel_confirm operation="confirm" kind="style"（用户认可文风）')
+  }
+  return { allowed: reasons.length === 0, reasons, next }
+}
+
+/**
  * Which SOP phase the project has actually reached.
  *
  * The stage is **derived**, never stored: a stored stage is a second source of
@@ -1472,14 +1811,42 @@ export function assessStage(state: NovelState): StageAssessment {
   const openingDone = state.outline.opening.length > 0 && state.outline.opening.every((check) => check.done)
   const hasMinimalOutline = state.outline.minimal.trim() !== '' || state.outline.logline.trim() !== ''
   const lastDecision = state.launchDecisions.at(-1)
+  const standing = confirmationStanding(state)
+
+  // The voice checkpoint is a gate on the *position*, not a phase: it applies
+  // the moment the gate chapter has prose, wherever the phase machine happens to
+  // be. It therefore rides on every phase's blocker list rather than only on
+  // 阶段五's — a project that wrote chapter 1 before its outline existed is
+  // still a project whose author has not heard the voice.
+  const styleBlocker =
+    !standing.styleConfirmed && styleGateReached(state)
+      ? `第 ${String(STYLE_GATE_CHAPTER)} 章已成稿：先让用户读稿并确认文风（novel_confirm kind="style"），`
+        + `再写第 ${String(STYLE_GATE_CHAPTER + 1)} 章`
+      : undefined
+  const gated = (blockers: readonly string[]): string[] =>
+    styleBlocker === undefined ? [...blockers] : [...blockers, styleBlocker]
 
   // Phase one → two: the pitch and the competitor study are the SOP's own
-  // checkpoint ("能否一句话说清谁看、为什么追、为什么付费？竞品 ≥20 本").
+  // checkpoint ("能否一句话说清谁看、为什么追、为什么付费？竞品 ≥20 本"),
+  // and the author's sign-off on the setup closes the phase — the settings are
+  // something the two of them settle together, not something the tool announces.
   const planningBlockers: string[] = []
   if (!hasPitch) planningBlockers.push('唯一记忆点未写入（novel_plan operation="pitch"）')
   if (competitors < 20) planningBlockers.push(`竞品拆解不足 20 本，当前 ${String(competitors)} 本`)
-  if (planningBlockers.length > 0) return { stage: 'planning', blockers: planningBlockers, satisfied }
-  satisfied.push('记忆点与竞品拆解已就绪')
+  if (!standing.settingsConfirmed) {
+    const missing = CONFIRMATION_MIN_ROUNDS.settings - standing.settingsRounds
+    planningBlockers.push(
+      missing > 0
+        ? `设定还差 ${String(missing)} 轮与用户讨论（novel_confirm operation="discuss" kind="settings"）`
+        : '设定已讨论但用户尚未确认（novel_confirm operation="confirm" kind="settings"）',
+    )
+  }
+  // Which layer of the settings is next in turn, so "按顺序" is visible from the
+  // stage report and not only from `novel_confirm`'s own status call.
+  const nextLayer = nextLayerBlocker(standing)
+  if (nextLayer !== undefined) planningBlockers.push(nextLayer)
+  if (planningBlockers.length > 0) return { stage: 'planning', blockers: gated(planningBlockers), satisfied }
+  satisfied.push('记忆点、竞品拆解与用户确认的设定已就绪')
 
   // Phase two → three: the opening package.
   const prepBlockers: string[] = []
@@ -1489,7 +1856,7 @@ export function assessStage(state: NovelState): StageAssessment {
     const pending = state.outline.opening.filter((check) => !check.done).length
     prepBlockers.push(`开篇工程清单尚有 ${String(pending)} 项未确认（operation="opening"）`)
   }
-  if (prepBlockers.length > 0) return { stage: 'opening-package', blockers: prepBlockers, satisfied }
+  if (prepBlockers.length > 0) return { stage: 'opening-package', blockers: gated(prepBlockers), satisfied }
   satisfied.push('开篇包已就绪')
 
   // Phase three: the launch decision. A declared judgement, never a reading —
@@ -1501,43 +1868,63 @@ export function assessStage(state: NovelState): StageAssessment {
   if (lastDecision === undefined) {
     return {
       stage: 'opening-decision',
-      blockers: ['上线决策未记录：开篇包够不够格投入完整骨架？（novel_plan operation="launch"）'],
+      blockers: gated(['上线决策未记录：开篇包够不够格投入完整骨架？（novel_plan operation="launch"）']),
       satisfied,
     }
   }
   if (lastDecision.verdict === 'abandon') {
     return {
       stage: 'opening-decision',
-      blockers: [
+      blockers: gated([
         `已判定放弃该概念${lastDecision.abandonIf === '' ? '' : `（放弃条件：${lastDecision.abandonIf}）`}：换概念后从阶段一重来`,
-      ],
+      ]),
       satisfied,
     }
   }
   if (lastDecision.verdict === 'revise') {
     return {
       stage: 'opening-decision',
-      blockers: [
+      blockers: gated([
         `上次决策为「改后再说」：${lastDecision.fallback === '' ? '未写回退目标' : lastDecision.fallback}`
         + `；放弃条件：${lastDecision.abandonIf === '' ? '未写' : lastDecision.abandonIf}`,
-      ],
+      ]),
       satisfied,
     }
   }
   satisfied.push('上线决策已通过（go）')
 
-  // Phase four → five: the full skeleton.
+  // Phase four → five: the full skeleton. The outline and volume layers are
+  // confirmed *here* — stage three is what authorises building them out — so this
+  // phase is not done until the author has approved both, not merely until the
+  // text exists.
   const outlineBlockers: string[] = []
   if (!state.outline.fullOutlineDone) outlineBlockers.push('完整大纲未确认（operation="outline" 且 full=true）')
   if (state.outline.volumes.length === 0) outlineBlockers.push('分卷大纲未写入（operation="volume"）')
   if (state.outline.beats.length === 0) outlineBlockers.push('情绪节拍表为空（operation="beat"）')
-  if (outlineBlockers.length > 0) return { stage: 'full-outline', blockers: outlineBlockers, satisfied }
+  const outlineLayer = standing.layers.find((layer) => layer.key === 'outline')
+  const volumeLayer = standing.layers.find((layer) => layer.key === 'volume')
+  if (outlineLayer !== undefined && !outlineLayer.confirmed) {
+    outlineBlockers.push(`全书大纲未与用户确认（novel_confirm kind="outline"）`)
+  }
+  if (volumeLayer !== undefined && !volumeLayer.confirmed) {
+    outlineBlockers.push(`分卷大纲未与用户确认（novel_confirm kind="volume"）`)
+  }
+  if (outlineBlockers.length > 0) return { stage: 'full-outline', blockers: gated(outlineBlockers), satisfied }
   satisfied.push('完整骨架已确认')
 
   if (writtenChapters.length === 0) {
-    return { stage: 'full-outline', blockers: ['尚未开始连载正文（novel_write）'], satisfied }
+    return { stage: 'full-outline', blockers: gated(['尚未开始连载正文（novel_write）']), satisfied }
   }
   satisfied.push(`正文已开始（${String(writtenChapters.length)} 章）`)
+
+  // The style checkpoint. It is reported as a blocker at the moment it becomes
+  // due — the gate chapter has prose — because that is precisely the step a
+  // model skips when it is being helpful: it writes chapter 2 while the author
+  // has not yet read chapter 1.
+  if (styleBlocker !== undefined) {
+    return { stage: 'serializing', blockers: [styleBlocker], satisfied }
+  }
+  satisfied.push('文风已经用户确认')
 
   if (state.retro === undefined) {
     return { stage: 'serializing', blockers: ['完本复盘未写（novel_repo operation="retro"）'], satisfied }
@@ -1707,6 +2094,42 @@ export function addEvaluation(state: NovelState, evaluation: Evaluation, now: Cl
  */
 export function addLaunchDecision(state: NovelState, decision: LaunchDecision, now: Clock = systemClock): NovelState {
   return { ...state, launchDecisions: [...state.launchDecisions, decision], updatedAt: now() }
+}
+
+/**
+ * Append one round of the settings/style conversation.
+ *
+ * Rounds accumulate so a checkpoint keeps the trail that justifies it: what was
+ * proposed, what the author said back, and — read in order — how the setup
+ * actually changed between the first idea and the version that was approved.
+ *
+ * @param state - the state to derive from.
+ * @param round - the round to append.
+ * @param now - timestamp for `updatedAt`.
+ * @returns a new state carrying the round.
+ */
+export function addDiscussionRound(
+  state: NovelState,
+  round: DiscussionRound,
+  now: Clock = systemClock,
+): NovelState {
+  return { ...state, discussions: [...state.discussions, round], updatedAt: now() }
+}
+
+/**
+ * Append one author sign-off.
+ *
+ * @param state - the state to derive from.
+ * @param confirmation - the sign-off to append.
+ * @param now - timestamp for `updatedAt`.
+ * @returns a new state carrying the sign-off.
+ */
+export function addConfirmation(
+  state: NovelState,
+  confirmation: Confirmation,
+  now: Clock = systemClock,
+): NovelState {
+  return { ...state, confirmations: [...state.confirmations, confirmation], updatedAt: now() }
 }
 
 /**

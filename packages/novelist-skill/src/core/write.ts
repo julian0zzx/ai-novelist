@@ -5,7 +5,7 @@
  * version 3.0 had no way to notice when it did not. These functions produce the
  * report `novel_write` returns: which contract fields the draft reached, which
  * were missed, which the author waived, and whether the length landed — against
- * the 150% gate a first draft is written to, or the finished gate a chapter is
+ * the draft gate a first draft is written to (125%), or the finished gate a chapter is
  * published at (-5%/+15%), depending on the chapter's own stage.
  *
  * Nothing here judges prose quality — that is the author's job, and the SOP says
@@ -48,7 +48,7 @@ export interface DeliveryReport {
   readonly reached: readonly ContractField[]
   /** The gate that binds at the chapter's current lifecycle stage. */
   readonly length: LengthCheck | undefined
-  /** The 150% first-draft comparison, whenever a target and prose exist. */
+  /** The first-draft comparison (125%), whenever a target and prose exist. */
   readonly draftLength: LengthCheck | undefined
   /** The finished-chapter comparison (-5%/+15%), which `final` is judged against. */
   readonly finalLength: LengthCheck | undefined
@@ -85,7 +85,7 @@ export function analyzeDelivery(chapter: Chapter): DeliveryReport {
     .map((entry) => entry.field)
   const reached = fields.filter((entry) => entry.delivered).map((entry) => entry.field)
   // Both gates are reported; which one binds is the chapter's own lifecycle
-  // stage, so a first draft is held to 150% and a trimmed chapter to the finished
+  // stage, so a first draft is held to the draft target and a trimmed chapter to the finished
   // window (-5%/+15%).
   const draftLength = lengthCheck(chapter, { stage: 'draft' })
   const finalLength = lengthCheck(chapter, { stage: 'final' })
@@ -129,7 +129,7 @@ export function blockersToFinal(chapter: Chapter): string[] {
   const report = analyzeDelivery(chapter)
   if (report.missed.length > 0) blockers.push(`上次写作未兑现：${report.missed.join('、')}`)
   // Publishing is the finished-chapter gate: never more than 5% under the target
-  // the user gave, up to 15% over — not the 150% a first draft is written to.
+  // the user gave, up to 15% over — not the 125% a first draft is written to.
   if (report.finalLength !== undefined && !report.finalLength.within) blockers.push(report.finalLength.note)
   return blockers
 }

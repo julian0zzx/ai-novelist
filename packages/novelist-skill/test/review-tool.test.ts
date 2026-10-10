@@ -119,12 +119,51 @@ async function stored(): Promise<NovelState> {
   return state
 }
 
-/** A project with one written chapter, seeded through the store's own write path. */
+/**
+ * A project with the author's settings sign-off and one written chapter.
+ *
+ * Seeded through the store's own write path rather than through the tools: these
+ * specs are about `novel_review`, so the checkpoints `novel_write` enforces are
+ * satisfied here instead of being exercised again.
+ */
 async function seed(chapterBody = '山门很高，云雾不散。他握紧断剑，没有回答守门弟子的问题。'): Promise<void> {
+  const at = (): string => '2026-01-01T00:00:00.000Z'
+  const base = emptyNovel({ title: '青云记', premise: '少年持断剑上山' }, at)
+  const signed: NovelState = {
+    ...base,
+    discussions: [
+      {
+        id: 'discuss-settings-1',
+        kind: 'settings',
+        at: at(),
+        proposal: '第一版设定：沉默少年持断剑上山，冷开局。',
+        feedback: '主角再冷一点，别一上来就热血。',
+        topics: ['立意'],
+      },
+      {
+        id: 'discuss-settings-2',
+        kind: 'settings',
+        at: at(),
+        proposal: '按你的意见改成沉默寡言，删掉复仇宣言。',
+        feedback: '可以，就按这版来。',
+        topics: ['人设'],
+      },
+    ],
+    confirmations: [
+      {
+        id: 'confirm-settings-1',
+        kind: 'settings',
+        at: at(),
+        summary: '沉默少年持断剑上山，冷开局，不喊口号。',
+        note: '可以，就按这版来。',
+        rounds: 2,
+      },
+    ],
+  }
   const state = upsertChapter(
-    emptyNovel({ title: '青云记', premise: '少年持断剑上山' }, () => '2026-01-01T00:00:00.000Z'),
+    signed,
     { id: 'chapter-1', number: 1, title: '山门', plotTask: '林越抵达山门', hook: '钟响', body: chapterBody },
-    () => '2026-01-01T00:00:00.000Z',
+    at,
   )
   await store().create(state)
 }
@@ -174,12 +213,13 @@ async function until(check: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe('novel_review registration', () => {
-  it('is absent without a model, so the seven deterministic tools never need one', async () => {
+  it('is absent without a model, so the eight deterministic tools never need one', async () => {
     apply(ctx, Config({ workspaceRoot: root }) as never)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect([...tools.keys()].sort()).toEqual([
       'novel_assess',
       'novel_bible',
+      'novel_confirm',
       'novel_init',
       'novel_plan',
       'novel_repo',
@@ -188,11 +228,11 @@ describe('novel_review registration', () => {
     ])
   })
 
-  it('appears as the eighth tool once a model route exists', async () => {
+  it('appears as the ninth tool once a model route exists', async () => {
     ctx.plugin(fakeModel)
     apply(ctx, Config({ workspaceRoot: root }) as never)
     await until(() => tools.has('novel_review'))
-    expect(tools.size).toBe(8)
+    expect(tools.size).toBe(9)
   })
 })
 

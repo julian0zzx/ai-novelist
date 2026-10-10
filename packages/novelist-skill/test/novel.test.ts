@@ -3,9 +3,12 @@ import {
   NOVEL_SCHEMA_VERSION,
   NovelInputError,
   NovelStoreError,
+  addConfirmation,
+  addDiscussionRound,
   addEvaluation,
   addLaunchDecision,
   assessStage,
+  confirmationStanding,
   countWords,
   emptyNovel,
   missingContractFields,
@@ -13,6 +16,7 @@ import {
   migrateV2,
   parseNovel,
   progressOf,
+  proseGate,
   renderManuscript,
   serializeNovel,
   setOpeningCheck,
@@ -378,9 +382,72 @@ describe('progressOf', () => {
   })
 })
 
+/**
+ * Record the two discussion rounds and the sign-off the premise layer needs.
+ *
+ * @param state - the project to sign off on.
+ * @returns the project with the pre-prose checkpoint closed.
+ */
+function signPremiseOff(state: ReturnType<typeof emptyNovel>): ReturnType<typeof emptyNovel> {
+  let next = addDiscussionRound(
+    state,
+    { id: 'd1', kind: 'settings', at: '2024-01-01T01:00:00.000Z', proposal: '第一版设定', feedback: '主角冷一点', topics: ['人设'] },
+    at('2024-01-01T01:00:00.000Z'),
+  )
+  next = addDiscussionRound(
+    next,
+    { id: 'd2', kind: 'settings', at: '2024-01-01T02:00:00.000Z', proposal: '改成沉默寡言', feedback: '可以', topics: ['人设'] },
+    at('2024-01-01T02:00:00.000Z'),
+  )
+  return addConfirmation(
+    next,
+    { id: 'c1', kind: 'settings', at: '2024-01-01T03:00:00.000Z', summary: '沉默少年持断剑上山', note: '可以', rounds: 2 },
+    at('2024-01-01T03:00:00.000Z'),
+  )
+}
+
+/**
+ * Close one settings layer after the premise — one round, then the sign-off.
+ *
+ * @param state - the project.
+ * @param kind - the layer's confirmation kind.
+ * @returns the project with the layer closed.
+ */
+function signLayerOff(
+  state: ReturnType<typeof emptyNovel>,
+  kind: 'world' | 'cast' | 'outline' | 'volume',
+): ReturnType<typeof emptyNovel> {
+  let next = addDiscussionRound(
+    state,
+    { id: `d-${kind}`, kind, at: '2024-01-01T04:00:00.000Z', proposal: `${kind} 第一版`, feedback: '可以', topics: [] },
+    at('2024-01-01T04:00:00.000Z'),
+  )
+  next = addConfirmation(
+    next,
+    { id: `c-${kind}`, kind, at: '2024-01-01T05:00:00.000Z', summary: `${kind} 定稿`, note: '可以', rounds: 1 },
+    at('2024-01-01T05:00:00.000Z'),
+  )
+  return next
+}
+
+/**
+ * Close every settings layer, in the SOP's order.
+ *
+ * The stage machine only leaves 阶段一 once all five layers are signed off, so
+ * every spec that walks past planning goes through here.
+ *
+ * @param state - the project to sign off on.
+ * @returns the project with every settings layer closed.
+ */
+function signSettingsOff(state: ReturnType<typeof emptyNovel>): ReturnType<typeof emptyNovel> {
+  let next = signPremiseOff(state)
+  for (const kind of ['world', 'cast', 'outline', 'volume'] as const) next = signLayerOff(next, kind)
+  return next
+}
+
 describe('assessStage', () => {
-  /** Build a project that satisfies one phase's preconditions. */
-  function withPitchAndCompetitors(): ReturnType<typeof emptyNovel> {
+  /** A project with a pitch and 20 competitors, before any author sign-off. */
+  function pitchedWithCompetitors(): ReturnType<typeof emptyNovel> {
     const base = updatePitch(
       emptyNovel({ title: '青云记' }, at('2024-01-01T00:00:00.000Z')),
       { memorablePoint: '少年携带断剑上山', coreEmotion: '被承认', shuangPoints: ['打脸'], differentiators: ['剑有记忆'], kernel: '出身不等于命' },
@@ -407,11 +474,81 @@ describe('assessStage', () => {
     }
   }
 
+  /** The same project once the author has signed the settings off. */
+  function withPitchAndCompetitors(): ReturnType<typeof emptyNovel> {
+    return signSettingsOff(pitchedWithCompetitors())
+  }
+
   it('starts in planning and names what is missing', () => {
     const assessment = assessStage(emptyNovel())
     expect(assessment.stage).toBe('planning')
     expect(assessment.blockers.join(' ')).toMatch(/记忆点/)
     expect(assessment.blockers.join(' ')).toMatch(/竞品/)
+    expect(assessment.blockers.join(' ')).toMatch(/设定还差 2 轮/)
+  })
+
+  it('holds phase one open until the author signs the settings off', () => {
+    const unsigned = assessStage(pitchedWithCompetitors())
+    // The pitch and the competitor study are done; the setup is still nobody
+    // else's to approve, so the phase is not.
+    expect(unsigned.stage).toBe('planning')
+    expect(unsigned.blockers.join(' ')).toMatch(/设定还差 2 轮与用户讨论/)
+
+    const oneRound = addDiscussionRound(
+      pitchedWithCompetitors(),
+      { id: 'd1', kind: 'settings', at: '', proposal: '第一版', feedback: '主角冷一点', topics: [] },
+      at('2024-01-01T01:00:00.000Z'),
+    )
+    expect(assessStage(oneRound).blockers.join(' ')).toMatch(/设定还差 1 轮/)
+
+    const discussed = addDiscussionRound(
+      oneRound,
+      { id: 'd2', kind: 'settings', at: '', proposal: '改好了', feedback: '可以', topics: [] },
+      at('2024-01-01T02:00:00.000Z'),
+    )
+    // Rounds are enough, but only the author closes the checkpoint.
+    expect(assessStage(discussed).stage).toBe('planning')
+    expect(assessStage(discussed).blockers.join(' ')).toMatch(/已讨论但用户尚未确认/)
+
+    expect(assessStage(signSettingsOff(pitchedWithCompetitors())).stage).toBe('opening-package')
+  })
+
+  it('holds serialization at the voice checkpoint once chapter 1 has prose', () => {
+    let state = withPitchAndCompetitors()
+    state = { ...state, outline: { ...state.outline, logline: '少年上山', minimal: '摘要', acts: ['起'] } }
+    state = upsertChapter(
+      state,
+      { id: 'c1', number: 1, plotTask: '上山', body: '山门很高。' },
+      at('2024-01-01T00:00:00.000Z'),
+    )
+    for (const check of state.outline.opening) {
+      state = setOpeningCheck(state, check.key, true, '', at('2024-01-01T00:00:00.000Z'))
+    }
+    state = addLaunchDecision(
+      state,
+      { ...emptyLaunchDecision, verdict: 'go', fallback: '', abandonIf: '' },
+      at('2024-01-02T00:00:00.000Z'),
+    )
+    state = { ...state, outline: { ...state.outline, fullOutlineDone: true } }
+    state = upsertVolume(
+      state,
+      { number: 1, title: '第一卷', detail: '', goal: '入门', conflict: '试炼', climax: '登顶', endHook: '钟响', chapters: [1] },
+      at('2024-01-02T00:00:00.000Z'),
+    )
+    state = {
+      ...state,
+      outline: { ...state.outline, beats: [{ chapter: 3, kind: 'shuang', note: '小高潮' }] },
+    }
+    const gated = assessStage(state)
+    expect(gated.stage).toBe('serializing')
+    expect(gated.blockers.join(' ')).toMatch(/确认文风/)
+
+    const signed = addConfirmation(
+      state,
+      { id: 'c2', kind: 'style', at: '2024-01-03T00:00:00.000Z', summary: '短句为主', note: '可以', rounds: 1 },
+      at('2024-01-03T00:00:00.000Z'),
+    )
+    expect(assessStage(signed).blockers.join(' ')).toMatch(/完本复盘/)
   })
 
   it('moves to opening-package once the pitch and 20 competitors exist', () => {
@@ -479,6 +616,77 @@ describe('assessStage', () => {
     }
   })
 
+})
+
+describe('the author checkpoints', () => {
+  it('reports the rounds recorded since the last sign-off, not the lifetime total', () => {
+    let state = signSettingsOff(emptyNovel({ title: '青云记' }))
+    expect(confirmationStanding(state).settingsConfirmed).toBe(true)
+    expect(confirmationStanding(state).settingsRounds).toBe(0)
+
+    state = addDiscussionRound(
+      state,
+      { id: 'd3', kind: 'settings', at: '', proposal: '篇幅改成 80 万字', feedback: '可以，但别超 100 万', topics: ['篇幅'] },
+      at('2024-02-01T00:00:00.000Z'),
+    )
+    // The earlier sign-off still stands — recording a round about a possible
+    // change does not withdraw the author's approval — but confirming the change
+    // takes two fresh rounds, not the two that are already spent.
+    const standing = confirmationStanding(state)
+    expect(standing.settingsConfirmed).toBe(true)
+    expect(standing.settingsRounds).toBe(1)
+    expect(standing.settingsReady).toBe(false)
+    expect(standing.blockers).toEqual([])
+  })
+
+  it('counts style rounds on their own ledger', () => {
+    const state = addDiscussionRound(
+      emptyNovel({ title: '青云记' }),
+      { id: 's1', kind: 'style', at: '', proposal: '第 1 章初稿', feedback: '短句可以，形容词少一点', topics: ['文风'] },
+      at('2024-01-01T00:00:00.000Z'),
+    )
+    const standing = confirmationStanding(state)
+    expect(standing.styleRounds).toBe(1)
+    expect(standing.settingsRounds).toBe(0)
+    expect(standing.styleReady).toBe(true)
+    // Not due before the gate chapter exists.
+    expect(standing.blockers.join(' ')).not.toMatch(/文风/)
+  })
+})
+
+describe('proseGate', () => {
+  it('refuses every chapter while the settings are unsigned', () => {
+    const gate = proseGate(emptyNovel({ title: '青云记' }), 1)
+    expect(gate.allowed).toBe(false)
+    expect(gate.reasons.join(' ')).toMatch(/设定还没有经过用户确认/)
+    expect(gate.next.join(' ')).toMatch(/kind="settings"/)
+  })
+
+  it('lets chapter 1 through once the settings are signed, and holds chapter 2 at the voice', () => {
+    const signed = signSettingsOff(emptyNovel({ title: '青云记' }))
+    expect(proseGate(signed, 1).allowed).toBe(true)
+
+    const second = proseGate(signed, 2)
+    expect(second.allowed).toBe(false)
+    expect(second.reasons.join(' ')).toMatch(/确认文风/)
+    expect(second.next.join(' ')).toMatch(/kind="style"/)
+  })
+
+  it('opens the rest of the book once both checkpoints are closed', () => {
+    let state = signSettingsOff(emptyNovel({ title: '青云记' }))
+    state = upsertChapter(state, { id: 'c1', number: 1, body: '山门很高。' }, at('2024-01-01T04:00:00.000Z'))
+    state = addDiscussionRound(
+      state,
+      { id: 's1', kind: 'style', at: '', proposal: '第 1 章成稿', feedback: '这个语感可以', topics: ['文风'] },
+      at('2024-01-01T05:00:00.000Z'),
+    )
+    state = addConfirmation(
+      state,
+      { id: 'c2', kind: 'style', at: '2024-01-01T06:00:00.000Z', summary: '短句、口语、少形容词', note: '可以', rounds: 1 },
+      at('2024-01-01T06:00:00.000Z'),
+    )
+    expect(proseGate(state, 7)).toEqual({ allowed: true, reasons: [], next: [] })
+  })
 })
 
 describe('renderManuscript', () => {

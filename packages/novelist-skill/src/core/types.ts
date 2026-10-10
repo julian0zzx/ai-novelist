@@ -143,6 +143,96 @@ export const CONTRACT_FIELDS = [
 /** One entry of {@link CONTRACT_FIELDS}. */
 export type ContractField = (typeof CONTRACT_FIELDS)[number]
 
+/**
+ * The checkpoints only the author can close.
+ *
+ * Both exist because the pipeline otherwise runs from an inspiration straight to
+ * prose: the *settings* checkpoints cover the book's setup, and `style` is the
+ * sign-off on the prose voice that must follow the first chapter and precede the
+ * second. A checkpoint is not a judgement the tool makes — it is a record that
+ * the author was asked and answered (see {@link DiscussionRound}).
+ *
+ * The settings are decomposed into {@link SETTINGS_LAYERS} — 立意、世界观、人物设定、
+ * 全书大纲、分卷大纲 — settled one at a time in that order. Most layers answer to
+ * their own kind; the premise layer answers to both `premise` and `settings`,
+ * because `settings` is what the SOP and every project recorded before the layers
+ * existed call it.
+ */
+export const CONFIRMATION_KINDS = ['settings', 'premise', 'world', 'cast', 'outline', 'volume', 'style'] as const
+
+/** One entry of {@link CONFIRMATION_KINDS}. */
+export type ConfirmationKind = (typeof CONFIRMATION_KINDS)[number]
+
+/**
+ * Discussion rounds each checkpoint needs before it can be signed off.
+ *
+ * Settings take more than one round on purpose: the SOP asks for the setup to be
+ * *discussed*, not announced, and a single round is what "the model decided and
+ * told the author" looks like. The style checkpoint follows the first chapter,
+ * so one round — show the chapter, hear the verdict — is the honest shape.
+ */
+export const CONFIRMATION_MIN_ROUNDS: Readonly<Record<ConfirmationKind, number>> = {
+  settings: 2,
+  premise: 2,
+  world: 1,
+  cast: 1,
+  outline: 1,
+  volume: 1,
+  style: 1,
+}
+
+/** The key of one settings layer, for addressing it in a tool call. */
+export type SettingsLayerKey = 'premise' | 'world' | 'cast' | 'outline' | 'volume'
+
+/** The confirmation kind that closes one settings layer. */
+export type SettingsLayerKind = SettingsLayerKey
+
+/** One entry of {@link SETTINGS_LAYERS}. */
+export interface SettingsLayer {
+  /** The layer's key, as a tool call addresses it. */
+  readonly key: SettingsLayerKey
+  /** The layer's name in the author's language. */
+  readonly label: string
+  /** The confirmation kind that closes it. */
+  readonly kind: SettingsLayerKind
+  /** Whether the layer gates the prose. */
+  readonly gatesProse: boolean
+}
+
+/**
+ * One layer of the settings, in the order the SOP settles them.
+ *
+ * The settings are **not one deliverable**. 世界观、人物设定、全书大纲、分卷大纲 are
+ * each large enough that writing them in a single pass produces a setup the
+ * author never had a chance to steer — the failure the checkpoints exist to
+ * prevent, one level down. Each layer is therefore its own discussion and its
+ * own sign-off, and a later layer may not be *started* until the one before it
+ * is confirmed.
+ *
+ * `premise` is the exception the rest of the pipeline leans on: the pitch is the
+ * smallest layer and the only one `novel_write` hard-gates on, so it is the
+ * pre-prose checkpoint. The layers after it are ordered and soft-gated — the
+ * tool reports that they are out of order rather than refusing, because a model
+ * writing scene-setting notes early is not the failure that produced four
+ * unapproved chapters.
+ */
+export const SETTINGS_LAYERS: readonly SettingsLayer[] = [
+  { key: 'premise', label: '立意与核心设定', kind: 'premise', gatesProse: true },
+  { key: 'world', label: '世界观设定', kind: 'world', gatesProse: false },
+  { key: 'cast', label: '人物设定', kind: 'cast', gatesProse: false },
+  { key: 'outline', label: '全书大纲', kind: 'outline', gatesProse: false },
+  { key: 'volume', label: '分卷大纲', kind: 'volume', gatesProse: false },
+]
+
+/**
+ * The chapter the style must be signed off after.
+ *
+ * The author chose to confirm the voice on the first finished chapter rather
+ * than after the opening gate: chapter 1 is where a wrong voice is cheapest to
+ * fix, and it is written before any of the book's length is committed.
+ */
+export const STYLE_GATE_CHAPTER = 1
+
 // ── the project's commercial frame ────────────────────────────────────────────
 
 /** Where the novel is published and how it earns. */
@@ -374,14 +464,14 @@ export interface StoryLink {
 // ── the plan ──────────────────────────────────────────────────────────────────
 
 /**
- * The filenames the five top-level content files use.
+ * The filenames the six top-level content files use.
  *
  * Fixed Chinese names by default, overridable through configuration; the index
  * is the only thing that records which names are actually in force, so nothing
  * downstream may hard-code them.
  */
 export interface StorageLayout {
-  /** Whole-book outline: logline, acts, minimal outline, `fullOutlineDone`. */
+  /** Whole-book outline: logline, full outline, acts, minimal outline, `fullOutlineDone`. */
   readonly outlineFile: string
   /** Cast. */
   readonly castFile: string
@@ -391,6 +481,15 @@ export interface StorageLayout {
   readonly volumeFile: string
   /** Chapter plan and rhythm table. */
   readonly chapterPlanFile: string
+  /**
+   * The dismantled comparable titles.
+   *
+   * The competitor study is research the author has to be able to *read* — the
+   * whole point of dismantling 20–50 titles is to go back to them while
+   * planning — so it lives in a Markdown file beside the other settings rather
+   * than only inside `.novel/novel.json`.
+   */
+  readonly competitorFile: string
   /** Directory holding the per-chapter prose and contract files. */
   readonly chapterDir: string
 }
@@ -430,6 +529,10 @@ export interface NovelMetadata {
   readonly evaluations: readonly Evaluation[]
   /** Stage-three go/no-go decisions, newest last. */
   readonly launchDecisions: readonly LaunchDecision[]
+  /** Every round of the settings/style conversation with the author, in the order held. */
+  readonly discussions: readonly DiscussionRound[]
+  /** The author's sign-offs, newest last. */
+  readonly confirmations: readonly Confirmation[]
   /** Model-backed judgements. */
   readonly reviews: readonly ReviewRecord[]
   /**
@@ -451,10 +554,21 @@ export interface NovelMetadata {
 }
 
 /** One volume of the outline. */
-export interface VolumePlan {  /** 1-based volume number. */
+export interface VolumePlan {
+  /** 1-based volume number. */
   readonly number: number
   /** Working title. */
   readonly title: string
+  /**
+   * The volume's own detail: the 分卷剧情大纲.
+   *
+   * The SOP asks step 16 for "每卷：独立目标、独立矛盾、阶段性高潮、卷末钩子、卷内节奏", and
+   * the last of those — the volume's内部 rhythm — has nowhere to live in five
+   * scalar fields. It is also the part that has to reach the length the plan
+   * budgets for a volume outline, so it is a body of its own rather than one
+   * more line in a list.
+   */
+  readonly detail: string
   /** What this volume must accomplish on its own. */
   readonly goal: string
   /** The conflict that carries the volume. */
@@ -493,6 +607,16 @@ export interface OpeningCheck {
 export interface Outline {
   /** One-sentence story. */
   readonly logline: string
+  /**
+   * The whole-book detailed outline: 三幕主线、核心剧情走向、全局伏笔、大高潮节点、
+   * 终极冲突、结局框架、全书钩子体系.
+   *
+   * The SOP's step 15 is a *body of work*, not a line: it is what the plan
+   * budgets at roughly 1/100 of the book's total length, and what a later volume
+   * or chapter is checked against. `acts` keeps the coarse three-act shape; this
+   * is the detailed skeleton beside it.
+   */
+  readonly fullOutline: string
   /** Act structure in the author's words, one entry per act. */
   readonly acts: readonly string[]
   /** The minimal viable outline's one-screen summary. */
@@ -681,6 +805,119 @@ export interface LaunchDecision {
 }
 
 /**
+ * One round of the settings/style conversation with the author.
+ *
+ * The record exists because the tool cannot tell a conversation from a
+ * monologue, and the failure this guards against is exactly that: a model that
+ * wrote the setup itself and went on to prose. What the tool *can* require is
+ * that every round carries the author's own answer — a round without feedback is
+ * refused — so a checkpoint cannot be closed without the author having spoken.
+ */
+export interface DiscussionRound {
+  /** Stable id. */
+  readonly id: string
+  /** Which checkpoint the round belongs to. */
+  readonly kind: ConfirmationKind
+  /** ISO-8601 instant. */
+  readonly at: string
+  /** What the round put in front of the author: the draft, or what changed since the last round. */
+  readonly proposal: string
+  /** What the author answered, in their own words. */
+  readonly feedback: string
+  /** The settings the round settled, by name, so a later reader can see what moved. */
+  readonly topics: readonly string[]
+}
+
+/**
+ * The author's sign-off on one checkpoint.
+ *
+ * Append-only like every other ledger: a later revision of the setup or the
+ * voice is a new sign-off with its own rounds, and the history of what the
+ * author approved when is the point.
+ */
+export interface Confirmation {
+  /** Stable id. */
+  readonly id: string
+  /** Which checkpoint was closed. */
+  readonly kind: ConfirmationKind
+  /** ISO-8601 instant. */
+  readonly at: string
+  /** The version the author approved, written down as the reference later chapters are held to. */
+  readonly summary: string
+  /** Where the sign-off came from, in the author's words. */
+  readonly note: string
+  /** How many discussion rounds of this kind had been recorded at sign-off. */
+  readonly rounds: number
+}
+
+/**
+ * Which checkpoints are closed, and what is still open.
+ *
+ * Derived, never stored — the standing is a function of the rounds and the
+ * sign-offs, so a hand-edited ledger cannot disagree with itself.
+ */
+export interface ConfirmationStanding {
+  /** The latest settings sign-off, or `undefined` when the author never gave one. */
+  readonly settings: Confirmation | undefined
+  /** The latest style sign-off, or `undefined`. */
+  readonly style: Confirmation | undefined
+  /** Discussion rounds recorded since the settings sign-off (all of them, when there is none). */
+  readonly settingsRounds: number
+  /** Discussion rounds recorded since the style sign-off. */
+  readonly styleRounds: number
+  /** One entry per settings layer, in the SOP's order. */
+  readonly layers: readonly SettingsLayerStanding[]
+  /** Whether the settings sign-off exists. */
+  readonly settingsConfirmed: boolean
+  /** Whether the style sign-off exists. */
+  readonly styleConfirmed: boolean
+  /**
+   * Whether every layer that gates prose has been confirmed.
+   *
+   * This is what `novel_write` hard-gates on: the premise. The remaining layers
+   * are ordered rather than blocking, so an author can draft chapter 1 while the
+   * volume outline is still being argued about.
+   */
+  readonly preProseConfirmed: boolean
+  /** Whether the rounds recorded so far are enough to close the settings checkpoint. */
+  readonly settingsReady: boolean
+  /** Whether the rounds recorded so far are enough to close the style checkpoint. */
+  readonly styleReady: boolean
+  /** The layer the author should be settling now, or `undefined` when all are confirmed. */
+  readonly nextLayer: SettingsLayerStanding | undefined
+  /** The checkpoints still open, phrased as what has to happen next. */
+  readonly blockers: readonly string[]
+}
+
+/**
+ * Where one settings layer stands.
+ *
+ * A layer is `ready` when the layers before it are all confirmed — which is how
+ * "按顺序" is enforced without a second ledger: the order is a function of the
+ * confirmations that already exist.
+ */
+export interface SettingsLayerStanding {
+  /** The layer's key, as a tool call addresses it. */
+  readonly key: SettingsLayerKey
+  /** The confirmation kind that closes it. */
+  readonly kind: SettingsLayerKind
+  /** The layer's name in the author's language. */
+  readonly label: string
+  /** Whether the layer's sign-off exists. */
+  readonly confirmed: boolean
+  /** Discussion rounds recorded for this layer since its last sign-off. */
+  readonly rounds: number
+  /** Rounds the layer needs before it can be signed off. */
+  readonly roundsRequired: number
+  /** Whether an earlier layer is still unconfirmed. */
+  readonly blockedBy: SettingsLayerKey | undefined
+  /** Whether this layer is the next one to settle. */
+  readonly ready: boolean
+  /** Whether this layer is the one that gates prose. */
+  readonly gatesProse: boolean
+}
+
+/**
  * The derived "it may be time to look at the numbers" signal.
  *
  * Advisory by construction: it is computed from project state (chapters written,
@@ -717,7 +954,7 @@ export interface Lesson {
  * The judgements `novel_review` can ask a model for.
  *
  * These are the SOP steps whose output is a *reading of language* rather than a
- * number: the tool layer cannot decide them, and the eight deterministic tools
+ * number: the tool layer cannot decide them, and the nine deterministic tools
  * deliberately do not try. Every one of them is recorded so the recommendation
  * can be audited against the model and prompt that produced it.
  */
@@ -860,12 +1097,12 @@ export interface ChapterFileRef {
 /**
  * The index: the one place that records where content actually lives.
  *
- * The five top-level names are fixed Chinese filenames by default and
+ * The six top-level names are fixed Chinese filenames by default and
  * configurable through `Config.storageLayout`; everything else is keyed by
  * chapter id so a title change (and the file rename it causes) can be recovered,
  * because the id travels in the file's own frontmatter.
  *
- * `files` is a path→hash map rather than five fields because the reader must not
+ * `files` is a path→hash map rather than six fields because the reader must not
  * assume "one file per kind": the plan's own note on a 1000-chapter book says the
  * chapter plan may later split per volume, and code that reads this map is
  * already indifferent to that.
@@ -881,6 +1118,8 @@ export interface StorageIndex {
   readonly volumeFile: string
   /** Workspace-relative path of the chapter-plan file. */
   readonly chapterPlanFile: string
+  /** Workspace-relative path of the competitor-dismantle file. */
+  readonly competitorFile: string
   /** One entry per chapter, keyed by {@link Chapter.id}. */
   readonly chapters: Readonly<Record<string, ChapterFileRef>>
   /** `sha256:…` of every indexed content file, keyed by workspace-relative path. */
@@ -936,6 +1175,23 @@ export interface NovelState {
   readonly evaluations: readonly Evaluation[]
   /** The stage-three go/no-go decisions and their reasons. */
   readonly launchDecisions: readonly LaunchDecision[]
+  /**
+   * The settings/style conversation with the author, round by round.
+   *
+   * Additive like the ledgers below it: a project written before the checkpoints
+   * existed has none, which is precisely why the settings checkpoint reads as
+   * open on such a project.
+   */
+  readonly discussions: readonly DiscussionRound[]
+  /**
+   * The author's sign-offs, one per checkpoint layer, newest last.
+   *
+   * The premise layer's sign-off is what unlocks prose: `novel_write` refuses to
+   * write a chapter until it exists. The layers after it are recorded the same
+   * way, under their own kinds, and `confirmationStanding` derives the order
+   * from them rather than storing a sequence.
+   */
+  readonly confirmations: readonly Confirmation[]
   /**
    * Model-backed judgements in the order taken.
    *

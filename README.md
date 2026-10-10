@@ -12,19 +12,28 @@ Built for [@deepseek-ai/dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) `0.
 
 ## What it adds
 
-**Eight model-facing tools**, one per capability, matching the phases of the SOP
+**Nine model-facing tools**, one per capability, matching the phases of the SOP
 (see [The SOP this implements](#the-sop-this-implements) below) — plus one that
-deliberately sits outside them. Seven of them
-**compute** — thresholds, gates, arithmetic, identical on every run. The eighth,
+deliberately sits outside them. Eight of them
+**compute** — thresholds, gates, arithmetic, identical on every run. The ninth,
 `novel_review`, **asks a model** to judge prose, because that is the one thing no
 counter can decide; it is registered only where a model route exists.
+
+Two of the nine exist because a pipeline that runs from an inspiration straight to
+chapters is a pipeline that never asked the author anything. `novel_confirm` records
+the checkpoints only the author can close — the **settings** sign-off, which must
+exist before chapter 1 and is itself settled one layer at a time (立意 → 世界观 →
+人物设定 → 全书大纲 → 分卷大纲), and the **voice** sign-off, due after chapter 1 and
+before chapter 2 — and `novel_write` is the one **hard gate** in the tool set: it
+refuses prose while the premise is unsigned.
 
 | Tool | SOP phase | What it owns |
 |---|---|---|
 | `novel_init` | 一 策划 | The project and its commercial frame — platform, mode (paid/free), audience, genre, target readers, monetization — plus the calibration medians (`baselines`, same-genre metric medians from the last 30 days) and the writing parameters: outline window, opening gate chapters, stock target, outline ceiling. The **length plan** (总字数, 单章字数, 是否分卷/分几卷) is asked of the user, never assumed: unanswered questions come back as a checklist repeated every step, `totalChapters` is derived from total ÷ chapter length, and the numbers are cross-checked against each other and against the volume outline. |
 | `novel_plan` | 一/二/三/四 | The planning pipeline: `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`, and `launch` — the phase-three go/no-go on the opening package. `go` unlocks the full skeleton; `revise` and `abandon` must name a fallback target and an abandon condition or they are refused. |
+| `novel_confirm` | 一/五 | The author checkpoints. **The settings are settled one layer at a time, in order** — 立意 (`kind="settings"`/`"premise"`) → 世界观 (`"world"`) → 人物设定 (`"cast"`) → 全书大纲 (`"outline"`) → 分卷大纲 (`"volume"`), then 文风 (`"style"`) after chapter 1. Put *one* layer in front of the user at a time; a later layer is refused while an earlier one is still open, because handing over the whole setup at once is what this ordering exists to prevent. `status` (default) reports where every layer stands and which is next; `discuss` records **one round** — what you put in front of the user (`proposal`) and what the user actually answered (`feedback`, required: a round with no user words is refused) — and `confirm` records the version the author approved (`summary`) together with the author's own words (`note`) — both required. The premise needs **two** recorded rounds before it can be confirmed; every later layer, and the voice, needs one. Never confirm on the user's behalf, never invent a round. |
 | `novel_bible` | 一/四/六 | Cast, world facts, and reader promises: `character`, `world`, `link`, `review`. A `link` is a promise with a planting point, a due chapter, a payoff and a status; open promises past their due chapter are reported. |
-| `novel_write` | 五 连载 | One chapter's prose plus the delivery report: `write`, `read`, `check`. The **first draft is written to 150% of the chapter target** — 去 AI 化 and hand-editing delete a large share of a draft — and the finished chapter is then held to **-5%/+15%** (an asymmetric window: coming in under the promised length is the real failure, so the shortfall is capped at 5%); the tool picks the gate the chapter's status implies and prints both windows. Send the prose with `delivered=[…]` and it reports which planned fields the draft reached, which it missed, and which were never planned. Every write and check also returns the 去 AI 化 statistics (paragraph length, dialogue density, repeated sentence openings) — the tool reports symptoms and never edits the prose, so a revision is yours to make and re-send. |
+| `novel_write` | 五 连载 | One chapter's prose plus the delivery report: `write`, `read`, `check`. **The one hard gate in the pipeline**: it refuses to write while the user has not signed the settings off, and — once chapter 1 has prose — while the user has not confirmed the style; the refusal names the calls that open the gate. That refusal is the point: everywhere else the SOP reports a disagreement and lets the call stand, and that is precisely how a model produced four chapters without the author ever being asked. The **first draft is written to 125% of the chapter target** — 去 AI 化 and hand-editing delete a large share of a draft — and the finished chapter is then held to **-5%/+15%** (an asymmetric window: coming in under the promised length is the real failure, so the shortfall is capped at 5%); the tool picks the gate the chapter's status implies and prints both windows. Send the prose with `delivered=[…]` and it reports which planned fields the draft reached, which it missed, and which were never planned. Every write and check also returns the 去 AI 化 statistics (paragraph length, dialogue density, repeated sentence openings) — the tool reports symptoms and never edits the prose, so a revision is yours to make and re-send. |
 | `novel_assess` | 五 按需 | **Not a phase, and it gates nothing.** The on-demand investment evaluation — started when the author asks whether the book is still worth continuing. `record` (one hand-transcribed reading → the rules it fires, each with an action *and* a scope; it also accepts `baselines` to re-calibrate the medians on the spot), `iterate` (write the decision into the ledger), `evaluate` (the session: compares the reading against the calibrated medians, automatically back-fills every open change against it, and returns a verdict — 继续投入 / 换变量后继续 / 切书止损), `outcome` (the manual override: close one named change against one named reading, for the cases the automatic back-fill cannot infer), `history`, `rules`. A non-passing evaluation must say where to fall back to and what would end the book, and every evaluation must leave an appointment for the next one; a reading whose metrics all lack a median earns no verdict at all. |
 | `novel_status` | 全流程 | The dashboard, entirely derived from the project — no second ledger to maintain: `dashboard` (default), `bible`, `plan`, `chapter`. |
 | `novel_repo` | 六 复盘 | The closing phase: `export` (Markdown manuscript), `retro`, `asset`, `lesson`, `template`. |
@@ -38,7 +47,7 @@ Trajectory, and a "Novel Composer" tab in the right Sidebar opened from the side
 
 | Surface | Where | What it shows |
 |---|---|---|
-| **Kanban** | The session's view tabs, next to Chat and Trajectory | The whole project at a glance. Columns are the chapter lifecycle — 待写 / 写作中 / 已修订 / 已完成 — and each card carries its number, title, volume, 字数 (drafting columns compare against the **150% draft target**, revised/final columns against the finished target), beats, and what its contract still owes (a missing chapter hook, unanswered 细纲 fields). Above the board: the SOP stage and what blocks the next one, chapters written, total 字数, cast, world facts, open promises, and naming candidates. |
+| **Kanban** | The session's view tabs, next to Chat and Trajectory | The whole project at a glance. Columns are the chapter lifecycle — 待写 / 写作中 / 已修订 / 已完成 — and each card carries its number, title, volume, 字数 (drafting columns compare against the **125% draft target**, revised/final columns against the finished target), beats, and what its contract still owes (a missing chapter hook, unanswered 细纲 fields). Above the board: the SOP stage and what blocks the next one, chapters written, total 字数, cast, world facts, open promises, naming candidates, and every author checkpoint layer by layer (立意 / 世界观 / 人设 / 全书大纲 / 分卷大纲 / 文风). |
 
 The Kanban tab appears **only where there is a novel project**: it is added when the
 session's workspace holds a `.novel/novel.json`, and a workspace without one keeps exactly
@@ -89,7 +98,7 @@ Stated plainly, because the SOP is explicit that these are human or platform job
   or a human's judgement. The tool records them, compares them with your baselines,
   derives an action and a scope, and warns. If nobody reports a reading, there is no
   reading.
-- **The seven computing tools never judge prose.** The delivery report compares a draft with
+- **The eight computing tools never judge prose.** The delivery report compares a draft with
   the plan it was written against; the 去 AI 化 hints are countable statistics — paragraph
   length, dialogue density, repeated sentence openings — not a verdict on voice; and
   compliance is a checklist you confirm rather than a scanner that reports "clean".
@@ -117,7 +126,7 @@ there with `--workspace-root`.
 
 `dsh plugin add` then reconciles `dsh.profile.bundles`: because `@ai-novelist/novelist-bundle`
 declares `dsh.bundle.patch`, it joins the profile's layer stack automatically. Restart
-`dsh web`; the seven computing tools appear in the next session, `novel_review` joins them
+`dsh web`; the eight computing tools appear in the next session, `novel_review` joins them
 wherever a model is available, and the composer tab appears in the sidebar guide.
 
 That trailing spec is a **package name, not a command name** — `dsh plugin` forwards
@@ -179,11 +188,12 @@ author reads and rewrites lives in a file they can open:
 
 ```
 novel-workspace/
-  全书大纲.md            # logline, acts, minimal outline
-  人物设定.md            # one section per character
+  全书大纲.md            # logline, full outline, acts, minimal outline (the full outline ≈ total/100)
   世界观设定.md          # one section per world fact
-  分卷大纲.md            # one section per volume
-  章节大纲.md            # the chapter table + the rhythm table
+  人物设定.md            # one section per character
+  分卷大纲.md            # one section per volume: goal/conflict/climax/hook + the volume's own rhythm (≈ volume/50)
+  章节大纲.md            # the chapter table + the rhythm table (each contract ≈ chapter/10)
+  竞品拆解.md            # one section per comparable title, twelve editable fields (20–50 of them)
   章节/
     第001章-山门.md      # prose
     第001章-山门.细纲.md # the six-field contract
@@ -291,7 +301,7 @@ works if the user asks for it explicitly.
 the `provider`/`model` named on the call itself (both, or the call is refused rather than
 silently falling back), then the configured `reviewProvider`/`reviewModel`, then whatever
 model the session is using. With no route at all the tool is not registered, so a profile
-without a model keeps seven working tools instead of eight broken ones.
+without a model keeps eight working tools instead of nine broken ones.
 
 `reviewReasoningEffort` defaults to `off` for a reason worth knowing: a route that supports
 reasoning applies its own default (high, for DeepSeek) when the caller asks for nothing, and
@@ -303,7 +313,7 @@ model is safe. Raise `reviewMaxTokens` if a whole-chapter rewrite comes back tru
 ## Packaging
 
 `pnpm run dist` builds and then produces two distributions in `dist/`, both carrying the
-same eight tools — the tool code is copied from this checkout, never re-implemented.
+same nine tools — the tool code is copied from this checkout, never re-implemented.
 
 ### 1. DSH plugin distribution — `dist/dsh-plugin/ai-novelist-<version>.tgz`
 
@@ -311,7 +321,7 @@ same eight tools — the tool code is copied from this checkout, never re-implem
 plugin and the browser half:
 
 - it declares `dsh.bundle.patch`, which is what makes DSH append it to `dsh.profile.bundles`;
-- its root export (and the `./host` alias) is the module that registers the eight tools;
+- its root export (and the `./host` alias) is the module that registers the nine tools;
 - its `./client` export is the Web GUI half, served as a `window.__ModuleLoader__` bundle.
 
 ```sh
@@ -336,7 +346,7 @@ registry, no network install, no build step.
 ### 2. SKILL distribution — `dist/skill/ai-novelist/`
 
 A portable Agent Skill bundle: `SKILL.md` with the frontmatter DSH's filesystem provider
-parses and a table of all eight tools, `references/` with the workflow, the tool reference
+parses and a table of all nine tools, `references/` with the workflow, the tool reference
 and the generated thresholds, `scripts/` with the installer, and `tools/` carrying the same
 package as distribution 1.
 
@@ -354,7 +364,7 @@ Copy the directory into any scanned skill root to make it discoverable — for a
 > that registers a tool. A tool exists only once a plugin registers it on `ctx.tools`. So
 > the skill bundle carries the code *and* the script that installs it, and `SKILL.md` says
 > so plainly rather than implying the tools come for free. Its `metadata.tools` line and
-> its "The eight tools" table both list all eight.
+> its "The nine tools" table both list all nine.
 
 ## Development
 

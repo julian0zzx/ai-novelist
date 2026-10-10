@@ -88,7 +88,7 @@ describe('styleObservations', () => {
  *
  * `novel_write` prints the same two numbers, so a report that silently applied
  * the wrong gate would let a first draft pass at the finished length — the exact
- * failure the 150% rule exists to prevent.
+ * failure the draft gate exists to prevent.
  */
 describe('analyzeDelivery length gates', () => {
   /**
@@ -122,9 +122,9 @@ describe('analyzeDelivery length gates', () => {
     }
   }
 
-  it('reports both gates and binds a draft to the 150% one', () => {
-    const report = analyzeDelivery(chapter('drafting', 4500))
-    expect(report.draftLength?.target).toBe(4500)
+  it('reports both gates and binds a draft to the draft-target one', () => {
+    const report = analyzeDelivery(chapter('drafting', 3750))
+    expect(report.draftLength?.target).toBe(3750)
     expect(report.finalLength?.target).toBe(3000)
     expect(report.length?.stage).toBe('draft')
     expect(report.length?.within).toBe(true)

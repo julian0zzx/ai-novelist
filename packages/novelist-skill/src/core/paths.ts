@@ -15,13 +15,14 @@
 
 import type { StorageLayout } from './types.ts'
 
-/** The layout the plan fixes: five Chinese filenames and a `章节/` directory. */
+/** The layout the plan fixes: six Chinese filenames and a `章节/` directory. */
 export const DEFAULT_STORAGE_LAYOUT: StorageLayout = {
   outlineFile: '全书大纲.md',
   castFile: '人物设定.md',
   worldFile: '世界观设定.md',
   volumeFile: '分卷大纲.md',
   chapterPlanFile: '章节大纲.md',
+  competitorFile: '竞品拆解.md',
   chapterDir: '章节',
 }
 
@@ -32,7 +33,7 @@ export const METADATA_RELATIVE_PATH = '.novel/novel.json'
 export const MIGRATION_BACKUP_PATH = '.novel/novel.v2.backup.json'
 
 /**
- * The five top-level content paths, in the order they are written.
+ * The six top-level content paths, in the order they are written.
  *
  * Read path-driven rather than position-driven: the plan's own note on a
  * 1000-chapter book leaves room for the chapter plan to split per volume later,
@@ -42,7 +43,14 @@ export const MIGRATION_BACKUP_PATH = '.novel/novel.v2.backup.json'
  * @returns the workspace-relative paths.
  */
 export function topLevelPaths(layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): string[] {
-  return [layout.outlineFile, layout.castFile, layout.worldFile, layout.volumeFile, layout.chapterPlanFile]
+  return [
+    layout.outlineFile,
+    layout.castFile,
+    layout.worldFile,
+    layout.volumeFile,
+    layout.chapterPlanFile,
+    layout.competitorFile,
+  ]
 }
 
 /**

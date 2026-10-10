@@ -40,6 +40,7 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import type { ComposedProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { CHAPTER_STATUSES } from '../core/types.ts'
 import type { ChapterStatus } from '../core/types.ts'
+import { draftRatioLabel } from '../core/plan.ts'
 import { describe, readProject } from './project.ts'
 import type { ProjectRead, SessionId } from './project.ts'
 import { clientRemote, NO_REMOTE_MESSAGE } from './remote.ts'
@@ -78,6 +79,11 @@ const zh = {
   'board.naming': '候选书名',
   'board.written': '已写',
   'board.updated': '更新于',
+  'board.settings': '设定确认',
+  'board.style': '文风确认',
+  'board.confirmed': '已确认',
+  'board.unconfirmed': '未确认',
+  'board.notDue': '第 1 章后',
 } as const
 
 /** The dictionary's key domain: what a `t` binding for this namespace accepts. */
@@ -120,6 +126,11 @@ const en: Record<KanbanKey, string> = {
   'board.naming': 'Naming candidates',
   'board.written': 'written',
   'board.updated': 'updated',
+  'board.settings': 'Settings sign-off',
+  'board.style': 'Voice sign-off',
+  'board.confirmed': 'confirmed',
+  'board.unconfirmed': 'not confirmed',
+  'board.notDue': 'after ch. 1',
 }
 
 /** Human labels for the lifecycle columns, in the panel's own language. */
@@ -285,12 +296,13 @@ function useProject(sessionId: SessionId, workspaceRoot: string | undefined, att
 function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode {
   const title = card.title.trim() === '' ? `第${String(card.number)}章` : card.title
   // The card shows the length the column is measured against: a first draft
-  // runs to 150% of the target so that 去 AI 化 and hand-cutting cannot leave
-  // the finished chapter short, and the trimmed chapter is measured at 100%.
+  // runs to the draft ratio of the target so that 去 AI 化 and hand-cutting
+  // cannot leave the finished chapter short, and the trimmed chapter is
+  // measured at 100%.
   const gateWords = card.lengthGate === 'draft' ? card.draftWords : card.targetWords
   const gateHint =
     card.lengthGate === 'draft' && card.draftWords > 0
-      ? `初稿目标 ${String(card.draftWords)} 字（成稿 ${String(card.targetWords)} 字的 150%）`
+      ? `初稿目标 ${String(card.draftWords)} 字（成稿 ${String(card.targetWords)} 字的 ${draftRatioLabel()}）`
       : card.targetWords > 0
         ? `成稿目标 ${String(card.targetWords)} 字（-5%/+15%）`
         : undefined
@@ -336,6 +348,15 @@ function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode 
 function Overview({ board, t }: { board: KanbanBoard; t: Translator }): React.ReactNode {
   const { progress, stage } = board
   const written = progress.chapters - progress.emptyChapters.length
+  const layers = board.confirmations.layers
+  // One row per settings layer, so the panel shows *which* layer is still open
+  // rather than a single "settings: not confirmed" an author cannot act on.
+  const layerRows: readonly { readonly label: string; readonly value: string }[] = layers.map((layer) => ({
+    label: layer.label,
+    value: layer.confirmed
+      ? t('board.confirmed')
+      : `${t('board.unconfirmed')} ${String(layer.rounds)}/${String(layer.roundsRequired)}`,
+  }))
   const stats: readonly { readonly label: string; readonly value: string }[] = [
     { label: t('board.written'), value: `${String(written)}/${String(progress.chapters)}` },
     { label: t('board.words'), value: String(progress.totalWords) },
@@ -343,6 +364,13 @@ function Overview({ board, t }: { board: KanbanBoard; t: Translator }): React.Re
     { label: t('board.world'), value: String(board.world) },
     { label: t('board.links'), value: String(board.openLinks.length) },
     { label: t('board.naming'), value: String(board.naming) },
+    ...layerRows,
+    {
+      label: t('board.style'),
+      value: board.confirmations.styleConfirmed
+        ? t('board.confirmed')
+        : board.confirmations.preProseConfirmed ? t('board.unconfirmed') : t('board.notDue'),
+    },
   ]
 
   return (

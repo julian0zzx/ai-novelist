@@ -172,6 +172,7 @@ export async function readProject(
       index.worldFile,
       index.volumeFile,
       index.chapterPlanFile,
+      index.competitorFile,
       ...channels.flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
     ]
 
@@ -181,7 +182,7 @@ export async function readProject(
     )
     for (const [path, text] of loaded) if (text !== undefined) files[path] = text
 
-    const assembled = composeContent(files, index, metadata.opening)
+    const assembled = composeContent(files, index, metadata.opening, metadata.competitors)
     return { status: 'ready', raw, metadata, state: stateOf(metadata, assembled) }
   } catch (error) {
     return { status: 'error', message: describe(error) }

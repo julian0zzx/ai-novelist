@@ -42,6 +42,7 @@
 ├── 世界观设定.md
 ├── 分卷大纲.md
 ├── 章节大纲.md
+├── 竞品拆解.md                       # 3.4 新增：一本同榜书一个 ## 小节
 └── 章节/
     ├── 第001章-山门.细纲.md          # 契约（六字段）
     └── 第001章-山门.md               # 正文
@@ -49,13 +50,15 @@
 
 ### 2.1 命名规则
 
-- 顶层五个文件名**固定中文名**，不随书名变化。
+- 顶层六个文件名**固定中文名**，不随书名变化。
 - 章节文件：`第{章号补零到 3 位}章-{净化后的标题}.md`；标题为空时 `第001章.md`。
   细纲文件在同名后加 `.细纲`，即 `第001章-山门.细纲.md`。
 - 标题净化：去掉 `/ \ : * ? " < > |`、控制字符、首尾空白与点号；截断到 40 字。
 - **稳定键是 `id`（slug），不是文件名**。`id` 写在 frontmatter 里，所以改标题导致的
   文件改名可以恢复：索引按 `id` 定位，读目录时按 frontmatter 的 `id` 认领文件。
 - 章号或标题变化时，工具负责 `rename` 文件并更新索引；`章节大纲.md` 同步刷新。
+- `竞品拆解.md` 是唯一"缺失不等于空"的顶层文件：在它存在之前录入的竞品拆解留在
+  `novel.json` 里，读取时以文件为准、文件无条目则回退到元数据，避免研究资料丢失。
 
 ### 2.2 章节文件规模说明
 
@@ -83,6 +86,11 @@ updatedAt: 2026-09-13T14:20:34.921Z
 ## 一句话
 
 （logline）
+
+## 完整大纲
+
+（fullOutline —— 3.4 新增：三幕主线、核心剧情走向、全局伏笔、大高潮节点、终极冲突、
+结局框架、全书钩子体系。篇幅目标 ≈ 总字数 ÷ 100，可用 novel_plan 的 targetWords 覆盖）
 
 ## 三幕
 
@@ -151,10 +159,13 @@ climax: 试剑台上断剑认主
 endHook: 钟声之后，山门后山传来父亲的剑鸣
 chapters: [1, 30]
 ```
+
+（detail —— 3.4 新增的卷内节奏与阶段推进，篇幅目标 ≈ 本卷字数 ÷ 50）
 ````
 
 - `number` 必填且为正整数；`chapters` 为闭区间数组，缺省 `[]`（该卷章数未定）。
 - 卷按 `number` 排序；重复 `number` 视为覆盖同一卷。
+- `detail` 是条目正文（```yaml 块之后的散文），显式 `detail:` 键优先于正文，两者都保留时以键在前拼接。
 
 ### 3.5 `章节大纲.md`
 
@@ -242,6 +253,41 @@ updatedAt: 2026-09-13T14:20:34.921Z
 （正文，原样保留换行；第一个 `# ` 一级标题之前的内容不算正文）
 ```
 
+### 3.8 `竞品拆解.md`（3.4 新增）
+
+与 `人物设定.md` / `世界观设定.md` 同形：一本同榜书一个 `##` 小节，小节标题是书名，
+下面一个 ```yaml 块带全部字段。竞品研究是要反复回看的资料，所以它必须落在作者能打开的
+文件里，而不是只存在 `novel.json`。
+
+````markdown
+# 竞品拆解
+
+## 断剑
+
+```yaml
+id: 断剑
+title: 断剑
+tags: ["玄幻", "热血"]
+blurb: 少年持断剑上山。
+openingEvent: 第一章：山门前的拦路
+goldenFinger: 断剑认主
+protagonistDesire: 查明父亲死因
+antagonistMotive: 长老要压住旧案
+shuangFrequency: 每 3 章一次小爽点
+emotionCurve: 压抑—抬头—被认可
+paywallPoint: 第 30 章试剑台
+chapterHooks: 章末必有未答之问
+commentKeywords: ["爽", "节奏快"]
+takeaway: 开篇三章内必须给一次小胜
+```
+````
+
+- 十四个键全在 ```yaml 块里，reader 与 writer 共用同一份键表（`COMPETITOR_KEYS`），
+  否则写出去而读不回来的字段会在下一次编辑时静默丢失。
+- ```yaml 块之后的散文并入 `takeaway`：那是在条目旁边手写的批注，也是研究。
+- 重复 `id` 是**报错**，不是后者覆盖——`id` 是索引与寻址的键。
+- 文件不存在或没有条目时，`competitors[]` 回退到 `novel.json` 里早先的记录。
+
 - `status` 取值沿用 `CHAPTER_STATUSES`（`planned|drafting|revised|final`）。
 - **`wordCount` 是派生值**：工具读入时按正文重算，写文件时按重算结果回填；人不填也不影响。
   人若填了错值，以重算为准（不做"文件为准"的例外——它是派生量，不是内容）。
@@ -256,10 +302,11 @@ updatedAt: 2026-09-13T14:20:34.921Z
 | `platform` `pitch` `baselines` `writing` | `.novel/novel.json` | 商业框架、校准中位、写作参数 |
 | `readings[]` `iterations[]` `evaluations[]` `launchDecisions[]` `reviews[]` | `.novel/novel.json` | 反馈与证据链：要被阈值计算，必须原子（3.2 前 `evaluations[]` 名为 `verifications[]`，读取时兼容） |
 | `links{}`（伏笔台账） | `.novel/novel.json` | "承诺"带状态与回收章，参与卷末门禁 |
-| `logline` `acts[]` `minimal` `fullOutlineDone` | `全书大纲.md` | |
+| `logline` `fullOutline` `acts[]` `minimal` `fullOutlineDone` | `全书大纲.md` | `fullOutline` 是 3.4 新增的 `## 完整大纲` 正文（篇幅目标 ≈ 总字数/100） |
 | 人物条目 | `人物设定.md` | |
 | 世界观条目 | `世界观设定.md` | |
-| 分卷条目 | `分卷大纲.md` | |
+| 分卷条目（含 `detail` 卷内节奏） | `分卷大纲.md` | `detail` 是 3.4 新增，篇幅目标 ≈ 本卷字数/50 |
+| 竞品拆解条目 | `竞品拆解.md` | 3.4 新增；文件无条目时回退到 `novel.json` 的 `competitors[]` |
 | 章号、标题、所属卷、目标字数、节拍（章级一句话） | `章节大纲.md` | 计划层 |
 | 六字段契约、`beats`、`waived`、`delivered` | `章节/*.细纲.md` | 契约层 |
 | 正文、`status` | `章节/*.md` | 产出层（`wordCount` 是派生量） |
@@ -293,6 +340,7 @@ updatedAt: 2026-09-13T14:20:34.921Z
     "worldFile": "世界观设定.md",
     "volumeFile": "分卷大纲.md",
     "chapterPlanFile": "章节大纲.md",
+    "competitorFile": "竞品拆解.md",
     "chapters": {
       "chapter-1": {
         "number": 1,
@@ -310,7 +358,7 @@ updatedAt: 2026-09-13T14:20:34.921Z
 }
 ```
 
-- 顶层五个文件名可被配置覆盖（`Config.storageLayout`），但默认如上；索引是**唯一**记录
+- 顶层六个文件名可被配置覆盖（`Config.storageLayout`），但默认如上；索引是**唯一**记录
   实际路径的地方。
 - `hash` 的用途是**跳过未变文件、发现外部改动**，不是冲突拦截（冲突策略是"文件为准"）。
 - 元数据文档**仍然**是一次版本守卫写（`replaceIfVersion`），因为它是索引与证据链的家。

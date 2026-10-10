@@ -17,7 +17,7 @@
 import { CHAPTER_STATUSES } from '../core/types.ts'
 import type { Chapter, ChapterStatus, NovelState } from '../core/types.ts'
 import { draftTargetWords, lengthStageFor, missingContract } from '../core/plan.ts'
-import { assessStage, progressOf } from '../core/novel.ts'
+import { assessStage, confirmationStanding, progressOf } from '../core/novel.ts'
 
 /** One chapter as the board shows it; every field is a fact about the state. */
 export interface BoardCard {
@@ -35,7 +35,7 @@ export interface BoardCard {
   readonly wordCount: number
   /** Target length, 0 when the plan set none. */
   readonly targetWords: number
-  /** First-draft target (150% of {@link targetWords}), 0 when unset. */
+  /** First-draft target (the draft ratio of {@link targetWords}), 0 when unset. */
   readonly draftWords: number
   /** Which length gate the card's stage is measured against. */
   readonly lengthGate: 'draft' | 'final'
@@ -81,6 +81,14 @@ export interface KanbanBoard {
   readonly openLinks: readonly { readonly id: string; readonly note: string; readonly dueAt: string }[]
   /** Open promises whose due chapter is already written. */
   readonly overdueLinks: readonly string[]
+  /**
+   * The author checkpoints, layer by layer.
+   *
+   * On the board because they are the project's most consequential open items:
+   * the premise layer blocks all prose, the layers after it must be settled in
+   * order, and the style sign-off blocks everything after chapter 1.
+   */
+  readonly confirmations: ReturnType<typeof confirmationStanding>
 }
 
 /**
@@ -112,6 +120,7 @@ export function boardOf(state: NovelState): KanbanBoard {
     naming: state.naming.length,
     openLinks,
     overdueLinks: [...overdue],
+    confirmations: confirmationStanding(state),
   }
 }
 

@@ -44,7 +44,7 @@ describe('NovelStore', () => {
     await store.create(state)
     const read = await store.read()
     // The content half round-trips through the files; the index gains the hashes
-    // of the five files the create wrote, which is the only difference from the
+    // of the six files the create wrote, which is the only difference from the
     // in-memory state that was handed in.
     expect(read).toEqual({
       ...state,
@@ -55,6 +55,7 @@ describe('NovelStore', () => {
       '人物设定.md',
       '全书大纲.md',
       '分卷大纲.md',
+      '竞品拆解.md',
       '章节大纲.md',
     ])
     const onDisk = JSON.parse(await readFile(docPath(), 'utf8')) as { meta: { title: string } }

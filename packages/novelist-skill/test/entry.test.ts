@@ -70,6 +70,7 @@ describe('apply', () => {
     expect(registered.map((definition) => definition.name).sort()).toEqual([
       'novel_assess',
       'novel_bible',
+      'novel_confirm',
       'novel_init',
       'novel_plan',
       'novel_repo',

@@ -20,6 +20,7 @@ import {
   type Premise,
   type WritingPlan,
 } from './types.ts'
+import { confirmationStanding } from './novel.ts'
 
 /** One required field that is still empty, with where to fill it. */
 export interface MissingField {
@@ -229,7 +230,7 @@ export const WRITING_PLAN_QUESTIONS: readonly PlanQuestion[] = [
   {
     key: 'chapterWords',
     question: '单章目标多少字？',
-    decides: '每章细纲的目标字数、初稿 150% 与成稿 -5%/+15% 的长度核对',
+    decides: '每章细纲的目标字数、初稿 125% 与成稿 -5%/+15% 的长度核对',
   },
   {
     key: 'volumes',
@@ -312,7 +313,7 @@ export function writingPlanGaps(writing: WritingPlan): MissingField[] {
  *
  * `volumes: 0` is the author's 不分卷 answer and `-1` is "not asked", so the two
  * render differently — a plan nobody has settled must not read like one that has.
- * The per-chapter draft target rides along, because the 150% rule is only
+ * The per-chapter draft target rides along, because the draft ratio is only
  * followed if the number is visible at the moment a chapter is written.
  *
  * @param writing - the writing plan.
@@ -326,7 +327,7 @@ export function describeWritingPlan(writing: WritingPlan): string {
   ]
   if (writing.totalChapters > 0) parts.push(`共约 ${String(writing.totalChapters)} 章`)
   if (writing.chapterWords > 0) {
-    parts.push(`初稿按 ${String(draftTargetWords(writing.chapterWords))} 字/章（150%）`)
+    parts.push(`初稿按 ${String(draftTargetWords(writing.chapterWords))} 字/章（${draftRatioLabel()}）`)
   }
   return parts.join(' · ')
 }
@@ -431,7 +432,159 @@ export function volumeLengthNote(length: number, writing: WritingPlan, tolerance
   )
 }
 
-// ── the two length gates: 初稿 150%, 成稿 100% ────────────────────────────────
+// ── planning length targets: how long each layer of outline should be ────────
+
+/**
+ * The three planning layers whose length the SOP budgets as a ratio.
+ *
+ * Planning has no fixed length the way a chapter does, so "写得够不够" was
+ * previously unanswerable: a 200-character 全书大纲 and a 20,000-character one
+ * both passed every check the tool had. Each layer is instead budgeted as a
+ * fraction of the prose it will govern, which is the only quantity that makes
+ * the number scale with the book.
+ */
+export type OutlineLayer = 'full' | 'volume' | 'chapter'
+
+/**
+ * How long each planning layer should run, as a fraction of the words it governs.
+ *
+ * These are SOP constants, not knobs: 全书大纲 at 1/100 of the whole book,
+ * 分卷大纲 at 1/50 of the volume, 章节大纲 at 1/10 of the chapter. They are
+ * deliberately *ratios* rather than word counts because the book's length is the
+ * author's answer from `novel_init`, and a hard-coded "10000 字" would be wrong
+ * for a 30 万字 short serial and a 300 万字 paid epic alike.
+ */
+export const OUTLINE_LAYER_RATIOS: Readonly<Record<OutlineLayer, number>> = {
+  full: 1 / 100,
+  volume: 1 / 50,
+  chapter: 1 / 10,
+}
+
+/** The label the tools print for one layer's ratio. */
+export function outlineRatioLabel(layer: OutlineLayer): string {
+  const ratio = OUTLINE_LAYER_RATIOS[layer]
+  return `1/${String(Math.round(1 / ratio))}`
+}
+
+/** A layer's suggested length and how the current draft compares with it. */
+export interface LayerLength {
+  /** The layer being measured. */
+  readonly layer: OutlineLayer
+  /** The length the SOP's ratio implies, in characters. */
+  readonly target: number
+  /** The layer's current length, in characters. */
+  readonly actual: number
+  /** Which ratio produced the target, for example `1/100`. */
+  readonly ratio: string
+  /** Whether the layer has reached its target. */
+  readonly enough: boolean
+  /** One line naming the target and the ratio behind it. */
+  readonly note: string
+}
+
+/**
+ * The characters the SOP's ratio asks one planning layer to carry.
+ *
+ * A layer whose source length is unknown has no target: the ratio is only
+ * meaningful once the author has answered the length questions, and inventing a
+ * denominator would produce a number nobody agreed to.
+ *
+ * @param governs - the prose length the layer governs, in characters; 0 when unknown.
+ * @param layer - which layer.
+ * @param override - an explicit target, which always wins over the ratio.
+ * @returns the target, or 0 when the governing length is unknown and unset.
+ */
+export function layerWordTarget(governs: number, layer: OutlineLayer, override = 0): number {
+  if (override > 0) return Math.round(override)
+  if (governs <= 0) return 0
+  return Math.max(1, Math.round(governs * OUTLINE_LAYER_RATIOS[layer]))
+}
+
+/**
+ * Compare one planning layer's length against the target the SOP's ratio implies.
+ *
+ * This is advisory, never a gate: a short outline is often short for a reason,
+ * and the SOP's own gates are the ones that must not be watered down. What the
+ * comparison buys is that "大纲写得太薄" becomes a number both the author and the
+ * model can see, instead of a feeling either of them can talk past.
+ *
+ * @param layer - which layer.
+ * @param actual - the layer's current length in characters.
+ * @param governs - the prose length the layer governs; 0 when unknown.
+ * @param override - an explicit target replacing the ratio.
+ * @returns the comparison, or `undefined` when there is no target to compare with.
+ */
+export function layerLengthCheck(
+  layer: OutlineLayer,
+  actual: number,
+  governs: number,
+  override = 0,
+): LayerLength | undefined {
+  const target = layerWordTarget(governs, layer, override)
+  if (target <= 0) return undefined
+  const ratio = override > 0 ? '显式目标' : outlineRatioLabel(layer)
+  const enough = actual >= target
+  return {
+    layer,
+    target,
+    actual,
+    ratio,
+    enough,
+    note: enough
+      ? `${layerLabel(layer)} ${String(actual)} 字已达到目标 ${String(target)} 字（${ratio}）`
+      : `${layerLabel(layer)} ${String(actual)} 字低于目标 ${String(target)} 字（${ratio}）：内容够撑起它要管的正文再往下走`,
+  }
+}
+
+/** The layer as the tools name it in Chinese. */
+function layerLabel(layer: OutlineLayer): string {
+  if (layer === 'full') return '全书大纲'
+  if (layer === 'volume') return '分卷大纲'
+  return '章节大纲'
+}
+
+/**
+ * How many characters one chapter contract should carry, from its chapter target.
+ *
+ * @param chapterWords - the chapter's target length; 0 when unknown.
+ * @returns the suggested contract length, or 0 when unknown.
+ */
+export function chapterOutlineTarget(chapterWords: number): number {
+  return layerWordTarget(chapterWords, 'chapter')
+}
+
+/**
+ * The contract text a chapter already carries, in characters.
+ *
+ * Beats are excluded because they live in the plan table rather than the
+ * contract body, and a waiver marker is not prose the author wrote.
+ *
+ * @param chapter - the chapter to measure.
+ * @returns the character count of the contract's own text.
+ */
+export function chapterContractLength(chapter: Chapter): number {
+  return [
+    chapter.plotTask,
+    chapter.conflict,
+    chapter.emotionalPayoff,
+    chapter.infoGap,
+    chapter.hook,
+  ].reduce((total, field) => total + field.trim().length, 0)
+}
+
+/**
+ * The words per volume the plan implies, for a volume-outline length target.
+ *
+ * @param writing - the writing plan.
+ * @returns the characters one volume is expected to carry, or 0 when unknown.
+ */
+export function volumeWordTarget(writing: WritingPlan): number {
+  const perVolume = chaptersPerVolume(writing.totalChapters, writing.volumes)
+  if (perVolume <= 0 || writing.chapterWords <= 0) return 0
+  return perVolume * writing.chapterWords
+}
+
+// ── the two length gates: 初稿 125%, 成稿 100% ────────────────────────────────
 
 /**
  * How much longer the first draft runs than the finished chapter.
@@ -439,11 +592,27 @@ export function volumeLengthNote(length: number, writing: WritingPlan, tolerance
  * 去 AI 化 and manual trimming reliably delete a large share of a draft — a
  * web-novel edit is mostly cutting. A first draft written straight to the
  * finished target therefore arrives at publication short, so the SOP writes
- * every first draft to 150% of the chapter target and trims it back into the
+ * every first draft to 125% of the chapter target and trims it back into the
  * finished window afterwards. This is a SOP constant, not an implementation
- * knob: changing it changes what "写完一章" means.
+ * knob: changing it changes what "写完一章" means. Every percentage the tools
+ * print is derived from it through {@link draftRatioLabel}, so the number lives
+ * here and nowhere else.
  */
-export const DRAFT_TARGET_RATIO = 1.5
+export const DRAFT_TARGET_RATIO = 1.25
+
+/**
+ * The draft ratio in the notation the tools print.
+ *
+ * Derived rather than written out, so `125%` in the runtime context, the length
+ * report and the planning output cannot drift from the constant that decides
+ * which gate a draft is held to.
+ *
+ * @param ratio - draft-to-final ratio, default {@link DRAFT_TARGET_RATIO}.
+ * @returns the label, for example `125%`.
+ */
+export function draftRatioLabel(ratio = DRAFT_TARGET_RATIO): string {
+  return `${String(Math.round(ratio * 100))}%`
+}
 
 /** Which of a chapter's two length gates a draft is measured against. */
 export type LengthStage = 'draft' | 'final'
@@ -466,9 +635,9 @@ export interface LengthTolerance {
 /**
  * The tolerance every length gate applies: −5% / +15%.
  *
- * Both gates use it — a first draft that lands under 150% misses the point of
- * writing long, and a finished chapter that lands under the target has already
- * lost the length the reader paid for.
+ * Both gates use it — a first draft that lands under the draft target (125%)
+ * misses the point of writing long, and a finished chapter that lands under the
+ * target has already lost the length the reader paid for.
  */
 export const LENGTH_TOLERANCE: LengthTolerance = { under: 0.05, over: 0.15 }
 
@@ -488,10 +657,11 @@ export function draftTargetWords(targetWords: number, ratio = DRAFT_TARGET_RATIO
  * Which length gate a chapter at this lifecycle stage is measured against.
  *
  * A `planned` or `drafting` chapter is still a first draft and is held to the
- * 150% target; `revised` and `final` have already been through 去 AI 化, so the
+ * draft target (125% of the finished one); `revised` and `final` have already
+ * been through 去 AI 化, so the
  * trimming has happened and they are held to the finished target. Measuring a
- * trimmed chapter against 150% would reward padding, and measuring a first
- * draft against 100% would demand the trim before there is anything to trim.
+ * trimmed chapter against the draft target would reward padding, and measuring a
+ * first draft against 100% would demand the trim before there is anything to trim.
  *
  * @param status - the chapter's lifecycle stage.
  * @returns `draft` or `final`.
@@ -547,7 +717,7 @@ export function lengthToleranceLabel(tolerance: number | Partial<LengthTolerance
 export interface LengthCheck {
   /** Which gate was applied. */
   readonly stage: LengthStage
-  /** The target compared against: the 150% draft target, or the finished one. */
+  /** The target compared against: the draft target (125%), or the finished one. */
   readonly target: number
   /** The chapter's current length. */
   readonly actual: number
@@ -573,7 +743,7 @@ export interface LengthCheckOptions {
  * Whether a chapter's length met the gate that applies to it, within tolerance.
  *
  * Two gates exist because there are two moments: the first draft is written long
- * (150%) so that 去 AI 化 and hand-cutting cannot leave the finished chapter
+ * (125%) so that 去 AI 化 and hand-cutting cannot leave the finished chapter
  * short, and the finished chapter must land back inside the target the user gave
  * — never more than 5% under it, up to 15% over. This reports the comparison
  * without enforcing it, because a chapter that runs long for a reason is a
@@ -598,13 +768,13 @@ export function lengthCheck(chapter: Chapter, options: number | LengthCheckOptio
   const note = gate === 'draft'
     ? within
       ? `初稿 ${String(actual)} 字在初稿目标 ${String(target)} 字内`
-        + `（成稿目标 ${String(chapter.targetWords)} 的 150%，允许 ${range}）`
+        + `（成稿目标 ${String(chapter.targetWords)} 的 ${draftRatioLabel()}，允许 ${range}）`
       : actual < window.low
         ? `初稿 ${String(actual)} 字低于初稿目标 ${String(target)} 字`
-          + `（成稿目标 ${String(chapter.targetWords)} 的 150%，允许 ${range}）：`
-          + '去 AI 化与手改会成段删减，初稿要按 150% 写才留得住成稿长度'
+          + `（成稿目标 ${String(chapter.targetWords)} 的 ${draftRatioLabel()}，允许 ${range}）：`
+          + `去 AI 化与手改会成段删减，初稿要按 ${draftRatioLabel()} 写才留得住成稿长度`
         : `初稿 ${String(actual)} 字超过初稿目标 ${String(target)} 字`
-          + `（成稿目标 ${String(chapter.targetWords)} 的 150%，允许 ${range}）：`
+          + `（成稿目标 ${String(chapter.targetWords)} 的 ${draftRatioLabel()}，允许 ${range}）：`
           + '去 AI 化阶段压缩回成稿区间'
     : within
       ? `成稿 ${String(actual)} 字在目标 ${String(chapter.targetWords)} 字的 ${percent} 内（允许 ${range}）`
@@ -615,8 +785,8 @@ export function lengthCheck(chapter: Chapter, options: number | LengthCheckOptio
           + `超过上限（目标 ${percent}）就在去 AI 化阶段压回`
   const short = gate === 'draft'
     ? within
-      ? `初稿 ${String(actual)} 字达到初稿目标 ${String(target)} 字（成稿的 150%）`
-      : `初稿 ${String(actual)} 字${actual < window.low ? '不足' : '超过'}初稿目标 ${String(target)} 字（成稿的 150%）`
+      ? `初稿 ${String(actual)} 字达到初稿目标 ${String(target)} 字（成稿的 ${draftRatioLabel()}）`
+      : `初稿 ${String(actual)} 字${actual < window.low ? '不足' : '超过'}初稿目标 ${String(target)} 字（成稿的 ${draftRatioLabel()}）`
     : within
       ? `成稿 ${String(actual)} 字在目标 ${String(chapter.targetWords)} 字 ${percent} 内`
       : `成稿 ${String(actual)} 字${actual < window.low ? '低于' : '高于'}目标 ${String(chapter.targetWords)} 字（${percent}）`
@@ -650,6 +820,16 @@ export function rhythmExpectation(chapter: number, volumeLength: number): string
 export function openingPackageGaps(state: NovelState): MissingField[] {
   const gaps: MissingField[] = []
   const chapterPlans = Object.values(state.chapters).filter((chapter) => chapter.body.trim() === '')
+  // The author's sign-off on the setup belongs before the opening package: an
+  // opening built on a setup nobody approved is work that gets thrown away, and
+  // `novel_write` refuses prose while this one is open.
+  if (!confirmationStanding(state).settingsConfirmed) {
+    gaps.push({
+      key: 'settings-confirmation',
+      requirement: '设定未经用户确认（先多轮讨论，再由用户确认）',
+      fill: 'novel_confirm operation="discuss"/"confirm" kind="settings"',
+    })
+  }
   if (state.outline.logline.trim() === '' && state.outline.minimal.trim() === '') {
     gaps.push({ key: 'minimal-outline', requirement: '最小可行大纲', fill: 'novel_plan operation="outline"' })
   }

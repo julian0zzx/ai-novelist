@@ -513,6 +513,7 @@ export class NovelStore {
       indexed.worldFile,
       indexed.volumeFile,
       indexed.chapterPlanFile,
+      indexed.competitorFile,
       ...Object.values(indexed.chapters).flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
     ]
     for (const path of new Set(paths.filter((path) => path !== ''))) {
@@ -526,7 +527,7 @@ export class NovelStore {
 
     let assembled: ReturnType<typeof composeContent>
     try {
-      assembled = composeContent(files, indexed, outlineFallback)
+      assembled = composeContent(files, indexed, outlineFallback, metadata.competitors)
     } catch (error) {
       throw asStoreError(error)
     }
@@ -1066,6 +1067,7 @@ export class NovelStore {
       [index.worldFile]: parts.world,
       [index.volumeFile]: parts.volumes,
       [index.chapterPlanFile]: parts.chapterPlan,
+      [index.competitorFile]: parts.competitors,
     }
     for (const [id, chapter] of Object.entries(parts.chapters)) {
       const recorded = index.chapters[id]

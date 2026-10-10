@@ -4,19 +4,25 @@ import {
   LENGTH_BENCHMARKS,
   LENGTH_TOLERANCE,
   WRITING_PLAN_QUESTIONS,
+  chapterContractLength,
+  chapterOutlineTarget,
   chaptersPerVolume,
   countWords,
   derivedTotalChapters,
   describeWritingPlan,
   draftTargetWords,
   emptyWriting,
+  layerLengthCheck,
+  layerWordTarget,
   lengthCheck,
   lengthStageFor,
   lengthToleranceLabel,
   lengthWindow,
   normalizeWritingPlan,
+  outlineRatioLabel,
   rhythmExpectation,
   volumeLengthNote,
+  volumeWordTarget,
   writingPlanConflicts,
   writingPlanGaps,
 } from '../src/core/index.ts'
@@ -60,7 +66,7 @@ describe('the writing plan questions', () => {
     expect(describeWritingPlan(emptyWriting())).toBe('总字数未问 · 单章字数未问 · 是否分卷未问')
     const answered = { ...emptyWriting(), targetWords: 1200000, chapterWords: 3000, volumes: 12, totalChapters: 400 }
     expect(describeWritingPlan(answered)).toBe(
-      '总字数 1200000 · 单章 3000 字 · 12 卷 · 共约 400 章 · 初稿按 4500 字/章（150%）',
+      '总字数 1200000 · 单章 3000 字 · 12 卷 · 共约 400 章 · 初稿按 3750 字/章（125%）',
     )
   })
 })
@@ -136,7 +142,7 @@ describe('volume length and rhythm', () => {
  * published on target.
  *
  * Editing a web-novel chapter is mostly cutting, so a draft written to the
- * finished target comes out short. The 150% draft gate exists to absorb that,
+ * finished target comes out short. The 125% draft gate exists to absorb that,
  * and the finished gate is what the chapter length the user gave actually means:
  * -5%/+15%, asymmetric because falling under the promised length is the failure
  * while an overrun can still be cut. These specs pin both gates, their edges,
@@ -175,12 +181,12 @@ describe('the two length gates', () => {
     delivered: [],
   })
 
-  it('derives the first draft from the finished target, at 150%', () => {
-    expect(DRAFT_TARGET_RATIO).toBe(1.5)
-    expect(draftTargetWords(3000)).toBe(4500)
-    expect(draftTargetWords(2500)).toBe(3750)
+  it('derives the first draft from the finished target, at 125%', () => {
+    expect(DRAFT_TARGET_RATIO).toBe(1.25)
+    expect(draftTargetWords(3000)).toBe(3750)
+    expect(draftTargetWords(2500)).toBe(3125)
     // Rounded, because half a character is not a length anyone can write to.
-    expect(draftTargetWords(2333)).toBe(3500)
+    expect(draftTargetWords(2333)).toBe(2916)
     // No target, no draft line: an unanswered question stays unanswered.
     expect(draftTargetWords(0)).toBe(0)
   })
@@ -192,13 +198,13 @@ describe('the two length gates', () => {
     expect(lengthStageFor('final')).toBe('final')
   })
 
-  it('passes a 4400-character first draft it would fail as a finished chapter', () => {
-    const draft = chapter('drafting', 3000, 4400)
+  it('passes a 4200-character first draft it would fail as a finished chapter', () => {
+    const draft = chapter('drafting', 3000, 4200)
     const check = lengthCheck(draft)
     expect(check?.stage).toBe('draft')
-    expect(check?.target).toBe(4500)
+    expect(check?.target).toBe(3750)
     expect(check?.within).toBe(true)
-    expect(check?.note).toContain('150%')
+    expect(check?.note).toContain('125%')
     // The same prose misses the finished window: that gap is the room 去 AI 化
     // and hand-cutting are supposed to consume.
     expect(lengthCheck(draft, { stage: 'final' })?.within).toBe(false)
@@ -207,13 +213,13 @@ describe('the two length gates', () => {
   it('calls a draft written to the finished target short, in the gate’s own words', () => {
     const check = lengthCheck(chapter('drafting', 3000, 3000))
     expect(check?.within).toBe(false)
-    expect(check?.note).toMatch(/低于初稿目标 4500 字/)
-    expect(check?.note).toMatch(/初稿要按 150% 写/)
+    expect(check?.note).toMatch(/低于初稿目标 3750 字/)
+    expect(check?.note).toMatch(/初稿要按 125% 写/)
     // The summary line keeps the verdict and drops the reasoning.
-    expect(check?.short).toBe('初稿 3000 字不足初稿目标 4500 字（成稿的 150%）')
+    expect(check?.short).toBe('初稿 3000 字不足初稿目标 3750 字（成稿的 125%）')
   })
 
-  it('judges a trimmed chapter on the finished target and stops asking for 150%', () => {
+  it('judges a trimmed chapter on the finished target and stops asking for 125%', () => {
     const trimmed = lengthCheck(chapter('revised', 3000, 3000))
     expect(trimmed?.stage).toBe('final')
     expect(trimmed?.target).toBe(3000)
@@ -229,10 +235,11 @@ describe('the two length gates', () => {
     expect(LENGTH_TOLERANCE).toEqual({ under: 0.05, over: 0.15 })
     expect(lengthToleranceLabel()).toBe('-5%/+15%')
     expect(lengthWindow(3000)).toEqual({ low: 2850, high: 3450 })
-    expect(lengthWindow(4500).low).toBeCloseTo(4275)
-    expect(lengthWindow(4500).high).toBeCloseTo(5175)
-    expect(lengthCheck(chapter('drafting', 3000, 4275))?.within).toBe(true)
-    expect(lengthCheck(chapter('drafting', 3000, 4274))?.within).toBe(false)
+    // The draft gate is the same window around the draft target, so its edges
+    // move with the ratio instead of sitting at the finished target's.
+    expect(lengthWindow(3750)).toEqual({ low: 3563, high: 4313 })
+    expect(lengthCheck(chapter('drafting', 3000, 3563))?.within).toBe(true)
+    expect(lengthCheck(chapter('drafting', 3000, 3562))?.within).toBe(false)
     expect(lengthCheck(chapter('final', 3000, 2850))?.within).toBe(true)
     expect(lengthCheck(chapter('final', 3000, 2849))?.within).toBe(false)
   })
@@ -254,5 +261,95 @@ describe('the two length gates', () => {
     // 尚无正文 separately.
     expect(lengthCheck(chapter('drafting', 3000, 0))).toBeUndefined()
     expect(lengthCheck(chapter('drafting', 0, 3000))).toBeUndefined()
+  })
+})
+
+/**
+ * The planning layers' own length budgets.
+ *
+ * A chapter's length was checkable from the start; an *outline's* was not, so a
+ * two-line 全书大纲 and a twenty-thousand-character one passed the same checks.
+ * The SOP budgets each layer as a fraction of the prose it governs — 1/100,
+ * 1/50, 1/10 — which is the only form of the number that scales from a 30 万字
+ * short serial to a 300 万字 paid epic. These specs pin the arithmetic and, more
+ * importantly, that a missing length answer produces no target rather than a
+ * made-up one.
+ */
+describe('the planning layers\' length budgets', () => {
+  it('derives each layer\'s default from the length it governs', () => {
+    // 100 万字全书 → 1 万字全书大纲.
+    expect(layerWordTarget(1_000_000, 'full')).toBe(10_000)
+    // 20 万字一卷 → 4000 字分卷大纲.
+    expect(layerWordTarget(200_000, 'volume')).toBe(4000)
+    // 3000 字一章 → 300 字章节大纲.
+    expect(layerWordTarget(3000, 'chapter')).toBe(300)
+    expect(chapterOutlineTarget(3000)).toBe(300)
+  })
+
+  it('labels the ratio it applied, so the number is auditable', () => {
+    expect(outlineRatioLabel('full')).toBe('1/100')
+    expect(outlineRatioLabel('volume')).toBe('1/50')
+    expect(outlineRatioLabel('chapter')).toBe('1/10')
+    expect(layerLengthCheck('full', 0, 1_000_000)?.ratio).toBe('1/100')
+  })
+
+  it('lets an explicit target override the ratio', () => {
+    expect(layerWordTarget(1_000_000, 'full', 2000)).toBe(2000)
+    const check = layerLengthCheck('full', 2000, 1_000_000, 2000)
+    expect(check?.target).toBe(2000)
+    expect(check?.enough).toBe(true)
+    expect(check?.ratio).toBe('显式目标')
+  })
+
+  it('stays silent when the length it would measure against was never asked', () => {
+    // No 总字数 answer means no ratio to apply — inventing a denominator is how
+    // the tool would start asserting numbers the author never gave.
+    expect(layerWordTarget(0, 'full')).toBe(0)
+    expect(layerLengthCheck('full', 12_000, 0)).toBeUndefined()
+    expect(volumeWordTarget(emptyWriting())).toBe(0)
+  })
+
+  it('reports a layer below its target as short, and never as a pass', () => {
+    const short = layerLengthCheck('full', 300, 1_000_000)
+    expect(short?.enough).toBe(false)
+    expect(short?.note).toMatch(/低于目标 10000 字/)
+    expect(short?.note).toMatch(/1\/100/)
+
+    const enough = layerLengthCheck('full', 10_000, 1_000_000)
+    expect(enough?.enough).toBe(true)
+    expect(enough?.note).toMatch(/已达到目标 10000 字/)
+  })
+
+  it('measures a chapter contract by its own text, not by its beats or waivers', () => {
+    const chapter: Chapter = {
+      id: 'chapter-1',
+      number: 1,
+      title: '',
+      synopsis: '',
+      status: 'planned',
+      body: '',
+      wordCount: 0,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      volume: 0,
+      plotTask: '剧情任务十四个字',
+      conflict: '冲突八个字',
+      emotionalPayoff: '',
+      infoGap: '',
+      beats: ['shuang', 'sweet', 'burn'],
+      hook: '',
+      targetWords: 3000,
+      waived: { emotionalPayoff: '作者显式放弃' },
+      delivered: [],
+    }
+    // '剧情任务十四个字' is 8 characters; '冲突八个字' is 5. Beats and the waiver
+    // reason are not prose the author wrote into the contract.
+    expect(chapterContractLength(chapter)).toBe(13)
+  })
+
+  it('derives the volume budget from chapters-per-volume and chapter length', () => {
+    const writing = { ...emptyWriting(), totalChapters: 400, chapterWords: 3000, volumes: 10 }
+    // 40 章 × 3000 字 = 12 万字一卷 → 2400 字分卷大纲.
+    expect(volumeWordTarget(writing)).toBe(120_000)
+    expect(layerWordTarget(volumeWordTarget(writing), 'volume')).toBe(2400)
   })
 })

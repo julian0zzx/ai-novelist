@@ -17,7 +17,9 @@
 
 - insert:
     # The host half: provides the `novelState` service and registers the eight
-    # computing `novel_*` tools on `ctx.tools`, plus `novel_review` when the
+    # computing `novel_*` tools on `ctx.tools`, plus `novel_confirm` (the author
+    # checkpoints, which every call's envelope reports against) and
+    # `novel_review` — the one model-backed tool, registered only when the
     # profile has a model route. `workspaceRoot` defaults to the agent's working
     # directory; set it here to pin one project directory instead:
     #

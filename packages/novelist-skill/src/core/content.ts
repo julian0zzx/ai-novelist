@@ -27,6 +27,7 @@ import {
   type Chapter,
   type ChapterStatus,
   type Character,
+  type Competitor,
   type ContractField,
   type NovelState,
   type Outline,
@@ -105,6 +106,8 @@ export const CHAPTER_PLAN_SECTIONS = {
 export interface OutlineFileContent {
   /** One-sentence story. */
   readonly logline: string
+  /** The whole-book detailed outline (SOP step 15). */
+  readonly fullOutline: string
   /** Act structure. */
   readonly acts: readonly string[]
   /** The minimal viable outline. */
@@ -112,6 +115,14 @@ export interface OutlineFileContent {
   /** Whether the full-outline stage is confirmed. */
   readonly fullOutlineDone: boolean
 }
+
+/** The `##` headings `全书大纲.md` fixes, in file order. */
+export const OUTLINE_SECTIONS = {
+  logline: '一句话',
+  full: '完整大纲',
+  acts: '三幕',
+  minimal: '最小可行大纲',
+} as const
 
 /**
  * Parse `全书大纲.md`.
@@ -125,9 +136,10 @@ export function parseOutlineFile(raw: string, where: string): OutlineFileContent
   const sections = sectionsOf(raw, where)
   const front = docFrontmatter(raw, where)
   return {
-    logline: sectionText(sections, '一句话'),
-    acts: sectionList(sections, '三幕'),
-    minimal: sectionText(sections, '最小可行大纲'),
+    logline: sectionText(sections, OUTLINE_SECTIONS.logline),
+    fullOutline: sectionText(sections, OUTLINE_SECTIONS.full),
+    acts: sectionList(sections, OUTLINE_SECTIONS.acts),
+    minimal: sectionText(sections, OUTLINE_SECTIONS.minimal),
     fullOutlineDone: frontBool(front, 'fullOutlineDone', false),
   }
 }
@@ -144,9 +156,10 @@ export function renderOutlineFile(outline: OutlineFileContent): string {
   // only when their bytes change — a timestamp no one reads would make every
   // unrelated edit rewrite the whole outline.
   return renderDocument({ fullOutlineDone: outline.fullOutlineDone }, '全书大纲', [
-    renderSection('一句话', outline.logline),
-    renderListSection('三幕', outline.acts),
-    renderSection('最小可行大纲', outline.minimal),
+    renderSection(OUTLINE_SECTIONS.logline, outline.logline),
+    renderSection(OUTLINE_SECTIONS.full, outline.fullOutline),
+    renderListSection(OUTLINE_SECTIONS.acts, outline.acts),
+    renderSection(OUTLINE_SECTIONS.minimal, outline.minimal),
   ])
 }
 
@@ -227,6 +240,138 @@ export function renderCastFile(characters: Readonly<Record<string, Character>>):
   // timestamp in a file whose content did not change would turn every metadata
   // edit into a cast-file rewrite.
   return renderDocument({}, '人物设定', sections)
+}
+
+// ── competitor file ───────────────────────────────────────────────────────────
+
+/**
+ * The ```yaml keys one competitor entry carries.
+ *
+ * Kept as a list rather than written out twice because the reader and the writer
+ * have to agree key for key: a field the writer emits and the reader ignores is
+ * silently lost on the next edit, which is the one failure this file exists to
+ * make impossible.
+ */
+const COMPETITOR_KEYS = [
+  'id',
+  'title',
+  'tags',
+  'blurb',
+  'openingEvent',
+  'goldenFinger',
+  'protagonistDesire',
+  'antagonistMotive',
+  'shuangFrequency',
+  'emotionCurve',
+  'paywallPoint',
+  'chapterHooks',
+  'commentKeywords',
+  'takeaway',
+] as const
+
+/** The competitor field one of {@link COMPETITOR_KEYS} names. */
+type CompetitorKey = (typeof COMPETITOR_KEYS)[number]
+
+/**
+ * Write one competitor's fields in the order {@link COMPETITOR_KEYS} fixes.
+ *
+ * Spelled key by key rather than by spreading the record: the key list is the
+ * reader/writer contract, and building the output from it is what keeps the two
+ * sides from drifting apart.
+ *
+ * @param competitor - the entry to write.
+ * @returns the fields, with empty values dropped.
+ */
+function competitorFields(competitor: Competitor): Record<string, YamlValue | undefined> {
+  const values: Record<CompetitorKey, YamlValue> = {
+    id: competitor.id,
+    title: competitor.title,
+    tags: [...competitor.tags],
+    blurb: competitor.blurb,
+    openingEvent: competitor.openingEvent,
+    goldenFinger: competitor.goldenFinger,
+    protagonistDesire: competitor.protagonistDesire,
+    antagonistMotive: competitor.antagonistMotive,
+    shuangFrequency: competitor.shuangFrequency,
+    emotionCurve: competitor.emotionCurve,
+    paywallPoint: competitor.paywallPoint,
+    chapterHooks: competitor.chapterHooks,
+    commentKeywords: [...competitor.commentKeywords],
+    takeaway: competitor.takeaway,
+  }
+  const fields: Record<string, YamlValue | undefined> = {}
+  for (const key of COMPETITOR_KEYS) Object.assign(fields, { [key]: values[key] })
+  return dropEmpty(fields)
+}
+
+/**
+ * Parse `竞品拆解.md` into competitors, keyed by id.
+ *
+ * The competitor study is the SOP's research layer, and its whole value is that
+ * the author can go *back* to it — so it is stored like the cast and the world:
+ * one `##` section per title, a ```yaml block carrying the dismantle's fields,
+ * and free prose after it. Prose the author adds by hand is kept rather than
+ * discarded, because an annotation beside a dismantle is research too.
+ *
+ * @param raw - the file text.
+ * @param where - the file path, for error messages.
+ * @returns the dismantled titles in file order, or `undefined` when the file has no entries.
+ * @throws {NovelContentError} on a duplicate id or an entry with no identifiable title.
+ */
+export function parseCompetitorFile(raw: string, where: string): Competitor[] | undefined {
+  const text = bodyText(raw, where)
+  const entries = readEntries(splitSections(text), where)
+  if (entries.length === 0) return undefined
+  const competitors: Competitor[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    const title = frontString(entry.fields, 'title', '') || entry.title
+    const id = normalizeId(frontString(entry.fields, 'id', '')) || slugify(title)
+    if (id === '') {
+      throw new NovelContentError(`${where}: entry "## ${entry.title}" has no \`id\` and a heading that yields no slug`)
+    }
+    if (seen.has(id)) {
+      throw new NovelContentError(`${where}: duplicate competitor id "${id}" (first seen as "${competitors.find((entry) => entry.id === id)?.title ?? ''}")`)
+    }
+    seen.add(id)
+    // Free prose is research the author typed beside the entry; it has no field
+    // of its own, so it joins the takeaway rather than being dropped.
+    const takeaway = frontString(entry.fields, 'takeaway', '')
+    competitors.push({
+      id,
+      title,
+      tags: frontStringArray(entry.fields, 'tags'),
+      blurb: frontString(entry.fields, 'blurb', ''),
+      openingEvent: frontString(entry.fields, 'openingEvent', ''),
+      goldenFinger: frontString(entry.fields, 'goldenFinger', ''),
+      protagonistDesire: frontString(entry.fields, 'protagonistDesire', ''),
+      antagonistMotive: frontString(entry.fields, 'antagonistMotive', ''),
+      shuangFrequency: frontString(entry.fields, 'shuangFrequency', ''),
+      emotionCurve: frontString(entry.fields, 'emotionCurve', ''),
+      paywallPoint: frontString(entry.fields, 'paywallPoint', ''),
+      chapterHooks: frontString(entry.fields, 'chapterHooks', ''),
+      commentKeywords: frontStringArray(entry.fields, 'commentKeywords'),
+      takeaway: [takeaway, entry.prose].filter((part) => part !== '').join('\n\n'),
+    })
+  }
+  return competitors
+}
+
+/**
+ * Render `竞品拆解.md`.
+ *
+ * Entries are ordered by title, not by the order they were dismantled: the file
+ * is a reference the author reads across, so a stable order beats a history.
+ *
+ * @param competitors - the dismantled titles, keyed by id.
+ * @returns the file text.
+ */
+export function renderCompetitorFile(competitors: Readonly<Record<string, Competitor>>): string {
+  const sections = Object.values(competitors)
+    .sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'))
+    .map((competitor) => renderEntry(competitor.title === '' ? competitor.id : competitor.title, competitorFields(competitor), ''))
+  // No `updatedAt`: see {@link renderCastFile}.
+  return renderDocument({}, '竞品拆解', sections)
 }
 
 // ── world file ────────────────────────────────────────────────────────────────
@@ -314,9 +459,14 @@ export function parseVolumeFile(raw: string, where: string): VolumePlan[] {
     // A repeated number is the same volume written twice, not two volumes: the
     // later entry wins, which is what makes an in-place edit idempotent.
     const existing = volumes.findIndex((volume) => volume.number === number)
+    // The prose after the yaml block is the volume's own detail — the 分卷剧情大纲.
+    // An explicit `detail:` key is kept ahead of it, the same way the cast file
+    // treats a declared description versus accumulated prose.
+    const declared = frontString(entry.fields, 'detail', '')
     const volume: VolumePlan = {
       number,
       title: frontString(entry.fields, 'title', '') || entry.title.replace(/^第\s*\d+\s*卷\s*/u, '').trim(),
+      detail: [declared, entry.prose].filter((part) => part !== '').join('\n\n'),
       goal: frontString(entry.fields, 'goal', ''),
       conflict: frontString(entry.fields, 'conflict', ''),
       climax: frontString(entry.fields, 'climax', ''),
@@ -350,7 +500,9 @@ export function renderVolumeFile(volumes: readonly VolumePlan[]): string {
           endHook: volume.endHook,
           chapters: [...volume.chapters],
         }),
-        '',
+        // The detail is the volume's body: it is the part that carries the
+        // volume's own rhythm, and it is the part the length target measures.
+        volume.detail,
       ),
     )
   // No `updatedAt`: see {@link renderCastFile}.
@@ -752,6 +904,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   readonly world: string
   readonly volumes: string
   readonly chapterPlan: string
+  readonly competitors: string
   readonly chapters: Readonly<Record<string, { readonly body: string; readonly outline: string }>>
 } {
   const chapters: Record<string, { body: string; outline: string }> = {}
@@ -761,9 +914,12 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
       outline: renderChapterOutlineFile(chapter, updatedAt),
     }
   }
+  const competitorMap: Record<string, Competitor> = {}
+  for (const competitor of state.competitors) competitorMap[competitor.id] = competitor
   return {
     outline: renderOutlineFile({
       logline: state.outline.logline,
+      fullOutline: state.outline.fullOutline,
       acts: state.outline.acts,
       minimal: state.outline.minimal,
       fullOutlineDone: state.outline.fullOutlineDone,
@@ -776,6 +932,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
       beats: state.outline.beats,
       opening: state.outline.opening,
     }),
+    competitors: renderCompetitorFile(competitorMap),
     chapters,
   }
 }
@@ -815,17 +972,20 @@ export type ContentFiles = Readonly<Record<string, string>>
  * @param files - the raw text of each content file, keyed by path.
  * @param index - the index naming those paths.
  * @param openingFallback - checklist kept when the plan file has no such section.
- * @returns the outline, cast, world, and chapters.
+ * @param competitorFallback - dismantles kept when the competitor file has no entries.
+ * @returns the outline, cast, world, competitors, and chapters.
  * @throws {NovelContentError} when a present file is malformed or a key repeats.
  */
 export function composeContent(
   files: ContentFiles,
   index: StorageIndex,
   openingFallback: Outline['opening'],
+  competitorFallback: readonly Competitor[] = [],
 ): {
   readonly outline: Outline
   readonly characters: Readonly<Record<string, Character>>
   readonly world: Readonly<Record<string, WorldEntry>>
+  readonly competitors: readonly Competitor[]
   readonly chapters: Readonly<Record<string, Chapter>>
 } {
   const read = (path: string): string | undefined => files[path]
@@ -833,7 +993,7 @@ export function composeContent(
   const outlineFile = read(index.outlineFile)
   const outlineText =
     outlineFile === undefined
-      ? { logline: '', acts: [], minimal: '', fullOutlineDone: false }
+      ? { logline: '', fullOutline: '', acts: [], minimal: '', fullOutlineDone: false }
       : parseOutlineFile(outlineFile, index.outlineFile)
 
   const planFile = read(index.chapterPlanFile)
@@ -847,6 +1007,7 @@ export function composeContent(
   const outline: Outline = {
     ...emptyOutline(),
     logline: outlineText.logline,
+    fullOutline: outlineText.fullOutline,
     acts: outlineText.acts,
     minimal: outlineText.minimal,
     fullOutlineDone: outlineText.fullOutlineDone,
@@ -860,8 +1021,14 @@ export function composeContent(
   const characters = castFile === undefined ? {} : parseCastFile(castFile, index.castFile)
   const world = worldFile === undefined ? {} : parseWorldFile(worldFile, index.worldFile)
 
+  // `竞品拆解.md` is the authoritative home; a project that predates the file —
+  // or one whose file was emptied by hand — still reads its dismantles out of
+  // the metadata document rather than losing research.
+  const competitorFile = read(index.competitorFile)
+  const parsed = competitorFile === undefined ? undefined : parseCompetitorFile(competitorFile, index.competitorFile)
+
   const chapters = composeChapters(files, index, plan.rows)
-  return { outline, characters, world, chapters }
+  return { outline, characters, world, competitors: parsed ?? competitorFallback, chapters }
 }
 
 /**

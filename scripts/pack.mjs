@@ -2,7 +2,7 @@
 /**
  * Package the composer into the two distributions the project ships.
  *
- * Both contain the same eight tools — the tool code is copied from this
+ * Both contain the same nine tools — the tool code is copied from this
  * checkout's build, never re-implemented — but they answer different questions:
  *
  * 1. **DSH plugin distribution** (`dist/dsh-plugin/`): one tarball, one package.
@@ -12,7 +12,7 @@
  *
  * 2. **SKILL distribution** (`dist/skill/ai-novelist/`): the portable
  *    Agent Skill bundle. `SKILL.md` carries the frontmatter DSH's filesystem
- *    provider parses and a table of all eight tools, `references/` holds the
+ *    provider parses and a table of all nine tools, `references/` holds the
  *    workflow and the generated tool/threshold references, `scripts/` holds the
  *    installer, and `tools/` carries the same package as distribution 1.
  *
@@ -59,9 +59,10 @@ const STAGE_NAME = 'ai-novelist'
 /** The development package that builds the plugin, named for the filter. */
 const HOST_PACKAGE_NAME = '@ai-novelist/novelist-skill'
 
-/** The eight tools every distribution must carry. */
+/** The nine tools every distribution must carry. */
 const EXPECTED_TOOLS = [
   'novel_init',
+  'novel_confirm',
   'novel_plan',
   'novel_bible',
   'novel_write',
@@ -79,13 +80,28 @@ const TOOL_TABLE = [
     'project, commercial frame, calibration medians, the length plan (总字数 / 单章字数 / 卷数, asked of the user), naming candidates',
   ],
   [
+    '`novel_confirm`',
+    'status, discuss, confirm',
+    'the author checkpoints, with the settings settled one layer at a time in order '
+      + '(立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲 → 文风): a later layer is refused while an earlier one is open, '
+      + '`discuss` records one round carrying the user\'s own words (two rounds before the premise can be confirmed, one '
+      + 'per later layer), and `confirm` needs both the approved summary and the author\'s own words in `note`',
+  ],
+  [
     '`novel_plan`',
     'competitor, pitch, world, outline, volume, chapter, beat, opening, naming, launch',
-    'the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants; '
-      + '`launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition',
+    'the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor '
+      + 'dismantles land in `竞品拆解.md`; `fullOutline` and a volume\'s `detail` are measured against the layer\'s length '
+      + 'budget (÷100 / ÷50 / ÷10) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` '
+      + 'verdict must name its fallback and abandon condition',
   ],
   ['`novel_bible`', 'character, world, link, review', 'cast, world facts, reader promises, and their review'],
-  ['`novel_write`', 'write, read, check', 'prose, the contract-delivery report, and the automatic 去 AI 化 statistics'],
+  [
+    '`novel_write`',
+    'write, read, check',
+    'prose, the contract-delivery report, and the automatic 去 AI 化 statistics. The one hard gate in the pipeline: it '
+      + 'refuses to write until the user has signed the premise layer off, and — after chapter 1 — the style',
+  ],
   [
     '`novel_assess`',
     'record, iterate, evaluate, outcome, history, rules',
@@ -126,7 +142,7 @@ async function manifestOf(dir) {
 }
 
 /**
- * Assert that a built host package really registers the eight tools.
+ * Assert that a built host package really registers the nine tools.
  *
  * The distributions copy build output, so a stale or partial `lib/` would ship
  * silently. Matching the bare name keeps this independent of the emitted
@@ -218,7 +234,7 @@ async function packPluginDistribution(version) {
     version,
     description:
       bundleManifest.description
-      + ' — the bundle and the plugin in one package, so a single tarball installs the eight tools with it.',
+      + ' — the bundle and the plugin in one package, so a single tarball installs the nine tools with it.',
     type: 'module',
     license: bundleManifest.license ?? 'MIT',
     main: './lib/index.js',
@@ -323,7 +339,7 @@ function installNotes(version) {
 - the profile **bundle** — its manifest declares \`dsh.bundle.patch\`, which is what
   makes DSH append the package to \`dsh.profile.bundles\`;
 - the **plugin** — its root export (and the \`./host\` alias) is the module that
-  registers the eight \`novel_*\` tools on \`ctx.tools\`;
+  registers the nine \`novel_*\` tools on \`ctx.tools\`;
 - the **browser half** — \`./client\`, served to the Web GUI as a
   \`window.__ModuleLoader__\` bundle that adds the *Novel Composer* sidebar tab.
 
@@ -389,7 +405,7 @@ Expect a row \`id: ai-novelist\` naming \`${PACKAGE_NAME}\`.
 dsh plugin --profile web remove -w ${PACKAGE_NAME}
 \`\`\`
 
-## The eight tools
+## The nine tools
 
 | tool | operations | purpose |
 |---|---|---|
@@ -420,20 +436,27 @@ metadata:
 
 # AI Web Novel Composer
 
-Drives a Chinese web novel through the 爆款网文 SOP 3.2: **假设 → 验证 → 放大 → 复盘 →
-复用**. It is a pipeline with gates, not a notebook. Seven of the eight tools do the
+Drives a Chinese web novel through the 爆款网文 SOP 3.3: **假设 → 验证 → 放大 → 复盘 →
+复用**. It is a pipeline with gates, not a notebook. Eight of the nine tools do the
 bookkeeping; you do the writing; \`novel_review\` buys a second opinion on it.
+
+Two checkpoints belong to the **user**, and \`novel_confirm\` is where they are
+recorded: the settings sign-off (premise, cast, world, length, tone — discussed
+over at least two recorded rounds) must exist **before** the first chapter, and the
+voice sign-off comes after chapter 1 and before chapter 2. \`novel_write\` refuses
+prose while either gate is shut. An inspiration is the start of a conversation, not
+a licence to produce chapters.
 
 The pipeline advances on what has been planned and written. Phase three ends in a
 declared \`go\` / \`revise\` / \`abandon\`, not in a metric: the data evaluation
 (\`novel_assess\`) sits outside the phases and is started by the author when they
 ask whether the book is still worth continuing.
 
-## The eight tools
+## The nine tools
 
-Seven compute, and are registered unconditionally. The eighth, \`novel_review\`,
+Eight compute, and are registered unconditionally. The ninth, \`novel_review\`,
 asks a model — it appears only in a profile that has a model route, and it is the
-only tool here whose answer is a judgement rather than a derived fact. All eight
+only tool here whose answer is a judgement rather than a derived fact. All nine
 travel in the DSH plugin under \`tools/\` — set it up first (see *Set up the
 tools* below). Nothing here works until they exist.
 
@@ -488,7 +511,7 @@ be read off the premise, and every later length check is measured against them:
 | ask the user | lands in | why it matters |
 |---|---|---|
 | 这本书计划写多少字？ | \`targetWords\` | 篇幅口径：完本与上架预期 |
-| 单章目标多少字？ | \`chapterWords\` | 细纲没写目标字数时继承它；初稿目标 = 成稿目标 × 150%，成稿落回 -5%/+15% |
+| 单章目标多少字？ | \`chapterWords\` | 细纲没写目标字数时继承它；初稿目标 = 成稿目标 × 125%，成稿落回 -5%/+15% |
 | 要分卷吗？分几卷？ | \`volumes\`（\`0\` = 明确不分卷） | 分卷大纲的卷数纪律与卷末高潮章位 |
 
 Offer common tiers as *choices*, never as the answer: 短篇 20–40 万字 / 单章 2000
@@ -497,13 +520,13 @@ Offer common tiers as *choices*, never as the answer: 短篇 20–40 万字 / �
 said, not what the table says.
 
 The chapter number you record is the **finished** length, and there are two gates
-around it: the first draft is written to 150% of it — 去 AI 化 and hand-editing
+around it: the first draft is written to 125% of it — 去 AI 化 and hand-editing
 delete a large share of a draft, so a draft written straight to the target arrives
 at publication short — and the trimmed chapter must land back inside **-5%/+15%**,
 an asymmetric window because coming in under the promised length is the real
 failure while an overrun can still be cut. The
 tools hold a chapter to whichever gate its status implies (planned/drafting =
-150%, revised/final = -5%/+15%), print both windows whenever prose is handed back, and
+125%, revised/final = -5%/+15%), print both windows whenever prose is handed back, and
 carry the draft target in the runtime context.
 
 Once \`targetWords\` and \`chapterWords\` are known, \`totalChapters\` is derived
@@ -531,7 +554,7 @@ reported rather than silently accepted.
    its abandon condition, and the tool refuses it otherwise. The data check is
    \`novel_assess\`, run **on demand** when the author asks whether the book is
    still worth continuing; it owns no phase and nothing gates on it.
-3. **放大** — \`novel_write\` per chapter, writing the first draft to **150% of the
+3. **放大** — \`novel_write\` per chapter, writing the first draft to **125% of the
    chapter target** (去 AI 化与手改会成段删减，初稿按成稿字数写必然偏短), reporting
    which contract fields the draft delivered **and the 去 AI 化 statistics**
    (paragraph length, dialogue density, repeated sentence openings). Those numbers
@@ -670,7 +693,7 @@ console.log(\`setup: verify with  dsh --profile \${profile} --dump-config | grep
 /**
  * Generate the tool reference from the shipped source.
  *
- * The eight-tool table comes from the same constant every other distribution
+ * The nine-tool table comes from the same constant every other distribution
  * uses, so it cannot drift from the shipped surface; the parameters-and-behaviour
  * half is lifted from the plugin README's own tool-surface section, up to the
  * next top-level heading.
@@ -689,7 +712,7 @@ async function toolsReference() {
   }
   return `# Tool reference
 
-The eight tools, in the order the SOP uses them:
+The nine tools, in the order the SOP uses them:
 
 | tool | operations | what it owns |
 |---|---|---|

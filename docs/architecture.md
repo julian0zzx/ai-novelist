@@ -96,7 +96,7 @@ src/host/          the deployment surface
   views.ts           one workspace's view: classification, adoption, and the numbers behind it
   prompt.ts          the runtime-context section and the cache it reads
   llm.ts             the one seam that calls a model: route resolution, one streamed call
-  tools.ts           the eight model-facing tools (thin adapters over core)
+  tools.ts           the nine model-facing tools (thin adapters over core)
 src/client/        the browser surface
   index.tsx          the right-Sidebar tab type + its body
   kanban.tsx         the conversation view beside Chat and Trajectory
@@ -255,8 +255,8 @@ spec.
   reviewer. A per-call override must name **both** halves; one half alone used to be dropped
   in silence, which left the author reviewing on a different model than the one they asked
   for. With none of the three, the tool is **not registered at all** (the plugin injects the
-  capability inside `ctx.inject(['llm'], …)`); a profile with no model keeps seven working
-  tools rather than an eighth that can only fail. That injection is used as a *trigger*, not
+  capability inside `ctx.inject(['llm'], …)`); a profile with no model keeps eight working
+  tools rather than a ninth that can only fail. That injection is used as a *trigger*, not
   as the mounting context: a service context exposes the injected dependency and nothing
   else, so registration happens against the plugin's own ctx, which carries `tools`.
 - **The output budget and the reasoning effort are the caller's call, not the adapter's.**
@@ -613,7 +613,7 @@ a contract field the draft did not deliver.
 checks over the new state (`worldGaps`, `castGaps`, `contractGaps`, `openingPackageGaps`,
 `assessStage`), so the report describes where the project now stands rather than what the
 call's arguments said. The same shape recurs in every other tool, which is why the envelope
-is rendered by one function instead of eight.
+is rendered by one function instead of nine.
 
 The refusals that survive on purpose are data-integrity requirements rather than workflow
 opinions. Two come from the SOP's anti-formality rule: a `novel_plan operation="launch"`
@@ -625,13 +625,54 @@ is a plain lookup error: a chapter reference that matches nothing throws with th
 listed. "The record would be meaningless" is a different thing from "the SOP would rather you
 did this later".
 
+**One refusal is a workflow opinion, and it is the exception that proves the rule.**
+`novel_write` refuses prose while the author has not signed the **premise** layer off, and —
+once chapter 1 has prose — while the voice is unsigned (`proseGate`, `novel_confirm`). Every
+other gate here reports a disagreement and lets the call stand, and that is exactly how a model
+once went from a one-line inspiration to four finished chapters without the author being asked
+anything. A soft warning is the right shape for "the SOP would rather you had an outline
+first"; it is the wrong shape for "you are about to write a book for someone who was never
+consulted". The gate stays narrow — one pre-prose layer, plus the voice, both owned by the
+author, both cheap to close — so it can never be the thing that stops an author who is talking
+to the tool.
+
+**The settings are settled one layer at a time.** `SETTINGS_LAYERS` fixes the order —
+立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲 — and `confirmationStanding` derives each
+layer's standing from the confirmations that already exist, so `blockedBy` and `ready` are
+functions of the ledger rather than a second state to keep in step. That derivation is what
+lets the plugin hold two lines at once: `novel_confirm` **refuses** a `discuss` or `confirm`
+for a layer whose predecessor is open (the order is the feature), while `novel_plan` only
+**warns** when a layer is written out of order, and `novel_write` gates on nothing but the
+premise. The layers after the premise therefore do not block chapter 1 — an author may be
+arguing about the volume outline while the opening is already drafted — and the stage machine
+still holds phase one open until all five are closed, because "the settings are settled" is
+what phase one claims.
+
+`settingsConfirmed` (all five layers) and `preProseConfirmed` (the premise) are deliberately
+distinct: the stage machine and the board read the first, `proseGate` reads the second. The
+`settings` and `premise` kinds are the same checkpoint two ways — `settings` is what the SOP and
+every existing document call it — so rounds recorded under either spelling count for both, via
+`settingsLayerRounds`, and a project talked through before the layers existed is not asked to
+repeat itself.
+
+**Planning layers carry length budgets, not length gates.** A chapter's length was checkable
+against a stated target from the start; an outline's was not, so a two-line 全书大纲 and a
+twenty-thousand-character one passed the same checks. `OUTLINE_LAYER_RATIOS` budgets each layer
+as a fraction of the prose it governs — 1/100, 1/50, 1/10 — and `layerLengthCheck` compares what
+was written against it. The ratio is chosen over a word count on purpose: the book's length is
+the author's `novel_init` answer, and a hard-coded "10000 字" is wrong for a 30 万字 serial and
+a 300 万字 epic alike. An unanswered length question yields **no** target rather than an
+invented denominator, the comparison is reported as a `warning` (the SOP's hard gate is the
+premise sign-off, not a word count), and a per-call `targetWords` replaces the ratio.
+
 ### Two axes: the pipeline and the on-demand evaluation
 
 Only one of the two things the plugin tracks is a phase.
 
 **The pipeline.** `assessStage` derives the stage from planned and written work alone —
-pitch, competitor coverage, the outline, the opening checklist, the launch decision, the
-volume and beat tables, chapters with prose, the retrospective. It never consults a reading or
+pitch, competitor coverage, the author's settings sign-off, the outline, the opening
+checklist, the launch decision, the volume and beat tables, chapters with prose, the voice
+sign-off, the retrospective. It never consults a reading or
 an evaluation. That is what lets a project advance while the platform numbers are unavailable:
 the phase-three gate is a declared human `go` (`novel_plan operation="launch"`), not a
 computed pass, and the evidence behind it — an editor's read, a handful of readers, an author
@@ -754,7 +795,7 @@ the registered id, the plugin shape, and that nothing unexpected was bundled in.
 
 `pnpm run check` runs the suite (build → typecheck → test; 122 specs across the two packages
 when this was written, and `pnpm test` prints the current count). It covers:
-- the SOP pipeline end to end through the eight tools, using only the tool surface a model
+- the SOP pipeline end to end through the nine tools, using only the tool surface a model
   has (`test/sop-pipeline.test.ts`): the phases in order, the soft gate (a competitor call
   succeeds before a pitch exists *and* says what is missing), the opening-checklist gate, the
   launch decision and the two arguments a non-`go` verdict is refused without, the verdict

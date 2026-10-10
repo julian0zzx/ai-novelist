@@ -1,5 +1,5 @@
 /**
- * Model-facing tools: the eight surfaces of the SOP.
+ * Model-facing tools: the nine surfaces of the SOP.
  *
  * One tool per capability, each owning one phase or one kind of state, so the
  * model's vocabulary matches the workflow instead of the storage layout:
@@ -7,6 +7,7 @@
  * | tool | SOP phase | what it owns |
  * |---|---|---|
  * | `novel_init` | 一 策划 | project, platform, calibration medians, writing parameters |
+ * | `novel_confirm` | 一/五 | the author checkpoints: the settings layers settled in order (立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲), then the style sign-off after the first chapter |
  * | `novel_plan` | 一/二/三/四 | pitch, competitors, world, outline, volumes, beats, chapters, naming, the launch decision |
  * | `novel_bible` | 一/四/六 | cast, world facts, reader promises, and their review |
  * | `novel_write` | 五 连载 | prose plus the contract-delivery report |
@@ -27,6 +28,9 @@
  *
  * The soft gate is deliberate: `novel_plan` and friends never refuse a call
  * because the SOP would rather you were elsewhere. They do it, then tell you.
+ * The one exception is `novel_write`, which refuses to write prose while the
+ * author has not signed the settings off: running from an inspiration straight
+ * to chapters is the failure this surface exists to make impossible.
  *
  * @module @ai-novelist/novelist-skill/host/tools
  */
@@ -37,6 +41,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import {
   BEAT_KINDS,
   CHAPTER_STATUSES,
+  CONFIRMATION_KINDS,
+  CONFIRMATION_MIN_ROUNDS,
   CONTRACT_FIELDS,
   LENGTH_BENCHMARKS,
   LINK_STATUSES,
@@ -45,8 +51,12 @@ import {
   PLATFORM_MODES,
   REVIEW_KINDS,
   REVIEW_PROMPT_VERSION,
+  SETTINGS_LAYERS,
+  STYLE_GATE_CHAPTER,
   WRITING_PLAN_QUESTIONS,
   NovelInputError,
+  addConfirmation,
+  addDiscussionRound,
   addEvaluation,
   addIteration,
   addLaunchDecision,
@@ -65,12 +75,16 @@ import {
   buildTemplate,
   calibrationAge,
   castGaps,
+  chapterContractLength,
+  chapterOutlineTarget,
   chaptersPerVolume,
   complianceChecklist,
+  confirmationStanding,
   contractGaps,
   contractRows,
   countIneffectiveIterations,
   describeWritingPlan,
+  draftRatioLabel,
   draftTargetWords,
   emptyNovel,
   evaluationAction,
@@ -78,6 +92,8 @@ import {
   evaluationHint,
   iterationRules,
   judgeIteration,
+  layerLengthCheck,
+  latestConfirmation,
   lessonPrompts,
   lengthCheck,
   lengthWindow,
@@ -87,6 +103,7 @@ import {
   openingPackageGaps,
   parseReviewOutput,
   progressOf,
+  proseGate,
   removeChapter,
   removeLink,
   renderManuscript,
@@ -95,6 +112,7 @@ import {
   rhythmExpectation,
   setOpeningCheck,
   stageLabel,
+  styleGateReached,
   styleObservations,
   tallyAssessments,
   updateBaselines,
@@ -111,11 +129,14 @@ import {
   upsertWorld,
   verdictFromAssessments,
   volumeLengthNote,
+  volumeWordTarget,
   worldGaps,
   writingPlanConflicts,
   writingPlanGaps,
   type Clock,
   type Chapter,
+  type ConfirmationKind,
+  type DiscussionRound,
   type Evaluation,
   type IterationOutcome,
   type LaunchVerdict,
@@ -127,6 +148,8 @@ import {
   type ReviewFinding,
   type ReviewKind,
   type ReviewRecord,
+  type SettingsLayer,
+  type SettingsLayerKey,
   type VerdictLevel,
 } from '../core/index.ts'
 import { CUT_LOSS_MULTIPLIER, DEFAULT_MULTIPLIERS, INEFFECTIVE_ITERATIONS_FOR_CUT } from '../core/metrics.ts'
@@ -145,8 +168,132 @@ export const DEFAULT_TEMPLATE_PATH = '.novel/templates'
 /** Default directory for review transcripts and rewritten drafts. */
 export const DEFAULT_REVIEW_PATH = '.novel/reviews'
 
+/**
+ * Whether writing one settings layer is out of order, and who is still open.
+ *
+ * The settings are settled a layer at a time, so a world fact written before the
+ * premise is confirmed — or a volume outline written before the cast — is a
+ * disagreement with the SOP rather than a forbidden act. It is reported as a
+ * warning, not a refusal: `novel_plan` is a *soft* gate everywhere, and the one
+ * hard gate is `novel_write`. `novel_confirm` is where skipping ahead is actually
+ * refused, because that is the point at which an unconfirmed layer would be
+ * recorded as settled.
+ *
+ * @param state - the project as it stood before this write.
+ * @param key - the layer being written.
+ * @returns the warning, or `undefined` when the layer is the one in turn.
+ */
+function outOfOrderWarning(state: NovelState, key: SettingsLayerKey): string | undefined {
+  const standing = confirmationStanding(state)
+  const layer = standing.layers.find((entry) => entry.key === key)
+  if (layer === undefined || layer.ready) return undefined
+  const blocking = standing.layers.find((entry) => entry.key === layer.blockedBy)
+  return (
+    `设定要按顺序确定：「${blocking?.label ?? String(layer.blockedBy ?? '')}」这一层还没与用户确认，`
+    + `现在就写「${layer.label}」是跳步。先 novel_confirm operation="discuss" kind="${blocking?.kind ?? 'settings'}" `
+    + '把上一层谈完并由用户确认，再回到这一层。'
+  )
+}
+
+/**
+ * The content files a project keeps, as the lines a tool body shows.
+ *
+ * Naming every path is the point: since the split, the author is expected to
+ * open these files in their own editor, and a research file they cannot find is
+ * a research file they cannot use.
+ *
+ * @param state - the project.
+ * @returns one line per top-level file, empty when the state has no index yet.
+ */
+function contentFileLines(state: NovelState): string[] {
+  const index = state.index
+  if (index === undefined) return []
+  return [
+    `- 全书大纲：${index.outlineFile}`,
+    `- 世界观设定：${index.worldFile}`,
+    `- 人物设定：${index.castFile}`,
+    `- 分卷大纲：${index.volumeFile}`,
+    `- 章节大纲：${index.chapterPlanFile}`,
+    `- 竞品拆解：${index.competitorFile}`,
+  ]
+}
+
 /** The store type one execution resolves. */
 type SessionStore = ReturnType<ProjectResolver['storeForSession']>
+
+/**
+ * The settings layer one `novel_confirm` kind addresses.
+ *
+ * `settings` is the SOP's umbrella name for the pre-prose checkpoint and means
+ * the same thing as the `premise` layer — one checkpoint, two spellings, so a
+ * call written against the older documentation keeps working. `style` addresses
+ * no settings layer at all and returns `undefined`.
+ *
+ * @param kind - the confirmation kind from the call.
+ * @returns the layer, or `undefined` for the voice checkpoint.
+ */
+function settingsLayerFor(kind: ConfirmationKind): SettingsLayer | undefined {
+  if (kind === 'style') return undefined
+  const wanted: SettingsLayerKey = kind === 'settings' ? 'premise' : kind
+  return SETTINGS_LAYERS.find((layer) => layer.key === wanted)
+}
+
+/**
+ * The layer one call is about, with the status default following the sequence.
+ *
+ * A bare `operation="status"` is the question "where are we, and what is next?",
+ * so once the premise is closed it reports the layer in turn instead of repeating
+ * the one already done. An explicit kind, and every mutating operation, keeps the
+ * literal mapping — a round or a sign-off must land where the caller aimed it.
+ *
+ * @param requested - the kind from the call.
+ * @param state - the project as it stands.
+ * @param operation - the confirmation operation.
+ * @returns the layer, or `undefined` for the voice checkpoint.
+ */
+function layerForKind(
+  requested: ConfirmationKind,
+  state: NovelState,
+  operation: string,
+): SettingsLayer | undefined {
+  if (requested === 'style') return undefined
+  if (requested === 'settings' && operation === 'status') {
+    const standing = confirmationStanding(state)
+    const premise = standing.layers.find((layer) => layer.key === 'premise')
+    if (premise?.confirmed === true) {
+      return SETTINGS_LAYERS.find((layer) => layer.key === standing.nextLayer?.key)
+    }
+    return SETTINGS_LAYERS.find((layer) => layer.key === 'premise')
+  }
+  return settingsLayerFor(requested)
+}
+
+/**
+ * What one settings layer is supposed to settle, in the words the model needs.
+ *
+ * Printed by `novel_confirm operation="status"` so a round starts from what the
+ * layer owes rather than from whatever the model remembers about it — the SOP's
+ * own list for that layer, and nothing about the layers after it.
+ *
+ * @param key - the layer's key.
+ * @returns the brief, as body lines.
+ */
+function layerBrief(key: SettingsLayerKey): string {
+  switch (key) {
+    case 'premise':
+      return '书名、一句话立意与唯一记忆点、核心情绪、爽点清单、差异点、精神内核、篇幅四问（总字数/单章字数/分卷）、文风基调与书名简介标签备选。'
+    case 'world':
+      return '只定影响冲突的规则：力量体系、代价、限制、阶层、核心矛盾、势力关系。每条规则都要能说出它花什么、禁什么——没有代价的规则生不出冲突。'
+    case 'cast':
+      return '主角的欲望/恐惧/执念/软肋/成长线，主要配角阵营，反派动机，人物关系与冲突体系，金手指的规则、限制与成长曲线。'
+    case 'outline':
+      return '三幕主线、核心剧情走向、全局伏笔、大高潮节点、终极冲突、结局框架、全书钩子体系。写清到能支撑后面每一卷的取舍，而不是复述立意。'
+    case 'volume':
+      return '每卷的独立目标、独立矛盾、阶段性高潮、卷末钩子、卷内节奏，以及它覆盖的章数区间。'
+    default:
+      return ''
+  }
+}
 
 /**
  * Register one composer tool with the calling session's sandbox policy in scope.
@@ -305,11 +452,11 @@ function pushStyleHints(body: string[], prose: string): void {
  * Append the chapter's two length gates to a tool body.
  *
  * A chapter is written long and published on target: the first draft runs to
- * 150% of the finished target because 去 AI 化 and hand-editing delete a large
+ * 125% of the finished target because 去 AI 化 and hand-editing delete a large
  * share of it, and the finished chapter then has to land back inside the target
  * the user gave — never more than 5% under it, up to 15% over. Printing both
  * windows every time prose is handed back is
- * what keeps the 150% rule from existing only in the documentation — the writer
+ * what keeps the draft-target rule from existing only in the documentation — the writer
  * sees the number it is drafting against, and the stage decides which of the two
  * gates binds.
  *
@@ -322,13 +469,13 @@ function pushLengthReport(body: string[], chapter: Chapter): void {
   const finalWindow = lengthWindow(chapter.targetWords)
   const draftWindow = lengthWindow(draft)
   const round = (value: number): string => String(Math.round(value))
-  body.push('', '## 字数（初稿 150%，成稿不许低于目标 5%、可高 15%）')
+  body.push('', `## 字数（初稿 ${draftRatioLabel()}，成稿不许低于目标 5%、可高 15%）`)
   body.push(
     `- 成稿目标 ${String(chapter.targetWords)} 字：允许 ${round(finalWindow.low)}–${round(finalWindow.high)} 字`
     + '（下限只差 5%：读者买的是这个长度；上限 +15% 留改稿余量）',
   )
   body.push(
-    `- 初稿目标 ${String(draft)} 字（成稿目标 × 150%）：允许 ${round(draftWindow.low)}–${round(draftWindow.high)} 字`
+    `- 初稿目标 ${String(draft)} 字（成稿目标 × ${draftRatioLabel()}）：允许 ${round(draftWindow.low)}–${round(draftWindow.high)} 字`
     + '；去 AI 化与手改会成段删减，初稿按这个写才留得住成稿长度',
   )
   const gate = lengthCheck(chapter)
@@ -414,6 +561,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         + 'state it. '
         + 'Call it once at the start, and again whenever the commercial frame changes — it never resets recorded work, and '
         + 'it refuses to overwrite a premise that already exists (use novel_plan operation="pitch" for that). '
+        + 'What it records is a DRAFT for the user to react to, not a settled setup: after it, put the premise, cast, world '
+        + 'rules and length plan in front of them, revise over recorded rounds (novel_confirm kind="settings"), and write '
+        + 'no prose until they confirm. '
         + 'The baselines are the load-bearing part: without same-genre medians over the last 30 days, the SOP threshold '
         + 'rules cannot run and every metric verdict becomes "无法比较".',
       parameters: {
@@ -435,9 +585,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           type: 'integer',
           description:
             'Target length of one chapter in characters — the length the reader gets, not the length to draft. Ask the '
-            + 'user; chapters planned without their own target inherit this. The first draft is written to 150% of it '
+            + 'user; chapters planned without their own target inherit this. The first draft is written to 125% of it '
             + '(去 AI 化与手改会大幅删减); a finished chapter must land within -5%/+15% of that target — never '
-            + 'more than 5% under it — and novel_write checks a draft against 150% and a finished chapter against that window.',
+            + 'more than 5% under it — and novel_write checks a draft against 125% and a finished chapter against that window.',
         },
         totalChapters: {
           type: 'integer',
@@ -643,6 +793,351 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
     }),
   )
 
+  // ── novel_confirm ───────────────────────────────────────────────────────────
+
+  registerScoped(ctx,
+    defineTool({
+      name: 'novel_confirm',
+      description:
+        'The author checkpoints, and the record of the conversation that closes them. SETTINGS ARE SETTLED ONE LAYER AT '
+        + 'A TIME, IN ORDER — 立意 (kind="settings" / "premise") → 世界观 (kind="world") → 人物设定 (kind="cast") → '
+        + '全书大纲 (kind="outline") → 分卷大纲 (kind="volume"). Put ONE layer in front of the user, record what they '
+        + 'said, have them confirm it, and only then start the next: a later layer is refused while an earlier one is '
+        + 'still open, because handing the user the whole setup at once is the failure this ordering exists to prevent. '
+        + 'kind="settings" is the pre-prose checkpoint (premise, memorable point, length plan, tone) and `novel_write` '
+        + 'refuses a chapter while it is missing; the layers after it are ordered but do not block chapter 1. '
+        + 'kind="style" is the sign-off on the prose voice, due after chapter 1 has prose and before chapter 2. '
+        + 'operation="discuss" records ONE round: what you put in front of the user (`proposal`) and what the user actually '
+        + 'answered (`feedback`). `feedback` is required and cannot be your own summary of the plan — a round without the '
+        + 'user\'s words is refused, because that is exactly the failure this tool exists to prevent: the model deciding the '
+        + 'setup alone and running on to chapters. The premise layer needs at least 2 such rounds before it can be '
+        + 'confirmed; every other layer, and the voice, needs 1. operation="confirm" records the author\'s sign-off with '
+        + 'the approved `summary` and the user\'s own words in `note` — both required, because only the author can close a '
+        + 'checkpoint: never confirm on their behalf, and never invent a round. operation="status" (default) reports where '
+        + 'every layer stands, and which one is next, without changing anything.',
+      parameters: {
+        operation: {
+          type: 'string',
+          enum: ['status', 'discuss', 'confirm'],
+          description: 'status (default) | discuss (record one round with the user) | confirm (record the user\'s sign-off).',
+        },
+        kind: {
+          type: 'string',
+          enum: [...CONFIRMATION_KINDS],
+          description:
+            'Which layer is being settled. settings/premise = 立意与核心设定 (the pre-prose checkpoint) · world = 世界观设定 · '
+            + 'cast = 人物设定 · outline = 全书大纲 · volume = 分卷大纲 · style = 文风（第 1 章之后）.',
+        },
+        proposal: {
+          type: 'string',
+          description: 'discuss: what this round puts in front of the user — one layer\'s draft, or what changed since last round.',
+        },
+        feedback: {
+          type: 'string',
+          description: 'discuss: what the user answered, in their own words. Required — a round with no feedback is refused.',
+        },
+        topics: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'discuss: which settings this round settled (书名/立意/人设/世界观/篇幅/文风 …).',
+        },
+        summary: {
+          type: 'string',
+          description: 'confirm: the version the user approved, written down — later chapters are held to it.',
+        },
+        note: {
+          type: 'string',
+          description: 'confirm: the user\'s own words giving the sign-off. Required — the author closes the checkpoint.',
+        },
+      },
+      output: { schema: ENVELOPE_SCHEMA, render: renderTool },
+      execute: async (args, exec) => {
+        const store = storeFor(exec.agent?.session)
+        const current = await store.read()
+        if (current === undefined) {
+          throw new NovelInputError(`no novel project at ${store.documentPath}; call novel_init first`)
+        }
+        const requested = (args.kind ?? 'settings') as ConfirmationKind
+        const operation = args.operation ?? 'status'
+        const warnings: string[] = []
+        const body: string[] = []
+
+        /**
+         * The settings layer a `kind` addresses, or `undefined` for `style`.
+         *
+         * `operation="status"` with no explicit kind describes **the layer in
+         * turn** rather than the premise the umbrella name points at: the status
+         * call is how a model or an author asks "what now?", and answering
+         * "premise" forever once the premise is closed would hide the layer that
+         * actually is next. Every other operation keeps the literal kind, because
+         * a write must land where the caller aimed it.
+         */
+        const layer = layerForKind(requested, current, operation)
+
+        /**
+         * The kind a round or a sign-off is recorded under.
+         *
+         * The caller's own wording is kept rather than normalized: `settings` and
+         * `premise` are the same checkpoint addressed two ways, and a project that
+         * was talked through under `settings` must not be asked to repeat those
+         * rounds because the documentation now calls the layer `premise`. The
+         * round *count* is what has to be shared, and it is — the premise layer
+         * counts both spellings.
+         */
+        const recordKind: ConfirmationKind = layer === undefined ? 'style' : requested
+
+        /** Refuse out-of-order layers: the order IS the feature. */
+        const assertInOrder = (state: NovelState): void => {
+          if (layer === undefined) return
+          const standing = confirmationStanding(state)
+          const entry = standing.layers.find((item) => item.key === layer.key)
+          if (entry === undefined || entry.ready) return
+          const blocking = standing.layers.find((item) => item.key === entry.blockedBy)
+          throw new NovelInputError(
+            `设定要按顺序确定：先关掉「${blocking?.label ?? String(entry.blockedBy ?? '')}」这一层`
+            + `（novel_confirm operation="discuss" kind="${blocking?.kind ?? 'settings'}" 记录用户的意见，`
+            + `再由用户 operation="confirm"），之后才轮到「${layer.label}」。`
+            + '一次性把世界观、人设、大纲全部塞给用户，正是这套顺序要避免的事。',
+          )
+        }
+
+        /** The checkpoint ledger, as both the author and the model need to see it. */
+        const describeStanding = (state: NovelState): void => {
+          const standing = confirmationStanding(state)
+          if (layer === undefined) {
+            const confirmed = standing.style
+            body.push(`## 文风确认（style）`)
+            if (!standing.preProseConfirmed) {
+              body.push(
+                `- 设定尚未确认：正文要等「${standing.nextLayer?.label ?? '设定'}」这一层关掉之后才写`,
+                `  下一步：novel_confirm operation="discuss" kind="${standing.nextLayer?.kind ?? 'settings'}"（写好用户的原话）`,
+              )
+            }
+            body.push(`- 已确认：${confirmed === undefined ? '否' : `是（${confirmed.at}）`}`)
+            body.push(
+              `- 本次确认前需记录 ${String(CONFIRMATION_MIN_ROUNDS.style)} 轮讨论，当前 ${String(standing.styleRounds)} 轮`,
+            )
+            if (confirmed !== undefined) {
+              body.push('', `已确认版本：${confirmed.summary || '（未写摘要）'}`)
+              if (confirmed.note !== '') body.push(`用户原话：${confirmed.note}`)
+            }
+            const history = state.discussions.filter((round) => round.kind === 'style')
+            if (history.length > 0) {
+              body.push('', `## 讨论记录（${String(history.length)} 轮）`)
+              history.forEach((round, index) => {
+                body.push(
+                  `${String(index + 1)}. ${round.at}${round.topics.length > 0 ? `（${round.topics.join('、')}）` : ''}`,
+                  `   - 提案：${round.proposal || '（未写）'}`,
+                  `   - 用户：${round.feedback}`,
+                )
+              })
+            }
+            const gateWritten = Object.values(state.chapters).some(
+              (chapter) => chapter.number <= STYLE_GATE_CHAPTER && chapter.body.trim() !== '',
+            )
+            if (!gateWritten) {
+              body.push(
+                '',
+                `## 下一步`,
+                `文风确认在第 ${String(STYLE_GATE_CHAPTER)} 章成稿之后进行：先写第 ${String(STYLE_GATE_CHAPTER)} 章（设定已确认的前提下），`,
+                '再把正文交给用户读，听取对文风/语感的意见，记录一轮讨论后确认。',
+              )
+            }
+            return
+          }
+
+          body.push(`## 设定分层的确认进度`)
+          for (const entry of standing.layers) {
+            const mark = entry.confirmed ? '[x]' : entry.ready ? '[ ] ← 现在这一层' : '[ ]'
+            body.push(
+              `- ${mark} ${entry.label}（kind="${entry.kind}"）：`
+              + `${entry.confirmed ? '已确认' : `未确认，${String(entry.rounds)}/${String(entry.roundsRequired)} 轮`}`
+              + `${entry.gatesProse ? '（关掉它才能写正文）' : ''}`,
+            )
+          }
+          body.push('')
+          body.push(`## ${layer.label}（kind="${layer.kind}"）`)
+          const entry = standing.layers.find((item) => item.key === layer.key)
+          const confirmed = layer.kind === 'premise' ? standing.settings : latestConfirmation(state, layer.kind)
+          body.push(`- 已确认：${entry?.confirmed === true ? `是（${confirmed?.at ?? ''}）` : '否'}`)
+          body.push(
+            `- 本次确认前需记录 ${String(entry?.roundsRequired ?? 1)} 轮讨论，当前 ${String(entry?.rounds ?? 0)} 轮`,
+          )
+          if (entry?.blockedBy !== undefined) {
+            const blocking = standing.layers.find((item) => item.key === entry.blockedBy)
+            body.push(`- 顺序：先关掉「${blocking?.label ?? String(entry.blockedBy)}」（kind="${blocking?.kind ?? ''}"）`)
+          }
+          if (confirmed !== undefined) {
+            body.push('', `已确认版本：${confirmed.summary || '（未写摘要）'}`)
+            if (confirmed.note !== '') body.push(`用户原话：${confirmed.note}`)
+          }
+          const history = state.discussions.filter((round) => round.kind === recordKind)
+          if (history.length > 0) {
+            body.push('', `## 讨论记录（${String(history.length)} 轮）`)
+            history.forEach((round, index) => {
+              body.push(
+                `${String(index + 1)}. ${round.at}${round.topics.length > 0 ? `（${round.topics.join('、')}）` : ''}`,
+                `   - 提案：${round.proposal || '（未写）'}`,
+                `   - 用户：${round.feedback}`,
+              )
+            })
+          }
+          body.push(
+            '',
+            '## 这一层要谈什么',
+            layerBrief(layer.key),
+            '每轮用 operation="discuss" 记下用户的原话；用户认可后再 operation="confirm"（summary = 他认可的版本）。',
+          )
+        }
+
+        if (operation === 'status') {
+          const status = confirmationStanding(current)
+          describeStanding(current)
+          const confirmed = layer === undefined
+            ? status.styleConfirmed
+            : status.layers.find((entry) => entry.key === layer.key)?.confirmed === true
+          return {
+            ok: false,
+            operation: 'status',
+            detail: `${layer === undefined ? '文风' : layer.label}确认：${confirmed ? '已确认' : '未确认'}`,
+            ...envelope(current, warnings),
+            body,
+          }
+        }
+
+        if (operation === 'discuss') {
+          const feedback = (args.feedback ?? '').trim()
+          if (feedback === '') {
+            throw new NovelInputError(
+              'operation="discuss" needs `feedback`: the user\'s own answer to this round. '
+              + 'A round that records only your own proposal is not a discussion — put the draft to the user first, then '
+              + 'record what they said.',
+            )
+          }
+          assertInOrder(current)
+          const round: DiscussionRound = {
+            id: `discuss-${recordKind}-${String(current.discussions.filter((entry) => entry.kind === recordKind).length + 1)}`,
+            kind: recordKind,
+            at: now(),
+            proposal: (args.proposal ?? '').trim(),
+            feedback,
+            topics: args.topics ?? [],
+          }
+          const next = await store.update((state) => addDiscussionRound(state, round, now))
+          const standing = confirmationStanding(next)
+          const entry = standing.layers.find((item) => item.key === layer?.key)
+          const rounds = layer === undefined ? standing.styleRounds : (entry?.rounds ?? 0)
+          const need = CONFIRMATION_MIN_ROUNDS[layer?.kind ?? 'style']
+          describeStanding(next)
+          if (rounds < need) {
+            body.push('', `还差 ${String(need - rounds)} 轮讨论才能确认：把用户的意见消化进这一层，再问一轮。`)
+          } else {
+            body.push('', '讨论轮次已够：用户明确认可后，用 operation="confirm" 记下确认版本。')
+          }
+          await resync(exec.agent?.session)
+          return {
+            ok: true,
+            operation: 'discuss',
+            detail: `${layer === undefined ? '文风' : layer.label}讨论第 ${String(rounds)} 轮已记录`,
+            ...envelope(next, warnings),
+            body,
+          }
+        }
+
+        if (operation !== 'confirm') {
+          throw new NovelInputError(`unknown confirmation operation ${JSON.stringify(operation)}`)
+        }
+
+        const standing = confirmationStanding(current)
+        assertInOrder(current)
+        const entry = standing.layers.find((item) => item.key === layer?.key)
+        const rounds = layer === undefined ? standing.styleRounds : (entry?.rounds ?? 0)
+        const need = CONFIRMATION_MIN_ROUNDS[layer?.kind ?? 'style']
+        if (rounds < need) {
+          throw new NovelInputError(
+            `${layer === undefined ? '文风' : layer.label}确认还差 ${String(need - rounds)} 轮与用户的讨论：`
+            + `先用 novel_confirm operation="discuss" kind="${entry?.kind ?? 'style'}" 记录每一轮（要写用户的原话），`
+            + '确认要建立在这些轮次上，而不是直接宣布。',
+          )
+        }
+        if (recordKind === 'style') {
+          const gateWritten = Object.values(current.chapters).some(
+            (chapter) => chapter.number <= STYLE_GATE_CHAPTER && chapter.body.trim() !== '',
+          )
+          if (!gateWritten) {
+            throw new NovelInputError(
+              `文风确认要等第 ${String(STYLE_GATE_CHAPTER)} 章成稿：先把第 ${String(STYLE_GATE_CHAPTER)} 章写出来交给用户读，`
+              + '再确认文风。',
+            )
+          }
+        }
+        const summary = (args.summary ?? '').trim()
+        if (summary === '') {
+          throw new NovelInputError(
+            'operation="confirm" needs `summary`: write down the version the user approved. '
+            + 'It is the reference later chapters and edits are held to.',
+          )
+        }
+        const approval = (args.note ?? '').trim()
+        if (approval === '') {
+          throw new NovelInputError(
+            'operation="confirm" needs `note`: the user\'s own words giving the sign-off. '
+            + 'A checkpoint is closed by the author speaking, not by the tool deciding it can be closed — '
+            + 'never confirm on their behalf.',
+          )
+        }
+        // The sign-off records how many rounds had been held when it was given,
+        // which is what makes "rounds since the sign-off" a subtraction. For the
+        // premise that is both spellings of its kind, so it must be counted the
+        // same way {@link confirmationStanding} counts it.
+        const total =
+          layer?.key === 'premise' || layer === undefined
+            ? current.discussions.filter((item) => item.kind === 'settings' || item.kind === 'premise').length
+            : current.discussions.filter((item) => item.kind === recordKind).length
+        const confirmation = {
+          id: `confirm-${recordKind}-${String(current.confirmations.filter((item) => item.kind === recordKind).length + 1)}`,
+          kind: recordKind,
+          at: now(),
+          summary,
+          note: approval,
+          rounds: total,
+        }
+        const next = await store.update((state) => addConfirmation(state, confirmation, now))
+        describeStanding(next)
+        const remaining = confirmationStanding(next).nextLayer
+        body.push('', '## 已关闭的关卡')
+        body.push(
+          layer === undefined
+            ? '文风已经用户确认：可以继续写下一章了。文风再调要重新讨论并确认。'
+            : layer.kind === 'premise'
+              ? '立意已经用户确认：正文可以开写了，但设定还没谈完。'
+              : `「${layer.label}」已经用户确认。`,
+        )
+        if (layer !== undefined) {
+          if (remaining === undefined) {
+            body.push('', '## 接下来', '设定五层全部确认完毕：可以进入细纲与正文，并按阶段推进。设定再改要重新讨论并确认。')
+          } else {
+            body.push(
+              '',
+              '## 接下来',
+              `下一层是「${remaining.label}」（kind="${remaining.kind}"）：把这一层写出来交给用户讨论，`
+              + `每轮 operation="discuss" 记下他的原话，认可后 operation="confirm"。`,
+              '不要一次把后面几层一起抛给用户——顺序本身就是这套流程要守的东西。',
+            )
+          }
+        }
+        await resync(exec.agent?.session)
+        return {
+          ok: true,
+          operation: 'confirm',
+          detail: `${layer === undefined ? '文风' : layer.label}已确认（${String(total)} 轮讨论）`,
+          ...envelope(next, warnings),
+          body,
+        }
+      },
+    }),
+  )
+
   // ── novel_plan ──────────────────────────────────────────────────────────────
 
   registerScoped(ctx,
@@ -651,12 +1146,18 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
       description:
         'The planning pipeline, in the SOP order. One operation per step; each feeds the next, and the tool reports what '
         + 'is still missing. '
-        + 'competitor=dismantle one same-genre leaderboard title (aim for 20–50) · pitch=the one-sentence memorable point '
+        + 'competitor=dismantle one same-genre leaderboard title (aim for 20–50) — every dismantle is written into '
+        + '竞品拆解.md, the file beside the other settings, so the author can read and reuse the research '
+        + '(每个字段都可写入：tags/blurb/openingEvent/goldenFinger/protagonistDesire/antagonistMotive/shuangFrequency/'
+        + 'emotionCurve/paywallPoint/chapterHooks/commentKeywords/takeaway) · pitch=the one-sentence memorable point '
         + 'plus core emotion, payoff list, differentiators, kernel · world=one world rule (a rule without its cost and '
-        + 'limit is flagged) · outline=logline, acts, minimal viable outline, or the full outline · volume=one volume\'s '
-        + 'goal, conflict, climax, end hook · chapter=one chapter contract (plot task, conflict, emotional payoff, '
+        + 'limit is flagged) · outline=logline, fullOutline (the whole-book detailed outline), acts, minimal viable '
+        + 'outline, or the full outline flag — the detailed outline targets about 1/100 of the total length · volume=one '
+        + "volume's detail (分卷剧情大纲, targeting about 1/50 of that volume's length), goal, conflict, climax, end hook · "
+        + 'chapter=one chapter contract (plot task, conflict, emotional payoff, '
         + 'information gap, beats, hook, target length) — the target is the finished length, and the chapter is drafted '
-        + 'at 150% of it · beat=place a rhythm beat · opening=confirm an opening-engineering '
+        + 'at 125% of it; the contract text itself targets about 1/10 of the chapter length · beat=place a rhythm beat · '
+        + 'opening=confirm an opening-engineering '
         + 'checklist item (omit `key` to list it) · naming=a candidate title/blurb/tag set · '
         + 'launch=the stage-three go/no-go: whether the opening package is worth building out into a full skeleton. '
         + 'launch is a declared judgement, not a computed number — the evidence at that point is an editor and a handful '
@@ -665,7 +1166,12 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         + 'decision from becoming a formality. Platform numbers are never required here: the data check is '
         + '`novel_assess`, run on demand. '
         + 'Soft gate: a call always succeeds, but when the SOP would not have you here yet the result carries warnings '
-        + 'naming what is still missing. Read them before writing prose.',
+        + 'naming what is still missing. Read them before writing prose. '
+        + 'THE SETTINGS ARE SETTLED ONE LAYER AT A TIME, IN ORDER: 世界观 → 人物设定 → 全书大纲 → 分卷大纲. Write a layer, '
+        + 'put it to the user, record their answer with novel_confirm operation="discuss", and have them confirm it '
+        + '(operation="confirm") before starting the next layer — the tool warns when a layer is written before the one '
+        + 'before it is confirmed, because a whole setup decided in one pass is the failure this ordering exists to '
+        + 'prevent. novel_write refuses prose until the premise layer is confirmed.',
       parameters: {
         operation: {
           type: 'string',
@@ -694,13 +1200,32 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         kernel: { type: 'string', description: 'pitch: the theme underneath the plot.' },
         name: { type: 'string', description: 'world: display name of the rule or fact.' },
         kind: { type: 'string', description: 'world: place|faction|power-system|item|history|rule.' },
-        detail: { type: 'string', description: 'world: the fact itself.' },
         cost: { type: 'string', description: 'world: what the rule costs.' },
         limits: { type: 'string', description: 'world: what the rule forbids.' },
+        detail: {
+          type: 'string',
+          description:
+            "world: the fact itself. volume: the volume's own 分卷剧情大纲 — 卷内节奏、阶段推进、本卷伏笔. It lands in "
+            + "分卷大纲.md as the entry's body and targets about 1/50 of that volume's length.",
+        },
         logline: { type: 'string', description: 'outline: the one-sentence story.' },
+        fullOutline: {
+          type: 'string',
+          description:
+            'outline: the whole-book detailed outline — 三幕主线、核心剧情走向、全局伏笔、大高潮节点、终极冲突、结局框架、'
+            + '全书钩子体系. It lands in the `## 完整大纲` section of 全书大纲.md and targets about 1/100 of the total '
+            + 'length (novel_init targetWords).',
+        },
         acts: { type: 'array', items: { type: 'string' }, description: 'outline: act structure, one entry per act.' },
         minimal: { type: 'string', description: 'outline: the minimal viable outline summary.' },
         full: { type: 'boolean', description: 'outline: true records the full-outline stage as confirmed.' },
+        targetWords: {
+          type: 'integer',
+          description:
+            'outline/volume/chapter: the target length in characters, overriding the SOP default ratio for that layer '
+            + '(全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲正文 ≈ 单章字数/10). Ignored for chapter: a chapter '
+            + 'inherits the per-chapter length settled at initialization (novel_init chapterWords).',
+        },
         number: { type: 'integer', description: 'volume/chapter/beat: the 1-based position.' },
         goal: { type: 'string', description: 'volume: what this volume accomplishes on its own.' },
         conflict: { type: 'string', description: 'volume/chapter: the conflict that carries it.' },
@@ -712,13 +1237,6 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         infoGap: { type: 'string', description: 'chapter: the information gap opened or closed.' },
         beats: { type: 'array', items: { type: 'string', enum: [...BEAT_KINDS] }, description: 'chapter: beats carried.' },
         hook: { type: 'string', description: 'chapter: the chapter-end hook.' },
-        targetWords: {
-          type: 'integer',
-          description:
-            'chapter: the finished target length in characters; the first draft is written to 150% of it. Optional — a '
-            + 'chapter planned without one inherits the per-chapter length settled at initialization '
-            + '(novel_init chapterWords).',
-        },
         synopsis: { type: 'string', description: 'chapter: one-line summary of the contract.' },
         volume: { type: 'integer', description: 'chapter: which volume it belongs to.' },
         waive: {
@@ -814,6 +1332,8 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             break
           }
           case 'world': {
+            const order = outOfOrderWarning(current, 'world')
+            if (order !== undefined) warnings.push(order)
             const next = await store.update((state) =>
               upsertWorld(
                 state,
@@ -837,11 +1357,16 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             break
           }
           case 'outline': {
+            if (args.full === true || args.fullOutline !== undefined) {
+              const order = outOfOrderWarning(current, 'outline')
+              if (order !== undefined) warnings.push(order)
+            }
             const next = await store.update((state) =>
               updateOutline(
                 state,
                 {
                   ...(args.logline !== undefined && { logline: args.logline }),
+                  ...(args.fullOutline !== undefined && { fullOutline: args.fullOutline }),
                   ...(args.acts !== undefined && { acts: args.acts }),
                   ...(args.minimal !== undefined && { minimal: args.minimal }),
                   ...(args.full !== undefined && { fullOutlineDone: args.full }),
@@ -850,7 +1375,21 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               ),
             )
             detail = args.full === true ? '完整大纲已标记为确认' : '大纲已更新'
-            void next
+            // The SOP budgets 全书大纲 at ~1/100 of the whole book. Reported, not
+            // enforced: a thin outline is a soft disagreement, and the author may
+            // have a reason for it.
+            const fullLength = layerLengthCheck(
+              'full',
+              next.outline.fullOutline.trim().length,
+              next.writing.targetWords,
+              args.targetWords ?? 0,
+            )
+            if (fullLength !== undefined) {
+              body.push('## 全书大纲字数', `- ${fullLength.note}`)
+              if (!fullLength.enough) warnings.push(fullLength.note)
+            } else if (next.writing.targetWords <= 0) {
+              warnings.push('总字数还没问用户：全书大纲的目标字数按总字数的 1/100 推算，先回 novel_init 定总字数')
+            }
             break
           }
           case 'volume': {
@@ -858,12 +1397,15 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               throw new NovelInputError('operation="volume" needs a positive `number`')
             }
             const number = args.number
+            const order = outOfOrderWarning(current, 'volume')
+            if (order !== undefined) warnings.push(order)
             const next = await store.update((state) =>
               upsertVolume(
                 state,
                 {
                   number,
                   title: args.title ?? '',
+                  detail: args.detail ?? '',
                   goal: args.goal ?? '',
                   conflict: args.conflict ?? '',
                   climax: args.climax ?? '',
@@ -893,6 +1435,23 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               const span = (written.chapters.at(-1) ?? 0) - (written.chapters[0] ?? 0) + 1
               const note = volumeLengthNote(span, next.writing)
               if (note !== undefined) warnings.push(`第 ${String(number)} 卷：${note}`)
+            }
+            // The SOP budgets 分卷大纲 at ~1/50 of the volume it governs.
+            if (written !== undefined) {
+              const volumeLength = layerLengthCheck(
+                'volume',
+                written.detail.trim().length,
+                volumeWordTarget(next.writing),
+                args.targetWords ?? 0,
+              )
+              if (volumeLength !== undefined) {
+                body.push(`## 第 ${String(number)} 卷字数`, `- ${volumeLength.note}`)
+                if (!volumeLength.enough) warnings.push(`第 ${String(number)} 卷：${volumeLength.note}`)
+              } else {
+                warnings.push(
+                  `第 ${String(number)} 卷的字数目标算不出来（每卷章数或单章字数未定）：先补齐 novel_init 的篇幅四问`,
+                )
+              }
             }
             break
           }
@@ -943,15 +1502,33 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               ? '章节已写入'
               : `第 ${String(chapter.number)} 章「${chapter.title || chapterId}」契约已写入`
             // The contract's targetWords is the finished length; the draft this
-            // chapter is now written to is 150% of it. Print both at planning
+            // chapter is now written to is 125% of it. Print both at planning
             // time, which is the last moment before prose exists.
             if (chapter !== undefined && chapter.targetWords > 0) {
               const draft = draftTargetWords(chapter.targetWords)
               body.push('## 本章字数')
               body.push(
                 `- 成稿目标 ${String(chapter.targetWords)} 字（读者看到的长度，允许 -5%/+15%）`,
-                `- 初稿目标 ${String(draft)} 字 = 成稿目标 × 150%：初稿按这个写，去 AI 化与手改删减后才留得住成稿长度`,
+                `- 初稿目标 ${String(draft)} 字 = 成稿目标 × ${draftRatioLabel()}：初稿按这个写，去 AI 化与手改删减后才留得住成稿长度`,
               )
+            }
+            // The SOP budgets the contract text itself at ~1/10 of the chapter.
+            if (chapter !== undefined) {
+              const contractLength = layerLengthCheck(
+                'chapter',
+                chapterContractLength(chapter),
+                chapter.targetWords,
+                args.targetWords ?? 0,
+              )
+              if (contractLength !== undefined) {
+                const suggested = chapterOutlineTarget(chapter.targetWords)
+                body.push(
+                  '## 本章细纲字数',
+                  `- ${contractLength.note}`,
+                  `- 建议 ${String(suggested)} 字：剧情任务、冲突、情绪回报、信息差、章末钩子写清到这个量级，正文才有可核对的目标`,
+                )
+                if (!contractLength.enough) warnings.push(contractLength.note)
+              }
             }
             const gaps = contractGaps(next, { only: [chapterId] })
             if (gaps[0] !== undefined) warnings.push(`第 ${String(gaps[0].number)} 章契约缺：${gaps[0].missing.join('、')}`)
@@ -1780,12 +2357,17 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
       name: 'novel_write',
       description:
         'Write or revise one chapter of prose against its outline contract. '
+        + 'This is the ONE tool with a hard gate: it refuses to write while the user has not confirmed the settings '
+        + '(novel_confirm kind="settings"), and — after chapter 1 has prose — while the user has not confirmed the style '
+        + '(novel_confirm kind="style"). The user\'s inspiration is the starting point of a conversation, not a licence to '
+        + 'produce chapters: settle the setup with them first, show them chapter 1, hear the verdict on the voice, and only '
+        + 'then continue. The refusal message names the calls that open the gate. '
         + 'Send the COMPLETE chapter text — this replaces the body, it does not append. '
-        + 'A first draft is written to 150% of the chapter\'s target length, because 去 AI 化 and hand-editing delete a '
+        + 'A first draft is written to 125% of the chapter\'s target length, because 去 AI 化 and hand-editing delete a '
         + 'large share of a draft; the finished chapter is then trimmed back to within -5%/+15% of the target the user '
         + 'gave — the shortfall is held to 5%, because a chapter noticeably under its promised length is the real '
         + 'failure, while an overrun can still be cut. This '
-        + 'tool holds the draft to whichever gate the chapter\'s status implies (planned/drafting = 150%, revised/final = '
+        + 'tool holds the draft to whichever gate the chapter\'s status implies (planned/drafting = 125%, revised/final = '
         + '-5%/+15%) and prints both windows. '
         + 'Report which contract fields the draft actually delivered (delivered=[...]); the tool compares that report '
         + 'with the plan and returns what was missed, what was never planned, and whether the length landed. That '
@@ -1857,6 +2439,18 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
 
         if (args.body === undefined) throw new NovelInputError('operation="write" needs the complete chapter text in `body`')
         const text = args.body
+
+        // The one hard gate in the pipeline. Everywhere else the SOP reports a
+        // disagreement and lets the call stand; here it refuses, because the
+        // failure it prevents is the one no later soft warning can undo — a book
+        // whose setup and voice the author was never asked about.
+        const gate = proseGate(current, chapter.number)
+        if (!gate.allowed) {
+          throw new NovelInputError(
+            `novel_write refused: ${gate.reasons.join('；')}。`
+            + `下一步：${gate.next.join('，然后 ')}。`,
+          )
+        }
 
         const next = await store.update(
           (state) =>
@@ -1930,9 +2524,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
       name: 'novel_status',
       description:
         'The SOP dashboard, entirely derived from the project — nothing here is a second ledger you maintain by hand. '
-        + 'Reports the stage, what the next phase still needs, chapter and word counts, contract completeness, unpublished '
-        + 'stock, promise recovery (including overdue), the latest reading against its thresholds, and iterations still '
-        + 'waiting for an outcome. '
+        + 'Reports the stage, what the next phase still needs, the two author checkpoints (设定确认 / 文风确认), chapter and '
+        + 'word counts, contract completeness, unpublished stock, promise recovery (including overdue), the latest reading '
+        + 'against its thresholds, and iterations still waiting for an outcome. '
         + 'detail="dashboard" (default) is the operating view; "bible" returns cast, world and promises; "plan" returns '
         + 'pitch, outline, volumes, beats, opening checklist and naming candidates; "chapter" with a chapterId returns one '
         + 'chapter\'s contract, delivery report, the 去 AI 化 statistics and the prose.',
@@ -1973,7 +2567,24 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             body.push(`- [${link.status}] ${link.id}：${link.note}（埋 ${link.plantedAt || '—'} → 收 ${link.dueAt || '—'}）`)
           }
         } else if (detail === 'plan') {
+          const standing = confirmationStanding(state)
           body.push(
+            '## 设定分层确认（按顺序）',
+            ...standing.layers.map((layer) =>
+              `- ${layer.confirmed ? '[x]' : layer.ready ? '[ ] ← 现在这一层' : '[ ]'} ${layer.label}`
+              + `（novel_confirm kind="${layer.kind}"）：`
+              + (layer.confirmed
+                ? '已确认'
+                : `未确认，${String(layer.rounds)}/${String(layer.roundsRequired)} 轮`)
+              + (layer.gatesProse ? '｜关掉它才能写正文' : ''),
+            ),
+            `- 文风（novel_confirm kind="style"）：${standing.styleConfirmed
+              ? `已确认：${standing.style?.summary ?? ''}`
+              : `未确认（第 ${String(STYLE_GATE_CHAPTER)} 章成稿后确认）`}`,
+            '',
+            '## 内容文件',
+            ...contentFileLines(state),
+            '',
             '## 篇幅（初始化四问）',
             describeWritingPlan(state.writing),
           )
@@ -2019,6 +2630,22 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         } else {
           const progress = progressOf(state)
           const chapters = Object.values(state.chapters).sort((a, b) => a.number - b.number)
+          const standing = confirmationStanding(state)
+          body.push(
+            '## 设定分层确认（按顺序）',
+            ...standing.layers.map((layer) =>
+              `- ${layer.confirmed ? '[x]' : layer.ready ? '[ ] ← 现在这一层' : '[ ]'} ${layer.label}：`
+              + (layer.confirmed
+                ? `已确认（${String(layer.rounds)} 轮，novel_confirm kind="${layer.kind}"）`
+                : `未确认（已讨论 ${String(layer.rounds)}/${String(layer.roundsRequired)} 轮，novel_confirm kind="${layer.kind}"）`),
+            ),
+            `- 文风：${standing.styleConfirmed
+              ? `已确认（${standing.style?.at.slice(0, 10) ?? ''}）`
+              : styleGateReached(state)
+                ? `待确认（第 ${String(STYLE_GATE_CHAPTER)} 章已成稿）`
+                : `未到期（第 ${String(STYLE_GATE_CHAPTER)} 章成稿后确认）`}`,
+            '',
+          )
           body.push(
             '## 章节',
             `共 ${String(progress.chapters)} 章 / ${String(progress.totalWords)} 字（已写 ${String(progress.chapters - progress.emptyChapters.length)}，`
@@ -2114,11 +2741,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               '',
               '## 内容文件（可直接编辑；文件为准）',
               `- 元数据与索引：${NOVEL_RELATIVE_PATH}`,
-              `- 全书大纲：${index.outlineFile}`,
-              `- 人物设定：${index.castFile}`,
-              `- 世界观设定：${index.worldFile}`,
-              `- 分卷大纲：${index.volumeFile}`,
-              `- 章节大纲：${index.chapterPlanFile}`,
+              ...contentFileLines(state),
             )
             for (const chapter of Object.values(state.chapters).sort((a, b) => a.number - b.number)) {
               const ref = index.chapters[chapter.id]
@@ -2334,7 +2957,7 @@ function tokenSpend(usage: TokenUsage | undefined): string {
  * It is registered separately from {@link registerTools} because it depends on a
  * service the rest of the composer does not: without `llm` mounted there is
  * nothing to review *with*, and a tool that can only fail is worse than an
- * absent one. The eight deterministic tools therefore stay unconditional, and
+ * absent one. The nine deterministic tools therefore stay unconditional, and
  * this one appears exactly where a model route exists.
  *
  * What it will not do is as much of the contract as what it does: it never

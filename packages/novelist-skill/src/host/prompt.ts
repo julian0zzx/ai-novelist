@@ -27,11 +27,13 @@ import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
 import {
   assessReading,
   assessStage,
+  confirmationStanding,
   describeWritingPlan,
   emptyWriting,
   evaluationHint,
   progressOf,
   stageLabel,
+  styleGateReached,
   writingPlanGaps,
 } from '../core/index.ts'
 import { describeVerdict, type WorkspaceVerdict } from '../core/workspace.ts'
@@ -93,6 +95,28 @@ export interface NovelSnapshot {
   readonly planSummary: string
   /** Length questions still unanswered, phrased as what to ask the user. */
   readonly planGaps: readonly string[]
+  /**
+   * The author checkpoints, as the prompt renders them.
+   *
+   * Carried here rather than left to the blockers because they are the facts
+   * that change what the model may *do* next: without the premise layer signed
+   * off `novel_write` refuses, and the step-by-step context is where that has to
+   * be visible before the call is made.
+   */
+  readonly settingsConfirmed: boolean
+  /** Whether the layer that gates prose — the premise — is confirmed. */
+  readonly preProseConfirmed: boolean
+  /** The layer the author should be settling now, or `''` when all are closed. */
+  readonly nextSettingsLayer: string
+  /** The `novel_confirm` kind of {@link nextSettingsLayer}. */
+  readonly nextSettingsKind: string
+  /** One line per settings layer, in the SOP's order, as the prompt shows them. */
+  readonly settingsLayers: readonly string[]
+  readonly styleConfirmed: boolean
+  /** Whether the style checkpoint is due — the gate chapter has prose. */
+  readonly styleDue: boolean
+  /** The checkpoints still open, in the SOP's words. */
+  readonly confirmationGaps: readonly string[]
   /** Reading position of the last planned chapter. */
   readonly lastNumber: number
   /** Title of the last planned chapter. */
@@ -137,6 +161,7 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
       const progress = progressOf(state)
       const latest = state.readings.at(-1)
       const hint = evaluationHint(state)
+      const standing = confirmationStanding(state)
       cached = {
         title: state.meta.title,
         premise: state.meta.premise,
@@ -163,6 +188,22 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
         evaluationHint: hint.reason,
         planSummary: describeWritingPlan(state.writing),
         planGaps: writingPlanGaps(state.writing).map((gap) => gap.requirement),
+        settingsConfirmed: standing.settingsConfirmed,
+        preProseConfirmed: standing.preProseConfirmed,
+        nextSettingsLayer: standing.nextLayer?.label ?? '',
+        nextSettingsKind: standing.nextLayer === undefined
+          ? ''
+          : standing.nextLayer.key === 'premise'
+            ? 'settings'
+            : standing.nextLayer.kind,
+        settingsLayers: standing.layers.map(
+          (layer) =>
+            `${layer.confirmed ? 'done' : layer.ready ? 'NOW' : 'waiting'} ${layer.label}`
+            + `(kind=${layer.kind}${layer.confirmed ? '' : `, ${String(layer.rounds)}/${String(layer.roundsRequired)} rounds`})`,
+        ),
+        styleConfirmed: standing.styleConfirmed,
+        styleDue: styleGateReached(state),
+        confirmationGaps: standing.blockers,
         lastNumber: last?.number ?? 0,
         lastTitle: last?.title ?? '',
         lastStatus: last?.status ?? 'planned',
@@ -193,6 +234,14 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
           evaluationHint: '',
           planSummary: describeWritingPlan(emptyWriting()),
           planGaps: [],
+          settingsConfirmed: false,
+          preProseConfirmed: false,
+          nextSettingsLayer: '',
+          nextSettingsKind: '',
+          settingsLayers: [],
+          styleConfirmed: false,
+          styleDue: false,
+          confirmationGaps: [],
           lastNumber: 0,
           lastTitle: '',
           lastStatus: 'planned',
@@ -229,14 +278,22 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     'This is a novel workspace. Follow the SOP pipeline rather than jumping to prose: the stage above is derived from '
     + 'the planned and written work, and the blockers are what the next phase still needs. Plan with novel_plan, record '
     + 'cast, world and promises with novel_bible, write with novel_write (reporting which contract fields the draft '
-    + 'delivered). Phase three ends in a declared launch decision — novel_plan operation="launch" — not in a number: '
+    + 'delivered). '
+    + 'TWO CHECKPOINTS BELONG TO THE AUTHOR, and neither may be closed on their behalf. First the settings: an '
+    + 'inspiration is a starting point, so put the setup in front of the user, revise it over recorded rounds '
+    + '(novel_confirm operation="discuss" kind="settings", each round carrying their own words) and let them confirm it '
+    + '(operation="confirm" kind="settings"); novel_write refuses prose until then, and a later change to the settings '
+    + 'means discussing and confirming them again. Second the voice: once chapter 1 has prose, hand it to the user, hear '
+    + 'what they think of the style, record that round and have them confirm it (kind="style") before writing chapter 2 — '
+    + 'the book is not written on a voice the author has never heard. '
+    + 'Phase three ends in a declared launch decision — novel_plan operation="launch" — not in a number: '
     + 'whether the opening package is worth a full skeleton is a judgement, and no platform data is needed to make it. '
     + 'The data check is novel_assess, and it is ON DEMAND: run it when the user asks whether the book is still worth '
     + 'continuing, which normally means after the book has been live and the platform has numbers to transcribe by hand. '
     + 'It is never a gate — do not treat a missing reading as a reason to stop, and do not push the user to fetch '
     + 'platform numbers they cannot get. When a result carries evaluationDue, that is a suggestion you may pass on, '
     + 'not a blocker. '
-    + 'A chapter is written long and published on target: write the first draft to 150% of the chapter target, because '
+    + 'A chapter is written long and published on target: write the first draft to 125% of the chapter target, because '
     + '去 AI 化 and hand-editing delete a large share of it, then trim the finished chapter back to within '
     + '-5%/+15% of the target (a finished chapter may never come in more than 5% short). '
     + 'A soft gate never blocks you, but when a result carries warnings the SOP and your position disagree — say so '
@@ -248,14 +305,19 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'answers are what every later length check is measured against. Call novel_init once, with the title, premise, '
     + 'platform, those answers and the same-genre medians you can find — without the medians the SOP thresholds cannot '
     + 'run, and without the length answers no chapter length can be checked. Then follow the pipeline: novel_plan for '
-    + 'the pitch and the competitor study, novel_bible for the cast, and only then prose.',
+    + 'the pitch and the competitor study, novel_bible for the cast — and settle the setup WITH the user before any '
+    + 'prose: the inspiration they gave you is the opening of that conversation, not a finished brief. Record each '
+    + 'discussion round (novel_confirm operation="discuss" kind="settings"), have them confirm the setup, and only then '
+    + 'write chapter 1; after chapter 1, ask them to confirm the voice before chapter 2.',
   plain:
     'This workspace is not a novel project, so the composer tools are idle. Do not create a novel project here '
     + 'unless the user asks you to start one in this directory. When the user does ask — "write a novel here", '
     + '"给我 300 字大纲", "整理这本书的创意", "建立小说项目" — ask them for the length plan first (总字数、单章字数、'
     + '是否分卷/分几卷; offer common tiers as choices, never invent the numbers), then call novel_init with what they '
     + 'told you (title, premise, platform, mode, audience, and the length answers); the project document is what makes '
-    + 'the tools, this section and the board real. Then plan with novel_plan before writing any prose.',
+    + 'the tools, this section and the board real. Then plan with novel_plan — and treat the setup as something to '
+    + 'settle with the user over recorded rounds (novel_confirm kind="settings") before the first chapter, not as '
+    + 'something to decide for them.',
 }
 
 /**
@@ -352,6 +414,40 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
       lines.push(
         `Length questions still unanswered — ask the user, do not assume: ${snapshot.planGaps.join('；')}`,
       )
+    }
+    if (snapshot !== undefined) {
+      lines.push(
+        `Author sign-off: settings ${snapshot.settingsConfirmed ? 'CONFIRMED' : 'NOT confirmed'}`
+        + `${snapshot.settingsConfirmed ? '' : ` (prose ${snapshot.preProseConfirmed ? 'open' : 'BLOCKED'})`}; `
+        + `style ${snapshot.styleConfirmed ? 'CONFIRMED' : 'not confirmed'}.`,
+      )
+      if (snapshot.settingsLayers.length > 0) {
+        lines.push(`Settings layers, in the order they must be settled: ${snapshot.settingsLayers.join(' → ')}.`)
+      }
+      if (!snapshot.preProseConfirmed) {
+        lines.push(
+          'The premise layer is unsigned, and novel_write REFUSES prose until it is: put the premise in front of the '
+          + 'user and revise it over at least two recorded rounds — novel_confirm operation="discuss" kind="settings", '
+          + 'each round carrying their own answer — then let them confirm it (operation="confirm"). An inspiration is the '
+          + 'start of that conversation, not a licence to produce chapters: do not write prose, and do not confirm on '
+          + 'their behalf.',
+        )
+      }
+      if (snapshot.nextSettingsLayer !== '') {
+        lines.push(
+          `The settings are settled ONE LAYER AT A TIME, in order, and the layer in turn is 「${snapshot.nextSettingsLayer}」`
+          + ` (novel_confirm kind="${snapshot.nextSettingsKind}"): put that one layer in front of the user, record what `
+          + 'they said (operation="discuss"), have them confirm it (operation="confirm"), and only then start the next. '
+          + 'Do not hand the user world, cast and outline together — the order is the point, and a later layer is '
+          + 'refused while an earlier one is still open.',
+        )
+      }
+      if (snapshot.settingsConfirmed && !snapshot.styleConfirmed && snapshot.styleDue) {
+        lines.push(
+          'The first chapter has prose and the voice is unsigned: hand it to the author, hear what they think of the '
+          + 'style, record the round, and have them confirm it (novel_confirm kind="style") before chapter 2.',
+        )
+      }
     }
     if (snapshot !== undefined && snapshot.blockers.length > 0) {
       lines.push(`What the SOP wants before the next phase: ${snapshot.blockers.join('；')}`)

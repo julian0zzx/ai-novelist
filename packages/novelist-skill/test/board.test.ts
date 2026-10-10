@@ -110,11 +110,11 @@ describe('boardOf', () => {
     )
     const card = (number: number): BoardCard | undefined =>
       board.columns.flatMap((column) => column.cards).find((found) => found.number === number)
-    // A draft is measured against the 150% it is written to; a published chapter
-    // against the target the user gave.
-    expect(card(1)?.draftWords).toBe(4500)
+    // A draft is measured against the draft target it is written to; a published
+    // chapter against the target the user gave.
+    expect(card(1)?.draftWords).toBe(3750)
     expect(card(1)?.lengthGate).toBe('draft')
-    expect(card(2)?.draftWords).toBe(4500)
+    expect(card(2)?.draftWords).toBe(3750)
     expect(card(2)?.lengthGate).toBe('final')
     // No target means no draft line, exactly as `draftTargetWords` says.
     expect(boardOf(stateOf(chapter({ number: 3 }))).columns[0]?.cards[0]?.draftWords).toBe(0)

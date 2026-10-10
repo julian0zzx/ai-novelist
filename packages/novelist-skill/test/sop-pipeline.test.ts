@@ -45,6 +45,89 @@ async function call(
   return (await definition.execute(args, exec as never)) as Record<string, unknown>
 }
 
+/**
+ * Close the premise layer the way the SOP asks for it: two recorded rounds
+ * carrying the author's own words, then the author's sign-off.
+ *
+ * Every spec below that writes prose goes through here, because `novel_write`
+ * refuses to write without it — which is the behaviour a separate spec asserts.
+ */
+async function confirmPremise(): Promise<void> {
+  await call('novel_confirm', {
+    operation: 'discuss',
+    kind: 'settings',
+    proposal: '第一版设定：沉默少年持断剑上山，冷开局，先写外门底层。',
+    feedback: '主角再冷一点，别一上来就热血，也别喊口号。',
+    topics: ['立意', '人设'],
+  })
+  await call('novel_confirm', {
+    operation: 'discuss',
+    kind: 'settings',
+    proposal: '按你的意见改成沉默寡言，删掉复仇宣言，篇幅按单章 3000 字、80 万字。',
+    feedback: '可以，就按这版来。',
+    topics: ['人设', '篇幅'],
+  })
+  await call('novel_confirm', {
+    operation: 'confirm',
+    kind: 'settings',
+    summary: '沉默少年持断剑上山，冷开局，单章 3000 字、总 80 万字。',
+    note: '可以，就按这版来。',
+  })
+}
+
+/**
+ * Close one of the layers after the premise: one recorded round, then the sign-off.
+ *
+ * @param kind - the layer's confirmation kind.
+ * @param label - the layer's name, for the round's proposal text.
+ */
+async function confirmLayer(kind: 'world' | 'cast' | 'outline' | 'volume', label: string): Promise<void> {
+  await call('novel_confirm', {
+    operation: 'discuss',
+    kind,
+    proposal: `${label}这一层的第一版：${label === '分卷大纲' ? '第一卷立住脚，卷末认主。' : `先按最小可用来。`}`,
+    feedback: `这一层可以，就这样定。`,
+    topics: [label],
+  })
+  await call('novel_confirm', {
+    operation: 'confirm',
+    kind,
+    summary: `${label}定稿。`,
+    note: '这一层可以，就这样定。',
+  })
+}
+
+/**
+ * Close every settings layer, in the SOP's order.
+ *
+ * The stage machine only leaves 阶段一 once all five layers are signed off, so
+ * every spec that walks the pipeline past planning goes through this.
+ */
+async function confirmSettings(): Promise<void> {
+  await confirmPremise()
+  await confirmLayer('world', '世界观设定')
+  await confirmLayer('cast', '人物设定')
+  await confirmLayer('outline', '全书大纲')
+  await confirmLayer('volume', '分卷大纲')
+}
+
+/** Close the voice checkpoint after chapter 1 exists. */
+async function confirmStyle(): Promise<void> {
+  await call('novel_confirm', {
+    operation: 'discuss',
+    kind: 'style',
+    proposal: '把第 1 章成稿交给你读：短句为主，对话推进，形容词少。',
+    feedback: '这个语感可以，别加解释性段落。',
+    topics: ['文风'],
+  })
+  await call('novel_confirm', {
+    operation: 'confirm',
+    kind: 'style',
+    summary: '短句为主、对话推进、形容词少、不加解释性段落。',
+    note: '这个语感可以。',
+  })
+}
+
 /** The rendered text of one tool call, for asserting what the model is told. */
 async function callText(name: string, args: Record<string, unknown>): Promise<string> {
   const definition = tools.get(name)
@@ -170,10 +253,10 @@ describe('phase one: the length plan', () => {
     // The inherited target is what the dashboard shows a draft against.
     expect(await callText('novel_status', {})).toMatch(/0 字\/3000/)
     // And the contract is told, at planning time, the length its first draft is
-    // written to: 150% of the finished target.
+    // written to: 125% of the finished target.
     const plannedText = await callText('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
     expect(plannedText).toContain('成稿目标 3000 字')
-    expect(plannedText).toContain('初稿目标 4500 字')
+    expect(plannedText).toContain('初稿目标 3750 字')
   })
 
   it('warns about a chapter target when the user never gave one', async () => {
@@ -220,6 +303,8 @@ describe('phase two: the opening package', () => {
     for (let index = 0; index < 20; index += 1) {
       await call('novel_plan', { operation: 'competitor', title: `同榜书 ${String(index)}` })
     }
+    // Phase one is not finished until the author has signed the setup off.
+    await confirmSettings()
   }
 
   it('advances to opening-package and then blocks on the opening checklist', async () => {
@@ -302,6 +387,7 @@ describe('phase three: the launch decision', () => {
     ]) {
       await call('novel_plan', { operation: 'opening', key, done: true })
     }
+    await confirmSettings()
   }
 
   it('asks for a launch decision once the opening package is complete', async () => {
@@ -676,6 +762,7 @@ describe('phase five: serialization and iteration', () => {
       hook: '山门后传来一声钟响。',
       targetWords: 30,
     })
+    await confirmSettings()
   }
 
   it('writes prose and reports which contract fields the draft reached', async () => {
@@ -709,27 +796,27 @@ describe('phase five: serialization and iteration', () => {
     expect((result['warnings'] as string[]).join(' ')).toMatch(/标记 final/)
   })
 
-  it('drafts to 150% of the target and prints both length gates', async () => {
+  it('drafts to 125% of the target and prints both length gates', async () => {
     await serializing()
-    // 45 characters is the draft target for this 30-character chapter: the first
+    // 38 characters is the draft target for this 30-character chapter: the first
     // draft is written long so that 去 AI 化 and hand-cutting cannot leave the
     // finished chapter short.
     const result = await call('novel_write', {
       chapterId: 'chapter-1',
-      body: '甲'.repeat(45),
+      body: '甲'.repeat(38),
       delivered: ['plotTask'],
       status: 'drafting',
     })
     const text = String((result['body'] as string[]).join('\n'))
     expect(text).toContain('成稿目标 30 字')
-    expect(text).toContain('初稿目标 45 字')
+    expect(text).toContain('初稿目标 38 字')
     expect(text).toMatch(/按初稿口径/)
     expect((result['warnings'] as string[]) ?? []).not.toEqual(
       expect.arrayContaining([expect.stringMatching(/低于初稿目标/)]),
     )
   })
 
-  it('calls a draft written to the finished target short of the 150% it needs', async () => {
+  it('calls a draft written to the finished target short of the 125% it needs', async () => {
     await serializing()
     const result = await call('novel_write', {
       chapterId: 'chapter-1',
@@ -738,11 +825,11 @@ describe('phase five: serialization and iteration', () => {
       status: 'drafting',
     })
     const text = String((result['body'] as string[]).join('\n'))
-    expect(text).toMatch(/低于初稿目标 45 字/)
-    expect(text).toMatch(/初稿要按 150% 写/)
+    expect(text).toMatch(/低于初稿目标 38 字/)
+    expect(text).toMatch(/初稿要按 125% 写/)
   })
 
-  it('holds a revised chapter to the finished target, not to 150%', async () => {
+  it('holds a revised chapter to the finished target, not to the draft target', async () => {
     await serializing()
     const result = await call('novel_write', {
       chapterId: 'chapter-1',
@@ -792,6 +879,7 @@ describe('phase six: promises, retrospective, and reuse', () => {
     await call('novel_init', { title: '青云记' })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
     await call('novel_bible', { kind: 'link', id: 'sword', note: '断剑的来历', dueAt: '1', payoff: '掌门认剑' })
+    await confirmSettings()
     const written = await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。' })
     expect((written['warnings'] as string[]).join(' ')).toMatch(/已到回收章仍未回收/)
 
@@ -864,7 +952,15 @@ describe('phase six: promises, retrospective, and reuse', () => {
     // The stage machine reaches serialization on written work alone — a launch
     // decision, no reading, no evaluation.
     await call('novel_plan', { operation: 'launch', verdict: 'go' })
+    await confirmSettings()
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。' })
+
+    // The voice checkpoint is due the moment chapter 1 has prose, and the stage
+    // reports it rather than letting the book run on.
+    const gated = await call('novel_status', {})
+    expect(gated['stage']).toMatch(/serializing/)
+    expect((gated['blockers'] as string[]).join(' ')).toMatch(/确认文风/)
+    await confirmStyle()
 
     const before = await call('novel_status', {})
     expect(before['stage']).toMatch(/serializing/)
@@ -906,6 +1002,7 @@ describe('the file is the source of truth', () => {
       beats: ['tension'],
       hook: '山门后传来一声钟响。',
     })
+    await confirmSettings()
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高，云雾不散。', delivered: ['plotTask'] })
 
     // A human edits the chapter-end hook in their own editor. Nothing tells the
@@ -942,6 +1039,7 @@ describe('the file is the source of truth', () => {
   it('reports a hand-broken file by name and refuses to write over it', async () => {
     await call('novel_init', { title: '青云记' })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
+    await confirmSettings()
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。', delivered: ['plotTask'] })
 
     const bodyPath = join(root, '章节/第001章-山门.md')
@@ -958,6 +1056,7 @@ describe('the file is the source of truth', () => {
   it('renames the chapter files, and the plan, when the title changes', async () => {
     await call('novel_init', { title: '青云记' })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1, plotTask: '抵达' })
+    await confirmSettings()
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。', delivered: ['plotTask'] })
 
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门之下' })

@@ -95,6 +95,7 @@ function fixture(): NovelState {
         {
           number: 1,
           title: '山门',
+          detail: '卷一从前山石阶写到试剑台：林越先被守门弟子刁难，再被长老试出剑骨，卷末在试剑台上认主。',
           goal: '林越拜入山门并立住脚',
           conflict: '守门弟子与长老的刁难',
           climax: '试剑台上断剑认主',
@@ -104,6 +105,7 @@ function fixture(): NovelState {
         {
           number: 2,
           title: '后山',
+          detail: '',
           goal: '',
           conflict: '',
           climax: '',
