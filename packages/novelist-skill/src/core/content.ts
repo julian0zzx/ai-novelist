@@ -24,6 +24,8 @@ import {
   BEAT_KINDS,
   CHAPTER_STATUSES,
   CONTRACT_FIELDS,
+  OUTLINE_SPINE_PARTS,
+  VOLUME_SPINE_PARTS,
   type Chapter,
   type ChapterStatus,
   type Character,
@@ -31,8 +33,11 @@ import {
   type ContractField,
   type NovelState,
   type Outline,
+  type OutlineSpineField,
+  type SpinePart,
   type StorageIndex,
   type VolumePlan,
+  type VolumeSpineField,
   type WorldEntry,
   type BeatKind,
 } from './types.ts'
@@ -57,6 +62,7 @@ import {
   sectionList,
   sectionText,
   splitSections,
+  splitSubsections,
   type MdSection,
   type YamlScalar,
   type YamlValue,
@@ -78,13 +84,22 @@ export const CONTRACT_SECTIONS: Readonly<Record<ContractField, string>> = {
   emotionalPayoff: '情绪回报',
   infoGap: '信息差',
   hook: '章末钩子',
+  keyBeat: '关键转折',
+  price: '代价与收获',
   // `beats` lives in the frontmatter; it has no section of its own.
   beats: '',
 }
 
-/** The `##` headings a chapter contract file carries, in file order. */
+/**
+ * The `##` headings a chapter contract file carries, in file order.
+ *
+ * The two narrative sections come first: a reader checking a contract wants
+ * "what happens and what it costs" before the machinery of how it is dressed.
+ */
 export const CONTRACT_SECTION_ORDER: readonly string[] = [
   '剧情任务',
+  '关键转折',
+  '代价与收获',
   '冲突',
   '情绪回报',
   '信息差',
@@ -106,6 +121,8 @@ export const CHAPTER_PLAN_SECTIONS = {
 export interface OutlineFileContent {
   /** One-sentence story. */
   readonly logline: string
+  /** The narrative spine, `synopsis` included, as the file's `## 叙事骨架` block. */
+  readonly spine: Readonly<Record<OutlineSpineField, string>>
   /** The whole-book detailed outline (SOP step 15). */
   readonly fullOutline: string
   /** Act structure. */
@@ -116,9 +133,17 @@ export interface OutlineFileContent {
   readonly fullOutlineDone: boolean
 }
 
-/** The `##` headings `全书大纲.md` fixes, in file order. */
+/**
+ * The `##` headings `全书大纲.md` fixes, in file order.
+ *
+ * The whole-book narrative spine lives inside {@link OUTLINE_SECTIONS.spine} as
+ * `###` subsections — one file, one `##` block — while a volume's spine is `###`
+ * subsections of its own volume entry (see {@link parseVolumeFile}), because a
+ * second `##` inside a volume entry would read as the next volume.
+ */
 export const OUTLINE_SECTIONS = {
   logline: '一句话',
+  spine: '叙事骨架',
   full: '完整大纲',
   acts: '三幕',
   minimal: '最小可行大纲',
@@ -135,8 +160,13 @@ export const OUTLINE_SECTIONS = {
 export function parseOutlineFile(raw: string, where: string): OutlineFileContent {
   const sections = sectionsOf(raw, where)
   const front = docFrontmatter(raw, where)
+  // The spine is one `##` section of `###` elements, so a missing section yields
+  // an all-empty spine, and an element the author renamed reads as empty rather
+  // than as a silent pass (`spineGaps` reports it with the heading it wanted).
+  const spineSections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.spine)?.body ?? '').subsections
   return {
     logline: sectionText(sections, OUTLINE_SECTIONS.logline),
+    spine: spineOf(OUTLINE_SPINE_PARTS, spineSections),
     fullOutline: sectionText(sections, OUTLINE_SECTIONS.full),
     acts: sectionList(sections, OUTLINE_SECTIONS.acts),
     minimal: sectionText(sections, OUTLINE_SECTIONS.minimal),
@@ -145,7 +175,34 @@ export function parseOutlineFile(raw: string, where: string): OutlineFileContent
 }
 
 /**
+ * Read a spine's elements out of a parsed section list.
+ *
+ * @param parts - the spine's element table.
+ * @param sections - the `###` subsections to read.
+ * @returns one entry per element, empty where the heading is absent.
+ */
+function spineOf<Field extends string>(
+  parts: readonly SpinePart<Field>[],
+  sections: readonly MdSection[],
+): Readonly<Record<Field, string>> {
+  const result = {} as Record<Field, string>
+  for (const part of parts) result[part.field] = sectionText(sections, part.heading)
+  return result
+}
+
+/** An all-empty whole-book spine, for a project with no outline file yet. */
+function emptySpine(): Readonly<Record<OutlineSpineField, string>> {
+  return spineOf(OUTLINE_SPINE_PARTS, [])
+}
+
+/**
  * Render `全书大纲.md`.
+ *
+ * Section order is the pipeline order: the logline, then the narrative spine
+ * (故事梗概 … 获得了什么), then the detailed skeleton, then its act list. A reader
+ * who stops after the spine still knows the story; a reader who only reads the
+ * skeleton has the machinery without the story, which is the order this file is
+ * meant to prevent.
  *
  * @param outline - the fields the file owns.
  * @returns the file text.
@@ -157,6 +214,7 @@ export function renderOutlineFile(outline: OutlineFileContent): string {
   // unrelated edit rewrite the whole outline.
   return renderDocument({ fullOutlineDone: outline.fullOutlineDone }, '全书大纲', [
     renderSection(OUTLINE_SECTIONS.logline, outline.logline),
+    renderSection(OUTLINE_SECTIONS.spine, renderSpine(OUTLINE_SPINE_PARTS, outline.spine)),
     renderSection(OUTLINE_SECTIONS.full, outline.fullOutline),
     renderListSection(OUTLINE_SECTIONS.acts, outline.acts),
     renderSection(OUTLINE_SECTIONS.minimal, outline.minimal),
@@ -459,18 +517,33 @@ export function parseVolumeFile(raw: string, where: string): VolumePlan[] {
     // A repeated number is the same volume written twice, not two volumes: the
     // later entry wins, which is what makes an in-place edit idempotent.
     const existing = volumes.findIndex((volume) => volume.number === number)
-    // The prose after the yaml block is the volume's own detail — the 分卷剧情大纲.
-    // An explicit `detail:` key is kept ahead of it, the same way the cast file
-    // treats a declared description versus accumulated prose.
+    // The narrative spine lives in `###` subsections of the entry; the volume's
+    // 卷内节奏 is everything else. Volume entries are delimited by `##`, so an
+    // extra `##` inside one would read as the next volume — which is why the
+    // spine is `###` here and a `##` block on `全书大纲.md` only.
+    const { preamble, subsections } = splitSubsections(entry.prose)
+    const spineSections = subsections.filter((section) =>
+      VOLUME_SPINE_PARTS.some((part) => part.heading === section.title),
+    )
+    const rest = subsections.filter((section) => !VOLUME_SPINE_PARTS.some((part) => part.heading === section.title))
+    // Rebuild the pacing body in element order: spine elements first, then
+    // everything the author wrote under other subheadings.
+    const prose = [
+      preamble,
+      ...rest.map((section) => `### ${section.title}\n\n${section.body}`.trim()),
+    ].filter((part) => part !== '').join('\n\n')
+    // An explicit `detail:` key is kept ahead of the prose, the same way the cast
+    // file treats a declared description versus accumulated prose.
     const declared = frontString(entry.fields, 'detail', '')
     const volume: VolumePlan = {
       number,
       title: frontString(entry.fields, 'title', '') || entry.title.replace(/^第\s*\d+\s*卷\s*/u, '').trim(),
-      detail: [declared, entry.prose].filter((part) => part !== '').join('\n\n'),
+      detail: [declared, prose].filter((part) => part !== '').join('\n\n'),
       goal: frontString(entry.fields, 'goal', ''),
       conflict: frontString(entry.fields, 'conflict', ''),
       climax: frontString(entry.fields, 'climax', ''),
       endHook: frontString(entry.fields, 'endHook', ''),
+      ...spineOf(VOLUME_SPINE_PARTS, spineSections),
       chapters: numberList(entry.fields['chapters']),
     }
     if (existing >= 0) volumes[existing] = volume
@@ -488,8 +561,16 @@ export function parseVolumeFile(raw: string, where: string): VolumePlan[] {
 export function renderVolumeFile(volumes: readonly VolumePlan[]): string {
   const sections = [...volumes]
     .sort((a, b) => a.number - b.number)
-    .map((volume) =>
-      renderEntry(
+    .map((volume) => {
+      // The volume's 卷内节奏 is the entry's preamble and its named narrative
+      // elements are `###` subsections below it. The order is deliberate: an
+      // unlabelled body written *above* the first subheading is unambiguously
+      // preamble, whereas the same body placed after a final subsection whose
+      // element was never written would be read as that element's text.
+      const spine = renderSpine(VOLUME_SPINE_PARTS, volume)
+      const detail = volume.detail.replace(/^\s+|\s+$/gu, '')
+      const prose = [detail, spine].filter((part) => part !== '').join('\n\n')
+      return renderEntry(
         `第 ${String(volume.number)} 卷${volume.title === '' ? '' : ` ${volume.title}`}`,
         dropEmpty({
           number: volume.number,
@@ -500,11 +581,9 @@ export function renderVolumeFile(volumes: readonly VolumePlan[]): string {
           endHook: volume.endHook,
           chapters: [...volume.chapters],
         }),
-        // The detail is the volume's body: it is the part that carries the
-        // volume's own rhythm, and it is the part the length target measures.
-        volume.detail,
-      ),
-    )
+        prose,
+      )
+    })
   // No `updatedAt`: see {@link renderCastFile}.
   return renderDocument({}, '分卷大纲', sections)
 }
@@ -725,6 +804,10 @@ export interface ChapterFileContent {
   readonly beats: readonly BeatKind[]
   /** The chapter-end hook. */
   readonly hook: string
+  /** The turn this chapter delivers. */
+  readonly keyBeat: string
+  /** What the chapter costs or leaves behind. */
+  readonly price: string
   /** Contract fields the author explicitly waived, with the reason. */
   readonly waived: Readonly<Partial<Record<ContractField, string>>>
   /** Fields the last `novel_write` reached. */
@@ -783,6 +866,8 @@ export function parseChapterOutlineFile(raw: string, where: string, bodyFile: st
     infoGap: sectionText(sections, CONTRACT_SECTIONS.infoGap),
     beats: beats.filter((beat): beat is BeatKind => (BEAT_KINDS as readonly string[]).includes(beat)),
     hook: sectionText(sections, CONTRACT_SECTIONS.hook),
+    keyBeat: sectionText(sections, CONTRACT_SECTIONS.keyBeat),
+    price: sectionText(sections, CONTRACT_SECTIONS.price),
     waived,
     delivered: CONTRACT_FIELDS.filter((field) => frontStringArray(frontmatter, 'delivered').includes(field)),
   }
@@ -814,6 +899,8 @@ export function parseChapterBodyFile(raw: string, where: string, bodyFile: strin
     infoGap: '',
     beats: [],
     hook: '',
+    keyBeat: '',
+    price: '',
     waived: {},
     delivered: [],
   }
@@ -871,6 +958,10 @@ function chapterFieldOf(chapter: Chapter, section: string): string {
   switch (section) {
     case CONTRACT_SECTIONS.plotTask:
       return chapter.plotTask
+    case CONTRACT_SECTIONS.keyBeat:
+      return chapter.keyBeat
+    case CONTRACT_SECTIONS.price:
+      return chapter.price
     case CONTRACT_SECTIONS.conflict:
       return chapter.conflict
     case CONTRACT_SECTIONS.emotionalPayoff:
@@ -882,6 +973,36 @@ function chapterFieldOf(chapter: Chapter, section: string): string {
     default:
       return ''
   }
+}
+
+/**
+ * Render one `###` subsection.
+ *
+ * Mirrors `renderSection`, one heading level down. An empty body still renders
+ * the heading, so an element nobody wrote is visible in the file the author
+ * edits, not only in a tool's output.
+ *
+ * @param title - the subheading text.
+ * @param body - the element's text.
+ * @returns the subsection text, with no trailing newline.
+ */
+function renderSubsection(title: string, body: string): string {
+  const text = body.replace(/^\s+|\s+$/gu, '')
+  return text === '' ? `### ${title}` : `### ${title}\n\n${text}`
+}
+
+/**
+ * Render a spine's elements as a run of `###` subsections.
+ *
+ * @param parts - the spine's element table.
+ * @param values - the values to render.
+ * @returns the subsections, separated by blank lines.
+ */
+function renderSpine<Field extends string>(
+  parts: readonly SpinePart<Field>[],
+  values: Readonly<Record<Field, string>>,
+): string {
+  return parts.map((part) => renderSubsection(part.heading, values[part.field])).join('\n\n')
 }
 
 /** The `waived` map as a serializable record; `{}` when nothing is waived. */
@@ -919,6 +1040,16 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   return {
     outline: renderOutlineFile({
       logline: state.outline.logline,
+      spine: {
+        synopsis: state.outline.synopsis,
+        protagonistArc: state.outline.protagonistArc,
+        supportArcs: state.outline.supportArcs,
+        antagonistArc: state.outline.antagonistArc,
+        factionShift: state.outline.factionShift,
+        conflictArcs: state.outline.conflictArcs,
+        costs: state.outline.costs,
+        gains: state.outline.gains,
+      },
       fullOutline: state.outline.fullOutline,
       acts: state.outline.acts,
       minimal: state.outline.minimal,
@@ -993,7 +1124,7 @@ export function composeContent(
   const outlineFile = read(index.outlineFile)
   const outlineText =
     outlineFile === undefined
-      ? { logline: '', fullOutline: '', acts: [], minimal: '', fullOutlineDone: false }
+      ? { logline: '', spine: emptySpine(), fullOutline: '', acts: [], minimal: '', fullOutlineDone: false }
       : parseOutlineFile(outlineFile, index.outlineFile)
 
   const planFile = read(index.chapterPlanFile)
@@ -1007,6 +1138,7 @@ export function composeContent(
   const outline: Outline = {
     ...emptyOutline(),
     logline: outlineText.logline,
+    ...outlineText.spine,
     fullOutline: outlineText.fullOutline,
     acts: outlineText.acts,
     minimal: outlineText.minimal,
@@ -1076,6 +1208,8 @@ function composeChapters(
       infoGap: outlinePart?.infoGap ?? '',
       beats: outlinePart?.beats ?? [],
       hook: outlinePart?.hook ?? '',
+      keyBeat: outlinePart?.keyBeat ?? '',
+      price: outlinePart?.price ?? '',
       targetWords: planRow?.targetWords ?? outlinePart?.targetWords ?? 0,
       waived: outlinePart?.waived ?? {},
       delivered: outlinePart?.delivered ?? [],

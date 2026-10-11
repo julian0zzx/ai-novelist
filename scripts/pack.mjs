@@ -31,7 +31,7 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { basename, dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -59,76 +59,49 @@ const STAGE_NAME = 'ai-novelist'
 /** The development package that builds the plugin, named for the filter. */
 const HOST_PACKAGE_NAME = '@ai-novelist/novelist-skill'
 
-/** The nine tools every distribution must carry. */
-const EXPECTED_TOOLS = [
-  'novel_init',
-  'novel_confirm',
-  'novel_plan',
-  'novel_bible',
-  'novel_write',
-  'novel_assess',
-  'novel_status',
-  'novel_repo',
-  'novel_review',
-]
-
-/** The tool surface, as documented by every distribution. */
-const TOOL_TABLE = [
-  [
-    '`novel_init`',
-    '—',
-    'project, commercial frame, calibration medians, the length plan (总字数 / 单章字数 / 卷数, asked of the user), naming candidates',
-  ],
-  [
-    '`novel_confirm`',
-    'status, discuss, confirm',
-    'the author checkpoints, with the settings settled one layer at a time in order '
-      + '(立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲 → 文风): a later layer is refused while an earlier one is open, '
-      + '`discuss` records one round carrying the user\'s own words (two rounds before the premise can be confirmed, one '
-      + 'per later layer), and `confirm` needs both the approved summary and the author\'s own words in `note`',
-  ],
-  [
-    '`novel_plan`',
-    'competitor, pitch, world, outline, volume, chapter, beat, opening, naming, launch',
-    'the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor '
-      + 'dismantles land in `竞品拆解.md`; `fullOutline` and a volume\'s `detail` are measured against the layer\'s length '
-      + 'budget (÷100 / ÷50 / ÷10) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` '
-      + 'verdict must name its fallback and abandon condition',
-  ],
-  ['`novel_bible`', 'character, world, link, review', 'cast, world facts, reader promises, and their review'],
-  [
-    '`novel_write`',
-    'write, read, check',
-    'prose, the contract-delivery report, and the automatic 去 AI 化 statistics. The one hard gate in the pipeline: it '
-      + 'refuses to write until the user has signed the premise layer off, and — after chapter 1 — the style',
-  ],
-  [
-    '`novel_assess`',
-    'record, iterate, evaluate, outcome, history, rules',
-    'the on-demand investment evaluation: readings in, verdict out; it owns no phase and gates nothing. '
-      + '`evaluate` back-fills every open change, refuses to judge a reading with no comparable median, and must '
-      + 'leave a next appointment; a non-passing evaluation must name its fallback and abandon condition',
-  ],
-  ['`novel_status`', 'dashboard, bible, plan, chapter', 'the derived SOP dashboard'],
-  [
-    '`novel_repo`',
-    'export, retro, asset, lesson, template',
-    'retrospective, IP assets, reusable templates, manuscript export',
-  ],
-  [
-    '`novel_review`',
-    'ai-flavor, opening, competitor, retro',
-    'the one model-backed tool: prose judgement under a versioned rubric, recorded with the model that produced it',
-  ],
-]
+/**
+ * The built SOP spec, loaded once from the plugin's own `lib/`.
+ *
+ * Every table, every revision number and the per-phase reference split come from
+ * this one module, so a distribution cannot describe a surface the plugin does not
+ * have. It is loaded **after** the build, from compiled output rather than from
+ * `src/`, so what the tables describe is exactly what shipped.
+ *
+ * @type {Promise<Record<string, any>> | undefined}
+ */
+let specPromise
 
 /**
- * Render the tool table as Markdown rows.
+ * Load the built spec, caching the import.
+ *
+ * @returns the `core/sop.js` module namespace.
+ */
+async function sop() {
+  specPromise ??= import(pathToFileURL(join(HOST_DIR, 'lib', 'core', 'sop.js')).href)
+  return specPromise
+}
+
+/**
+ * Render one tool's operations cell.
+ *
+ * @param tool - the spec's tool entry.
+ * @returns the operations, or an em dash when the tool takes none.
+ */
+function operationsCell(tool) {
+  return tool.operations.length === 0 ? '—' : tool.operations.join(', ')
+}
+
+/**
+ * Render the tool table as Markdown rows, from the spec.
  *
  * @returns the table body, one line per tool.
  */
-function toolTableRows() {
-  return TOOL_TABLE.map(([tool, operations, purpose]) => `| ${tool} | ${operations} | ${purpose} |`).join('\n')
+async function toolTableRows() {
+  const { TOOL_SURFACE, TOOL_ORDER } = await sop()
+  return TOOL_ORDER.map((name) => {
+    const tool = TOOL_SURFACE[name]
+    return `| \`${tool.name}\` | ${operationsCell(tool)} | ${tool.purpose} |`
+  }).join('\n')
 }
 
 /**
@@ -142,19 +115,24 @@ async function manifestOf(dir) {
 }
 
 /**
- * Assert that a built host package really registers the nine tools.
+ * Assert that a built host package really registers every tool the spec lists.
  *
  * The distributions copy build output, so a stale or partial `lib/` would ship
  * silently. Matching the bare name keeps this independent of the emitted
  * literal's quoting, which is the bundler's business.
  *
+ * The check reads the same {@link sop} spec the tables are rendered from, which is
+ * what turns "the documentation is generated" into "the documentation cannot lie":
+ * a tool removed from `tools.ts` but left in the spec fails the pack.
+ *
  * @param hostDir - the host package directory to inspect.
  * @returns the built file's size in bytes.
  */
 async function assertBuiltTools(hostDir) {
+  const { TOOL_ORDER } = await sop()
   const entry = join(hostDir, 'lib', 'host', 'tools.js')
   const source = await readFile(entry, 'utf8')
-  const missing = EXPECTED_TOOLS.filter((tool) => !source.includes(tool))
+  const missing = TOOL_ORDER.filter((tool) => !source.includes(tool))
   if (missing.length > 0) {
     throw new Error(
       `pack: ${relative(ROOT, entry)} does not mention ${missing.join(', ')} — run \`pnpm run build\` before packing`,
@@ -278,7 +256,7 @@ async function packPluginDistribution(version) {
   await cp(join(HOST_DIR, 'lib'), join(stage, 'lib'), { recursive: true })
   await cp(join(HOST_DIR, 'src'), join(stage, 'src'), { recursive: true })
   await cp(join(HOST_DIR, 'README.md'), join(stage, 'README.md'))
-  await writeFile(join(stage, 'INSTALL.md'), installNotes(version), 'utf8')
+  await writeFile(join(stage, 'INSTALL.md'), await installNotes(version), 'utf8')
 
   const tarball = join(outDir, `ai-novelist-${version}.tgz`)
   execFileSync('tar', ['-czf', tarball, '-C', join(outDir, 'stage'), STAGE_NAME])
@@ -331,7 +309,9 @@ function restoreDevelopmentBuild() {
  * @param version - the version string.
  * @returns the Markdown document.
  */
-function installNotes(version) {
+async function installNotes(version) {
+  const { SOP_VERSION } = await sop()
+  const rows = await toolTableRows()
   return `# ai-novelist — DSH plugin distribution (v${version})
 
 **One package, both faces.** \`${PACKAGE_NAME}\` is simultaneously:
@@ -409,9 +389,10 @@ dsh plugin --profile web remove -w ${PACKAGE_NAME}
 
 | tool | operations | purpose |
 |---|---|---|
-${toolTableRows()}
+${rows}
 
-The workflow they implement is \`docs/sop.md\` in the source repository.
+The workflow they implement is the 爆款网文创作全流程 SOP ${SOP_VERSION}, shipped as
+\`docs/sop.md\` in the source repository and split per phase for the skill bundle.
 `
 }
 
@@ -420,10 +401,21 @@ The workflow they implement is \`docs/sop.md\` in the source repository.
 /**
  * The `SKILL.md` body, with frontmatter DSH's filesystem provider accepts.
  *
+ * The body is an **index**, not the workflow: the phase the project is actually in
+ * lives in its own generated reference, and the agent is told to load only that
+ * one. The full workflow is 600 lines, and a skill that hands all of it over at
+ * once spends the context it needs for the chapter it is writing.
+ *
  * @param version - the version string.
  * @returns the Markdown document.
  */
-function skillDocument(version) {
+async function skillDocument(version) {
+  const { SOP_VERSION, TOOL_ORDER, SOP_PHASES } = await sop()
+  const rows = await toolTableRows()
+  const phaseIndex = SOP_PHASES.map(
+    (phase) =>
+      `| ${phase.ordinal} | ${phase.title} | ${phase.goal} | \`${phase.reference}\` |`,
+  ).join('\n')
   return `---
 name: ai-novelist
 description: Plan, validate, write, and iterate a Chinese web novel (网文) with the 爆款网文 SOP — a gated pipeline from premise and competitor study through validation, serialization, metrics-driven iteration, and retrospective. Use when the user wants to start, continue, validate, or troubleshoot a web novel, or asks about 追读/首订/开篇/大纲/伏笔 for one.
@@ -431,14 +423,16 @@ whenToUse: The user mentions a web novel, 网文, 追读/首订/三章读完, �
 license: MIT
 metadata:
   version: ${version}
-  tools: ${EXPECTED_TOOLS.join(', ')}
+  sop: ${SOP_VERSION}
+  tools: ${TOOL_ORDER.join(', ')}
 ---
 
 # AI Web Novel Composer
 
-Drives a Chinese web novel through the 爆款网文 SOP 3.3: **假设 → 验证 → 放大 → 复盘 →
-复用**. It is a pipeline with gates, not a notebook. Eight of the nine tools do the
-bookkeeping; you do the writing; \`novel_review\` buys a second opinion on it.
+Drives a Chinese web novel through the 爆款网文创作全流程 SOP ${SOP_VERSION}:
+**假设 → 验证 → 放大 → 复盘 → 复用**. It is a pipeline with gates, not a notebook.
+Eight of the nine tools do the bookkeeping; you do the writing; \`novel_review\`
+buys a second opinion on it.
 
 Two checkpoints belong to the **user**, and \`novel_confirm\` is where they are
 recorded: the settings sign-off (premise, cast, world, length, tone — discussed
@@ -452,6 +446,21 @@ declared \`go\` / \`revise\` / \`abandon\`, not in a metric: the data evaluation
 (\`novel_assess\`) sits outside the phases and is started by the author when they
 ask whether the book is still worth continuing.
 
+## Read one phase, not the whole workflow
+
+The SOP is six phases. Read \`references/common.md\` once — it carries the closed
+loop, the vocabulary every phase shares, and the rules that apply throughout — then
+read only the file for the phase your project is actually in. \`novel_status\`
+reports that phase as \`stage\`, and the runtime context repeats its reference each
+step.
+
+| # | phase | what it is for | read |
+|---|---|---|---|
+${phaseIndex}
+
+\`references/sop.md\` is the whole document, kept for search. Do not read it end to
+end; it is the same text the six phase files are cut from.
+
 ## The nine tools
 
 Eight compute, and are registered unconditionally. The ninth, \`novel_review\`,
@@ -462,7 +471,7 @@ tools* below). Nothing here works until they exist.
 
 | tool | operations | what it owns |
 |---|---|---|
-${toolTableRows()}
+${rows}
 
 Every tool answers with the same envelope, so whichever one you call you learn the
 same orientation: \`ok\`, \`operation\`, \`detail\`, \`stage\` (the SOP phase the
@@ -576,8 +585,12 @@ reported rather than silently accepted.
 
 ## Read before acting
 
-- \`references/sop.md\` — the full workflow, with checkpoints and fallback targets
-  per phase. Read the phase you are in, not the whole file.
+- \`references/common.md\` — the closed loop, the shared vocabulary (四种章数,
+  三种信息), the on-demand evaluation, and the revision discipline. Applies to
+  every phase; read it once.
+- \`references/phase-*.md\` — one file per SOP phase, cut from \`references/sop.md\`
+  at pack time. Read the one matching the \`stage\` you are in, not the others.
+- \`references/sop.md\` — the whole workflow in one file, kept for search only.
 - \`references/tools.md\` — every tool, every operation, every parameter, and the
   shared result envelope.
 - \`references/thresholds.md\` — the metric keys, the default multipliers, and the
@@ -603,6 +616,101 @@ reported rather than silently accepted.
 }
 
 /**
+ * Assert that the prose SOP announces the revision the code implements.
+ *
+ * `docs/sop.md` is the long-form workflow and `core/sop.ts` is the executable one;
+ * the two are edited by hand in different files, which is exactly how the shipped
+ * `SKILL.md` came to say "SOP 3.3" beside a 3.5 reference. Packing is the last
+ * moment both are in hand, so it is where the disagreement is caught.
+ *
+ * @param source - the text of `docs/sop.md`.
+ */
+async function assertSopVersion(source) {
+  const { SOP_VERSION } = await sop()
+  const title = source.split('\n', 1)[0] ?? ''
+  if (!title.includes(`SOP ${SOP_VERSION}`)) {
+    throw new Error(
+      `pack: docs/sop.md announces "${title}" but core/sop.ts implements SOP ${SOP_VERSION}`
+        + ' — update one to match the other before packing',
+    )
+  }
+}
+
+/**
+ * Cut `docs/sop.md` into the per-phase references the skill ships.
+ *
+ * The skill's whole point is that the agent reads the phase it is in rather than
+ * all 600 lines; splitting at pack time means the phase files are the same text as
+ * `sop.md` and cannot drift from it. Sections that are not a phase — the closed
+ * loop, the shared vocabulary, the on-demand evaluation, the changelog — land in
+ * `common.md`, which is read once.
+ *
+ * @param source - the text of `docs/sop.md`.
+ * @param dir - the `references/` directory to write into.
+ */
+async function writePhaseReferences(source, dir) {
+  const { SOP_VERSION, SOP_PHASES } = await sop()
+  const lines = source.split('\n')
+
+  // Split on top-level `## ` headings, keeping the preamble as section zero.
+  const sections = []
+  let current = { title: '', body: [] }
+  for (const line of lines) {
+    if (line.startsWith('## ')) {
+      sections.push(current)
+      current = { title: line.slice(3).trim(), body: [line] }
+    } else {
+      current.body.push(line)
+    }
+  }
+  sections.push(current)
+
+  const preamble = sections.shift()
+  const used = new Set()
+  for (const phase of SOP_PHASES) {
+    const marker = `阶段${phase.ordinal}`
+    const section = sections.find((entry) => entry.title.includes(marker) && !used.has(entry.title))
+    if (section === undefined) {
+      throw new Error(`pack: docs/sop.md has no section for phase ${phase.ordinal} (${phase.title})`)
+    }
+    used.add(section.title)
+    const header = [
+      `# 阶段${phase.ordinal} · ${phase.title}`,
+      '',
+      `> SOP ${SOP_VERSION} 的六个阶段之一：**${phase.goal}**。`,
+      `> 使用的工具：${phase.tools.map((tool) => `\`${tool}\``).join(' · ')}。`,
+      phase.closesWith === ''
+        ? '> 本阶段没有单一收尾操作，完成即进入下一阶段。'
+        : `> 本阶段由 \`${phase.closesWith}\` 收尾。`,
+      '',
+      '本文件由 `docs/sop.md` 在打包时切分生成，与 `references/sop.md` 同源。',
+      '',
+      '---',
+      '',
+    ].join('\n')
+    await writeFile(join(dir, phase.reference.replace(/^references\//u, '')), header + section.body.join('\n'), 'utf8')
+  }
+
+  const rest = sections.filter((entry) => !used.has(entry.title))
+  const common = [
+    '# SOP 通用部分',
+    '',
+    `> 爆款网文创作全流程 SOP ${SOP_VERSION} 中适用于**每一个**阶段的部分：总闭环、粒度与口径、按需投入评估、变更清单。`,
+    '> 开始任何阶段前读一遍；各阶段专属内容见 `phase-*.md`。',
+    '',
+    '本文件由 `docs/sop.md` 在打包时切分生成，与 `references/sop.md` 同源。',
+    '',
+    '---',
+    '',
+    preamble.body.join('\n').trim(),
+    '',
+    ...rest.map((entry) => entry.body.join('\n').trim()),
+    '',
+  ].join('\n')
+  await writeFile(join(dir, 'common.md'), common, 'utf8')
+}
+
+/**
  * Build `dist/skill/ai-novelist/`: the portable Agent Skill bundle.
  *
  * @param version - the version string.
@@ -620,10 +728,13 @@ async function packSkillDistribution(version) {
     'lib',
     'src',
   ])
-  await writeFile(join(target, 'SKILL.md'), skillDocument(version), 'utf8')
+  await writeFile(join(target, 'SKILL.md'), await skillDocument(version), 'utf8')
 
   await mkdir(join(target, 'references'), { recursive: true })
-  await cp(join(ROOT, 'docs', 'sop.md'), join(target, 'references', 'sop.md'))
+  const sopSource = await readFile(join(ROOT, 'docs', 'sop.md'), 'utf8')
+  await assertSopVersion(sopSource)
+  await writeFile(join(target, 'references', 'sop.md'), sopSource, 'utf8')
+  await writePhaseReferences(sopSource, join(target, 'references'))
   await writeFile(join(target, 'references', 'tools.md'), await toolsReference(), 'utf8')
   await writeFile(join(target, 'references', 'thresholds.md'), await thresholdsReference(), 'utf8')
 
@@ -701,6 +812,8 @@ console.log(\`setup: verify with  dsh --profile \${profile} --dump-config | grep
  * @returns the Markdown document.
  */
 async function toolsReference() {
+  const { TOOL_ORDER } = await sop()
+  const rows = await toolTableRows()
   const source = await readFile(join(HOST_DIR, 'README.md'), 'utf8')
   const marker = '## The tool surface'
   const start = source.indexOf(marker)
@@ -712,11 +825,11 @@ async function toolsReference() {
   }
   return `# Tool reference
 
-The nine tools, in the order the SOP uses them:
+The ${TOOL_ORDER.length} tools, in the order the SOP uses them:
 
 | tool | operations | what it owns |
 |---|---|---|
-${toolTableRows()}
+${rows}
 
 ## The shared envelope
 
@@ -800,7 +913,7 @@ async function main() {
   const report = {
     version,
     builtToolsBytes,
-    tools: EXPECTED_TOOLS,
+    tools: (await sop()).TOOL_ORDER,
     pluginDistribution: {
       tarball: relative(ROOT, plugin.tarball),
       bytes: plugin.bytes,

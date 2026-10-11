@@ -38,6 +38,7 @@
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ScheduleService } from '@deepseek-ai/dsh-schedule'
 import {
   BEAT_KINDS,
   CHAPTER_STATUSES,
@@ -47,12 +48,15 @@ import {
   LENGTH_BENCHMARKS,
   LINK_STATUSES,
   METRIC_KEYS,
+  OUTLINE_SPINE_PARTS,
   PLATFORM_AUDIENCES,
   PLATFORM_MODES,
   REVIEW_KINDS,
   REVIEW_PROMPT_VERSION,
   SETTINGS_LAYERS,
   STYLE_GATE_CHAPTER,
+  TOOL_SURFACE,
+  VOLUME_SPINE_PARTS,
   WRITING_PLAN_QUESTIONS,
   NovelInputError,
   addConfirmation,
@@ -98,9 +102,14 @@ import {
   lengthCheck,
   lengthWindow,
   missingContract,
+  narrativeReport,
+  nextStep,
   normalizeId,
   normalizeWritingPlan,
   openingPackageGaps,
+  outlinePayoffGaps,
+  outlineSpineGaps,
+  outlineSpineValues,
   parseReviewOutput,
   progressOf,
   proseGate,
@@ -111,6 +120,7 @@ import {
   resolveChapterId,
   rhythmExpectation,
   setOpeningCheck,
+  skeletonGate,
   stageLabel,
   styleGateReached,
   styleObservations,
@@ -129,6 +139,8 @@ import {
   upsertWorld,
   verdictFromAssessments,
   volumeLengthNote,
+  volumeSpineGaps,
+  volumeSpineValues,
   volumeWordTarget,
   worldGaps,
   writingPlanConflicts,
@@ -153,7 +165,16 @@ import {
   type VerdictLevel,
 } from '../core/index.ts'
 import { CUT_LOSS_MULTIPLIER, DEFAULT_MULTIPLIERS, INEFFECTIVE_ITERATIONS_FOR_CUT } from '../core/metrics.ts'
-import { NovelReviewError, resolveRoute, runReview, type ReviewSettings } from './llm.ts'
+import {
+  NovelReviewError,
+  resolveRoute,
+  resolveSubagentProvider,
+  runReview,
+  runReviewFanout,
+  type LlmRoute,
+  type ReviewSettings,
+} from './llm.ts'
+import { syncEvaluationReminder, type ReminderCadence } from './reminder.ts'
 import type { ProjectResolver } from './resolver.ts'
 import { policyForSession, withSandboxPolicy } from './sandbox.ts'
 import { NOVEL_RELATIVE_PATH } from './store.ts'
@@ -192,6 +213,29 @@ function outOfOrderWarning(state: NovelState, key: SettingsLayerKey): string | u
     `设定要按顺序确定：「${blocking?.label ?? String(layer.blockedBy ?? '')}」这一层还没与用户确认，`
     + `现在就写「${layer.label}」是跳步。先 novel_confirm operation="discuss" kind="${blocking?.kind ?? 'settings'}" `
     + '把上一层谈完并由用户确认，再回到这一层。'
+  )
+}
+
+/**
+ * Refuse work the SOP explicitly postpones until after the launch decision.
+ *
+ * The sibling of {@link outOfOrderWarning}, and deliberately not a warning.
+ * `outOfOrderWarning` covers the settings layers, where writing a layer early is
+ * a disagreement the SOP tolerates; this covers the one boundary the SOP states as
+ * a rule — *"go 才解锁阶段四：完整大纲、分卷、伏笔、上架卡点"* — where doing the work
+ * early is the investment stage three exists to withhold.
+ *
+ * @param tool - the tool being refused, for the message.
+ * @param state - the project as it stood before this write.
+ * @param what - the work being attempted, named for the message.
+ * @throws {NovelInputError} when no `go` decision authorises the work.
+ */
+function assertSkeletonAuthorised(tool: string, state: NovelState, what: string): void {
+  const gate = skeletonGate(state, what)
+  if (gate.allowed) return
+  throw new NovelInputError(
+    `${tool} refused: ${gate.reasons.join('；')}。`
+    + `下一步：${gate.next.join('，然后 ')}。`,
   )
 }
 
@@ -287,9 +331,12 @@ function layerBrief(key: SettingsLayerKey): string {
     case 'cast':
       return '主角的欲望/恐惧/执念/软肋/成长线，主要配角阵营，反派动机，人物关系与冲突体系，金手指的规则、限制与成长曲线。'
     case 'outline':
-      return '三幕主线、核心剧情走向、全局伏笔、大高潮节点、终极冲突、结局框架、全书钩子体系。写清到能支撑后面每一卷的取舍，而不是复述立意。'
+      return '先讲完整故事：故事梗概（从开头到结局）、主角成长线、伙伴成长线、反派成长线、阵营演变、对抗副本（每一场怎么打、奇遇在哪）、失去了什么、获得了什么。'
+        + '再讲爽点与爆点：每 3 章小爽点、每 10 章大爽点、每卷卷末爆点，落到章位上。最后才是体量：全书大纲 ≈ 总字数 ÷ 100。'
+        + '三样按这个顺序报，故事没讲完就先不核字数。'
     case 'volume':
-      return '每卷的独立目标、独立矛盾、阶段性高潮、卷末钩子、卷内节奏，以及它覆盖的章数区间。'
+      return '先讲完整这一卷的故事：本卷梗概、主角成长、反派成长、阵营演变、核心对抗、代价与失去、收获与获得。'
+        + '再讲这一卷的爽点与卷末爆点：独立目标、独立矛盾、阶段性高潮、卷末钩子、卷内节奏，以及它覆盖的章数区间。最后才是体量：分卷大纲 ≈ 本卷字数 ÷ 50。'
     default:
       return ''
   }
@@ -322,6 +369,15 @@ function registerScoped(ctx: Context, tool: ToolDefinition): void {
 interface Envelope {
   readonly stage: string
   readonly blockers: string[]
+  /**
+   * The one step the state machine asks for, derived from the same source as
+   * `stage` and `blockers`.
+   *
+   * `blockers` is the full ordered debt; this is the head of it, or the shut hard
+   * gate when one is shut. It exists because a list is not a decision: whichever
+   * tool the model called, the result now ends with the same single imperative.
+   */
+  readonly next: { readonly action: string; readonly blocked: boolean }
   readonly warnings?: string[]
   /**
    * Present only when the project suggests running an investment evaluation.
@@ -354,6 +410,18 @@ const ENVELOPE_PROPERTIES = {
     required: true,
     items: { type: 'string' },
     description: 'What the SOP still needs before the next phase.',
+  },
+  next: {
+    type: 'object',
+    required: true,
+    additionalProperties: false,
+    description:
+      'The one step to take now: the shut hard gate if there is one, otherwise the first blocker. `blocked` is true '
+      + 'only for a hard gate, where nothing else substitutes and novel_write refuses prose until it is cleared.',
+    properties: {
+      action: { type: 'string', required: true, description: 'The call to make now, in the SOP\'s own terms.' },
+      blocked: { type: 'boolean', required: true, description: 'Whether a hard gate is what demands it.' },
+    },
   },
   warnings: {
     type: 'array',
@@ -400,6 +468,7 @@ function envelope(state: NovelState, warnings: readonly string[] = []): Envelope
   return {
     stage: `${assessment.stage}（${stageLabel(assessment.stage)}）`,
     blockers: [...assessment.blockers],
+    next: { ...nextStep(state) },
     ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
     // Only when it is due: an always-present line would train the model to
     // ignore it, and the point of the hint is that it is rare and actionable.
@@ -507,6 +576,12 @@ function renderEnvelope(
     lines.push('下一阶段的缺口：')
     lines.push(...blockers.map((blocker) => `- ${String(blocker)}`))
   }
+  // The head of that debt, or the shut hard gate — reported last so it is the
+  // line the model reads immediately before deciding what to call next.
+  const next = value['next'] as { action?: unknown; blocked?: unknown } | undefined
+  if (next !== undefined && next.action !== undefined && String(next.action) !== '') {
+    lines.push('', next.blocked === true ? `## 下一步（硬门禁，未关不能继续）\n${String(next.action)}` : `## 下一步\n${String(next.action)}`)
+  }
   const progress = value['progress'] as Record<string, number> | undefined
   if (progress !== undefined) {
     lines.push(
@@ -529,14 +604,33 @@ interface Body {
 }
 
 /**
+ * The deployment settings the tool bodies read.
+ *
+ * Narrower than the plugin's `Config`: this is only what a tool needs to know,
+ * so a test can exercise the tools without constructing a whole deployment.
+ */
+export interface ComposerSettings {
+  /** How often the host reminds the author to run the on-demand evaluation. */
+  readonly evaluationReminder: ReminderCadence
+  /** IANA zone the reminder's wall-clock time is anchored in. */
+  readonly reminderTimeZone: string
+}
+
+/**
  * Register every composer tool on `ctx.tools`.
  *
  * @param ctx - plugin context carrying the tool registry.
  * @param projects - resolves the novel store per calling session.
  * @param views - the per-root views whose numbers the prompt renders; a write
  *   refreshes the view of the *calling session's* workspace, never another one's.
+ * @param settings - the deployment's reminder cadence and zone.
  */
-export function registerTools(ctx: Context, projects: ProjectResolver, views: WorkspaceViews): void {
+export function registerTools(
+  ctx: Context,
+  projects: ProjectResolver,
+  views: WorkspaceViews,
+  settings: ComposerSettings,
+): void {
   /** The store for one execution's session. */
   const storeFor = (session: SessionRef | undefined): SessionStore => projects.storeForSession(session)
   /** Re-read the writing session's project into the prompt after a successful write. */
@@ -545,27 +639,45 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   }
   const now: Clock = () => new Date().toISOString()
 
+  /**
+   * Keep the host's evaluation reminder in step with the project.
+   *
+   * Called at the four points where the answer can change — a chapter is written,
+   * a reading is recorded, an evaluation leaves an appointment, a retrospective
+   * closes the book — rather than on a timer, because the project is what decides
+   * whether a reminder is warranted at all.
+   *
+   * @param state - the project after the write.
+   * @param exec - the executing tool's context, for the session to deliver to.
+   * @param body - the body to append the outcome to.
+   * @param warnings - the soft-gate notes to append a failure to.
+   */
+  const syncReminder = async (
+    state: NovelState,
+    exec: { readonly agent?: { readonly session?: SessionRef } | undefined; readonly signal?: AbortSignal },
+    body: string[],
+    warnings: string[],
+  ): Promise<void> => {
+    const schedule = ctx.reflect.get('schedule') as ScheduleService | undefined
+    const outcome = await syncEvaluationReminder(
+      schedule,
+      exec.agent?.session?.header.id,
+      state,
+      settings.evaluationReminder,
+      settings.reminderTimeZone,
+      exec.signal,
+    )
+    // A routine "nothing changed" is not news; only a real change or a failure is.
+    if (outcome.action === 'failed') warnings.push(outcome.note)
+    else if (outcome.action !== 'kept' && outcome.action !== 'skipped') body.push('', outcome.note)
+  }
+
   // ── novel_init ──────────────────────────────────────────────────────────────
 
   registerScoped(ctx,
     defineTool({
       name: 'novel_init',
-      description:
-        'Establish or complete the novel project in this workspace: premise, commercial frame (platform, mode, audience, '
-        + 'genre, target readers, monetization), the calibration medians every later metric is compared against, and the '
-        + 'writing parameters (outline window, opening gate chapters, stock target, outline ceiling). '
-        + 'The length numbers — targetWords, chapterWords and volumes — are NOT yours to invent: ask the user for all '
-        + 'three before or while calling this tool (offer LENGTH_BENCHMARKS-style tiers as choices), and pass what they '
-        + 'said. Missing answers are recorded, reported back as a checklist, and repeated by the runtime context every '
-        + 'step until they are settled. totalChapters is derived from targetWords ÷ chapterWords when the user does not '
-        + 'state it. '
-        + 'Call it once at the start, and again whenever the commercial frame changes — it never resets recorded work, and '
-        + 'it refuses to overwrite a premise that already exists (use novel_plan operation="pitch" for that). '
-        + 'What it records is a DRAFT for the user to react to, not a settled setup: after it, put the premise, cast, world '
-        + 'rules and length plan in front of them, revise over recorded rounds (novel_confirm kind="settings"), and write '
-        + 'no prose until they confirm. '
-        + 'The baselines are the load-bearing part: without same-genre medians over the last 30 days, the SOP threshold '
-        + 'rules cannot run and every metric verdict becomes "无法比较".',
+      description: TOOL_SURFACE.novel_init.summary,
       parameters: {
         title: { type: 'string', description: 'Novel title.' },
         premise: { type: 'string', description: 'One-paragraph premise; kept if already set.' },
@@ -798,23 +910,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_confirm',
-      description:
-        'The author checkpoints, and the record of the conversation that closes them. SETTINGS ARE SETTLED ONE LAYER AT '
-        + 'A TIME, IN ORDER — 立意 (kind="settings" / "premise") → 世界观 (kind="world") → 人物设定 (kind="cast") → '
-        + '全书大纲 (kind="outline") → 分卷大纲 (kind="volume"). Put ONE layer in front of the user, record what they '
-        + 'said, have them confirm it, and only then start the next: a later layer is refused while an earlier one is '
-        + 'still open, because handing the user the whole setup at once is the failure this ordering exists to prevent. '
-        + 'kind="settings" is the pre-prose checkpoint (premise, memorable point, length plan, tone) and `novel_write` '
-        + 'refuses a chapter while it is missing; the layers after it are ordered but do not block chapter 1. '
-        + 'kind="style" is the sign-off on the prose voice, due after chapter 1 has prose and before chapter 2. '
-        + 'operation="discuss" records ONE round: what you put in front of the user (`proposal`) and what the user actually '
-        + 'answered (`feedback`). `feedback` is required and cannot be your own summary of the plan — a round without the '
-        + 'user\'s words is refused, because that is exactly the failure this tool exists to prevent: the model deciding the '
-        + 'setup alone and running on to chapters. The premise layer needs at least 2 such rounds before it can be '
-        + 'confirmed; every other layer, and the voice, needs 1. operation="confirm" records the author\'s sign-off with '
-        + 'the approved `summary` and the user\'s own words in `note` — both required, because only the author can close a '
-        + 'checkpoint: never confirm on their behalf, and never invent a round. operation="status" (default) reports where '
-        + 'every layer stands, and which one is next, without changing anything.',
+      description: TOOL_SURFACE.novel_confirm.summary,
       parameters: {
         operation: {
           type: 'string',
@@ -1143,35 +1239,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_plan',
-      description:
-        'The planning pipeline, in the SOP order. One operation per step; each feeds the next, and the tool reports what '
-        + 'is still missing. '
-        + 'competitor=dismantle one same-genre leaderboard title (aim for 20–50) — every dismantle is written into '
-        + '竞品拆解.md, the file beside the other settings, so the author can read and reuse the research '
-        + '(每个字段都可写入：tags/blurb/openingEvent/goldenFinger/protagonistDesire/antagonistMotive/shuangFrequency/'
-        + 'emotionCurve/paywallPoint/chapterHooks/commentKeywords/takeaway) · pitch=the one-sentence memorable point '
-        + 'plus core emotion, payoff list, differentiators, kernel · world=one world rule (a rule without its cost and '
-        + 'limit is flagged) · outline=logline, fullOutline (the whole-book detailed outline), acts, minimal viable '
-        + 'outline, or the full outline flag — the detailed outline targets about 1/100 of the total length · volume=one '
-        + "volume's detail (分卷剧情大纲, targeting about 1/50 of that volume's length), goal, conflict, climax, end hook · "
-        + 'chapter=one chapter contract (plot task, conflict, emotional payoff, '
-        + 'information gap, beats, hook, target length) — the target is the finished length, and the chapter is drafted '
-        + 'at 125% of it; the contract text itself targets about 1/10 of the chapter length · beat=place a rhythm beat · '
-        + 'opening=confirm an opening-engineering '
-        + 'checklist item (omit `key` to list it) · naming=a candidate title/blurb/tag set · '
-        + 'launch=the stage-three go/no-go: whether the opening package is worth building out into a full skeleton. '
-        + 'launch is a declared judgement, not a computed number — the evidence at that point is an editor and a handful '
-        + 'of readers. A verdict that is not `go` must name where to fall back to (`fallback`) and what would make you '
-        + 'drop the concept (`abandonIf`); the tool refuses it otherwise, because that requirement is what stops the '
-        + 'decision from becoming a formality. Platform numbers are never required here: the data check is '
-        + '`novel_assess`, run on demand. '
-        + 'Soft gate: a call always succeeds, but when the SOP would not have you here yet the result carries warnings '
-        + 'naming what is still missing. Read them before writing prose. '
-        + 'THE SETTINGS ARE SETTLED ONE LAYER AT A TIME, IN ORDER: 世界观 → 人物设定 → 全书大纲 → 分卷大纲. Write a layer, '
-        + 'put it to the user, record their answer with novel_confirm operation="discuss", and have them confirm it '
-        + '(operation="confirm") before starting the next layer — the tool warns when a layer is written before the one '
-        + 'before it is confirmed, because a whole setup decided in one pass is the failure this ordering exists to '
-        + 'prevent. novel_write refuses prose until the premise layer is confirmed.',
+      description: TOOL_SURFACE.novel_plan.summary,
       parameters: {
         operation: {
           type: 'string',
@@ -1209,6 +1277,70 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             + "分卷大纲.md as the entry's body and targets about 1/50 of that volume's length.",
         },
         logline: { type: 'string', description: 'outline: the one-sentence story.' },
+        synopsis: {
+          type: 'string',
+          description:
+            'outline: the whole book told as a story, start to finish — 谁、要什么、遇到什么、最后怎样. Write it as prose from '
+            + '开头到结局, not as a list of turning points. It lands in the `## 叙事骨架` block of 全书大纲.md, and it is the '
+            + 'first thing checked: beats and the 1/100 length target are only reported once the story reads whole. '
+            + 'volume: this volume told the same way (本卷梗概).',
+        },
+        protagonistArc: {
+          type: 'string',
+          description:
+            'outline: 主角成长线 — the state the protagonist starts in, the state they end in, and the坎 they cross between. '
+            + 'volume: the one step this volume takes them across.',
+        },
+        supportArcs: {
+          type: 'string',
+          description: 'outline: 伙伴成长线 — how each main companion changes, and at which node.',
+        },
+        antagonistArc: {
+          type: 'string',
+          description:
+            'outline: 反派成长线 — how the antagonist grows, wavers, and finally loses. volume: what the antagonist and their '
+            + 'people do and become inside this volume.',
+        },
+        factionShift: {
+          type: 'string',
+          description:
+            'outline/volume: 阵营演变 — how the antagonist side expands, splits or defects, and how the protagonist side turns '
+            + 'from one person into a camp.',
+        },
+        conflictArcs: {
+          type: 'string',
+          description:
+            'outline: 对抗副本 — every confrontation as its own story: how it starts, the 奇遇 inside it, how it ends, and what '
+            + 'it costs. Write one entry per confrontation rather than summarising the trend.',
+        },
+        costs: {
+          type: 'string',
+          description:
+            'outline/volume: 失去了什么 — itemised losses on the protagonist side (people,记忆, position, belief), with the chapter '
+            + 'or node where each lands.',
+        },
+        gains: {
+          type: 'string',
+          description:
+            'outline/volume: 获得了什么 — itemised gains on the protagonist side (power, allies, ground, information, sleep), so the '
+            + 'cost column has something to be weighed against.',
+        },
+        mainConflict: {
+          type: 'string',
+          description: 'volume: 核心对抗 — this volume\'s central confrontation as a story: how it ignites and how it is settled.',
+        },
+        keyBeat: {
+          type: 'string',
+          description:
+            'chapter: 关键转折 — whose arc this chapter moves and how (主角/伙伴/反派), or what turn it takes. A transitional '
+            + 'chapter answers it in one clause; waive it with waiveReason if the chapter genuinely has none.',
+        },
+        price: {
+          type: 'string',
+          description:
+            'chapter: 代价与收获 — what this chapter costs or leaves behind in story terms, as opposed to `emotionalPayoff` which '
+            + 'is what the reader feels. Waivable like every contract field.',
+        },
         fullOutline: {
           type: 'string',
           description:
@@ -1237,7 +1369,6 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
         infoGap: { type: 'string', description: 'chapter: the information gap opened or closed.' },
         beats: { type: 'array', items: { type: 'string', enum: [...BEAT_KINDS] }, description: 'chapter: beats carried.' },
         hook: { type: 'string', description: 'chapter: the chapter-end hook.' },
-        synopsis: { type: 'string', description: 'chapter: one-line summary of the contract.' },
         volume: { type: 'integer', description: 'chapter: which volume it belongs to.' },
         waive: {
           type: 'array',
@@ -1358,6 +1489,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           }
           case 'outline': {
             if (args.full === true || args.fullOutline !== undefined) {
+              assertSkeletonAuthorised('novel_plan', current, '完整大纲（full=true）')
               const order = outOfOrderWarning(current, 'outline')
               if (order !== undefined) warnings.push(order)
             }
@@ -1366,6 +1498,14 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
                 state,
                 {
                   ...(args.logline !== undefined && { logline: args.logline }),
+                  ...(args.synopsis !== undefined && { synopsis: args.synopsis }),
+                  ...(args.protagonistArc !== undefined && { protagonistArc: args.protagonistArc }),
+                  ...(args.supportArcs !== undefined && { supportArcs: args.supportArcs }),
+                  ...(args.antagonistArc !== undefined && { antagonistArc: args.antagonistArc }),
+                  ...(args.factionShift !== undefined && { factionShift: args.factionShift }),
+                  ...(args.conflictArcs !== undefined && { conflictArcs: args.conflictArcs }),
+                  ...(args.costs !== undefined && { costs: args.costs }),
+                  ...(args.gains !== undefined && { gains: args.gains }),
                   ...(args.fullOutline !== undefined && { fullOutline: args.fullOutline }),
                   ...(args.acts !== undefined && { acts: args.acts }),
                   ...(args.minimal !== undefined && { minimal: args.minimal }),
@@ -1375,9 +1515,24 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               ),
             )
             detail = args.full === true ? '完整大纲已标记为确认' : '大纲已更新'
-            // The SOP budgets 全书大纲 at ~1/100 of the whole book. Reported, not
-            // enforced: a thin outline is a soft disagreement, and the author may
-            // have a reason for it.
+            // 1. Narrative completeness first. The spine is what the beats and the
+            // length target are supposed to be attached to, so it is reported
+            // before either of them: a 20000-character skeleton with no story is
+            // the failure this ordering exists to name.
+            const spine = outlineSpineGaps(next.outline)
+            body.push('## 叙事完整性', ...narrativeReport(OUTLINE_SPINE_PARTS, outlineSpineValues(next.outline)))
+            if (spine.length > 0) {
+              warnings.push(
+                `全书大纲的叙事骨架还缺 ${String(spine.length)} 项：`
+                + `${spine.map((gap) => gap.key).join('、')}——先讲完故事，再看爽点与字数`,
+              )
+            }
+            // 2. Then the payoff schedule, checked against the story above.
+            const payoff = outlinePayoffGaps(next.outline)
+            if (payoff.length > 0) warnings.push(`爽点与爆点还没讲清：${payoff.join('、')}`)
+            // 3. Length last. The SOP budgets 全书大纲 at ~1/100 of the whole book.
+            // Reported, not enforced: a thin outline is a soft disagreement, and
+            // the author may have a reason for it.
             const fullLength = layerLengthCheck(
               'full',
               next.outline.fullOutline.trim().length,
@@ -1397,28 +1552,52 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               throw new NovelInputError('operation="volume" needs a positive `number`')
             }
             const number = args.number
+            assertSkeletonAuthorised('novel_plan', current, '分卷大纲')
             const order = outOfOrderWarning(current, 'volume')
             if (order !== undefined) warnings.push(order)
+            // A partial update keeps the elements it did not name. Since this
+            // layer now carries a seven-element spine, replacing the whole record
+            // on every call would mean that editing a volume's title silently
+            // deleted its story.
+            const previous = current.outline.volumes.find((volume) => volume.number === number)
             const next = await store.update((state) =>
               upsertVolume(
                 state,
                 {
                   number,
-                  title: args.title ?? '',
-                  detail: args.detail ?? '',
-                  goal: args.goal ?? '',
-                  conflict: args.conflict ?? '',
-                  climax: args.climax ?? '',
-                  endHook: args.endHook ?? '',
-                  chapters: args.chapters ?? [],
+                  title: args.title ?? previous?.title ?? '',
+                  detail: args.detail ?? previous?.detail ?? '',
+                  goal: args.goal ?? previous?.goal ?? '',
+                  conflict: args.conflict ?? previous?.conflict ?? '',
+                  climax: args.climax ?? previous?.climax ?? '',
+                  endHook: args.endHook ?? previous?.endHook ?? '',
+                  synopsis: args.synopsis ?? previous?.synopsis ?? '',
+                  protagonistArc: args.protagonistArc ?? previous?.protagonistArc ?? '',
+                  antagonistArc: args.antagonistArc ?? previous?.antagonistArc ?? '',
+                  factionShift: args.factionShift ?? previous?.factionShift ?? '',
+                  mainConflict: args.mainConflict ?? previous?.mainConflict ?? '',
+                  costs: args.costs ?? previous?.costs ?? '',
+                  gains: args.gains ?? previous?.gains ?? '',
+                  chapters: args.chapters ?? previous?.chapters ?? [],
                 },
                 now,
               ),
             )
             detail = `第 ${String(number)} 卷已写入`
             const written = next.outline.volumes.find((volume) => volume.number === number)
-            if (written !== undefined && (written.goal === '' || written.climax === '')) {
-              warnings.push(`第 ${String(number)} 卷缺独立目标或高潮：SOP 要求每卷有自己的矛盾与高潮`)
+            // 1. Narrative completeness, same order as the whole-book outline.
+            if (written !== undefined) {
+              const gaps = volumeSpineGaps(written)
+              body.push(`## 第 ${String(number)} 卷叙事完整性`, ...narrativeReport(VOLUME_SPINE_PARTS, volumeSpineValues(written)))
+              if (gaps.length > 0) {
+                warnings.push(
+                  `第 ${String(number)} 卷的叙事骨架还缺 ${String(gaps.length)} 项：`
+                  + `${gaps.map((gap) => gap.key).join('、')}——先把这一卷讲完整，再核字数`,
+                )
+              }
+              if (written.goal === '' || written.climax === '') {
+                warnings.push(`第 ${String(number)} 卷缺独立目标或高潮：SOP 要求每卷有自己的矛盾与高潮`)
+              }
             }
             // The volume count was settled with the user at initialization; the
             // outline has to stay answerable to it, and 0 means 不分卷.
@@ -1436,7 +1615,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               const note = volumeLengthNote(span, next.writing)
               if (note !== undefined) warnings.push(`第 ${String(number)} 卷：${note}`)
             }
-            // The SOP budgets 分卷大纲 at ~1/50 of the volume it governs.
+            // 2. Length last. The SOP budgets 分卷大纲 at ~1/50 of the volume it
+            // governs, and the measure is the pacing detail rather than the spine:
+            // the spine is checked for presence above, not for size.
             if (written !== undefined) {
               const volumeLength = layerLengthCheck(
                 'volume',
@@ -1490,6 +1671,8 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
                   ...(args.infoGap !== undefined && { infoGap: args.infoGap }),
                   ...(args.beats !== undefined && { beats: args.beats as NovelState['chapters'][string]['beats'] }),
                   ...(args.hook !== undefined && { hook: args.hook }),
+                  ...(args.keyBeat !== undefined && { keyBeat: args.keyBeat }),
+                  ...(args.price !== undefined && { price: args.price }),
                   ...(targetWords > 0 && { targetWords }),
                   ...(args.volume !== undefined && { volume: args.volume }),
                   ...(Object.keys(waived).length > 0 && { waived }),
@@ -1501,9 +1684,19 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             detail = chapter === undefined
               ? '章节已写入'
               : `第 ${String(chapter.number)} 章「${chapter.title || chapterId}」契约已写入`
-            // The contract's targetWords is the finished length; the draft this
-            // chapter is now written to is 125% of it. Print both at planning
-            // time, which is the last moment before prose exists.
+            // 1. Narrative completeness first: which contract fields are still
+            // unanswered, and whether the two that carry this chapter's share of
+            // the story were answered or explicitly waived.
+            const gaps = contractGaps(next, { only: [chapterId] })
+            if (gaps[0] !== undefined) {
+              warnings.push(
+                `第 ${String(gaps[0].number)} 章契约缺：${gaps[0].missing.join('、')}`
+                + '——先把这一章要讲的故事写清，再看字数',
+              )
+            }
+            // 2. Length last. The contract's targetWords is the finished length;
+            // the draft this chapter is now written to is 125% of it. Print both
+            // at planning time, which is the last moment before prose exists.
             if (chapter !== undefined && chapter.targetWords > 0) {
               const draft = draftTargetWords(chapter.targetWords)
               body.push('## 本章字数')
@@ -1525,13 +1718,11 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
                 body.push(
                   '## 本章细纲字数',
                   `- ${contractLength.note}`,
-                  `- 建议 ${String(suggested)} 字：剧情任务、冲突、情绪回报、信息差、章末钩子写清到这个量级，正文才有可核对的目标`,
+                  `- 建议 ${String(suggested)} 字：剧情任务、关键转折、代价与收获、冲突、情绪回报、信息差、章末钩子写清到这个量级，正文才有可核对的目标`,
                 )
                 if (!contractLength.enough) warnings.push(contractLength.note)
               }
             }
-            const gaps = contractGaps(next, { only: [chapterId] })
-            if (gaps[0] !== undefined) warnings.push(`第 ${String(gaps[0].number)} 章契约缺：${gaps[0].missing.join('、')}`)
             if (chapter !== undefined && chapter.targetWords <= 0) {
               warnings.push(
                 `第 ${String(chapter.number)} 章没设目标字数，写作参数里也没有单章字数：先问用户单章多少字`
@@ -1562,6 +1753,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               throw new NovelInputError('operation="beat" needs a positive `number` (the chapter)')
             }
             const chapter = args.number
+            assertSkeletonAuthorised('novel_plan', current, '情绪节拍表')
             await store.update((state) =>
               upsertBeat(
                 state,
@@ -1686,15 +1878,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_bible',
-      description:
-        'The story bible: cast, world facts, and reader promises. '
-        + 'kind="character" wants the SOP spine — goal, and for a protagonist also fear, obsession, weakness, growth arc. '
-        + 'kind="world" states a rule with its cost and limits (a rule without them is flagged). '
-        + 'kind="link" records a promise the reader is now waiting on: plant it, give it a due chapter, say how it pays '
-        + 'off. Promises are what the SOP closes at volume end — an open promise whose due chapter is already written is '
-        + 'reported as overdue. '
-        + 'kind="review" reports every gap across the bible: missing traits, rules without a price, and unrecovered or '
-        + 'overdue promises.',
+      description: TOOL_SURFACE.novel_bible.summary,
       parameters: {
         kind: {
           type: 'string',
@@ -1805,6 +1989,11 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           await store.update((state) => removeLink(state, id, now))
           detail = `已删除承诺 ${id}`
         } else {
+          // Planting a promise is stage-four work in the SOP's own list ("go 才解锁
+          // 完整大纲、分卷、伏笔、上架卡点"). Clearing one is not: retiring an
+          // abandoned promise is always allowed, which is why the `remove` branch
+          // above stays ungated.
+          assertSkeletonAuthorised('novel_bible', current, '伏笔台账（kind="link"）')
           const next = await store.update((state) =>
             upsertLink(
               state,
@@ -1850,31 +2039,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_assess',
-      description:
-        'The on-demand investment evaluation: "is this book still worth continuing?" '
-        + 'It is deliberately NOT part of the pipeline. No stage waits for it, the project advances whether or not the '
-        + 'platform numbers exist yet, and nothing here is ever a gate — which is what makes it usable in the common '
-        + 'case where the data lives on the platform and has to be transcribed by hand. '
-        + 'Run it when the author asks that question, normally after the book has been live long enough to report '
-        + 'something. '
-        + 'operation="record" stores one reading (period, chapter position, values) and immediately reports which '
-        + 'threshold rules fire, each with its action and the scope it may reach (chapter / volume / whole-book). '
-        + 'operation="iterate" writes the change you decided on into the ledger, tied to the reading that triggered it. '
-        + 'operation="evaluate" runs the session: it compares the reading against the calibrated same-genre medians, '
-        + 'back-fills the result of every earlier change against this reading, and returns the verdict — 继续投入 / '
-        + '换变量后继续 / 切书止损 — with the rules that fired. '
-        + 'An evaluation that does not pass must name where to fall back to (`fallback`) and what would make you stop '
-        + '(`abandonIf`), and every evaluation must leave an appointment for the next one (`nextAtChapter` and/or '
-        + '`nextTrigger`): without that appointment an on-demand check quietly turns into no check at all. '
-        + 'record and evaluate also accept `baselines` to re-calibrate the medians while you are already on the platform '
-        + 'copying numbers — they are a 30-day figure, so the moment of evaluation is the right moment to refresh them. '
-        + 'operation="history" lists every evaluation with its verdict, fallback, abandon condition and next appointment; '
-        + 'operation="rules" prints the thresholds currently in force. '
-        + 'operation="outcome" is the manual override for the automatic back-fill: name the `iterationId` and the '
-        + '`outcomeReadingId` that closes it, and the tool reports whether that reading improved on the one the change '
-        + 'started from. Use it when an adjustment should be judged against a reading `evaluate` did not pick — an '
-        + 'earlier one, or one recorded after the evaluation ran. '
-        + 'The numbers come from the platform or from readers; the tool compares and decides, it never invents a value.',
+      description: TOOL_SURFACE.novel_assess.summary,
       parameters: {
         operation: {
           type: 'string',
@@ -2287,6 +2452,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               + `${String(Math.round(CUT_LOSS_MULTIPLIER * 100))}%」，请核对读数后再决定是否切书`,
             )
           }
+          // Evaluating is where an appointment is made or changed, so it is where
+          // the durable reminder is armed to the appointment just recorded.
+          await syncReminder(final, exec, body, warnings)
           await resync(exec.agent?.session)
           return {
             ok: true,
@@ -2338,6 +2506,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           '读数只是数据。要一份「还值不值得写下去」的裁决，调用 operation="evaluate" —— 它不会自动发生。',
           `评估提示：${hint.due ? '建议启动一次' : '暂不需要'} — ${hint.reason}`,
         )
+        await syncReminder(next, exec, body, warnings)
         await resync(exec.agent?.session)
         return {
           ok: true,
@@ -2355,30 +2524,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_write',
-      description:
-        'Write or revise one chapter of prose against its outline contract. '
-        + 'This is the ONE tool with a hard gate: it refuses to write while the user has not confirmed the settings '
-        + '(novel_confirm kind="settings"), and — after chapter 1 has prose — while the user has not confirmed the style '
-        + '(novel_confirm kind="style"). The user\'s inspiration is the starting point of a conversation, not a licence to '
-        + 'produce chapters: settle the setup with them first, show them chapter 1, hear the verdict on the voice, and only '
-        + 'then continue. The refusal message names the calls that open the gate. '
-        + 'Send the COMPLETE chapter text — this replaces the body, it does not append. '
-        + 'A first draft is written to 125% of the chapter\'s target length, because 去 AI 化 and hand-editing delete a '
-        + 'large share of a draft; the finished chapter is then trimmed back to within -5%/+15% of the target the user '
-        + 'gave — the shortfall is held to 5%, because a chapter noticeably under its promised length is the real '
-        + 'failure, while an overrun can still be cut. This '
-        + 'tool holds the draft to whichever gate the chapter\'s status implies (planned/drafting = 125%, revised/final = '
-        + '-5%/+15%) and prints both windows. '
-        + 'Report which contract fields the draft actually delivered (delivered=[...]); the tool compares that report '
-        + 'with the plan and returns what was missed, what was never planned, and whether the length landed. That '
-        + 'comparison is the SOP\'s "严格对应细纲" made checkable — it is the only place the workflow notices a chapter '
-        + 'that quietly ignored its plan. '
-        + 'Marking a chapter final (published) still works but is warned when the contract or the delivery is incomplete. '
-        + 'Both write and check also return the SOP\'s 去 AI 化 statistics — paragraph length, dialogue density, repeated '
-        + 'sentence openings — as countable symptoms and never as a verdict. Nothing here edits the prose: revise the '
-        + 'draft yourself and send it back through operation="write". '
-        + 'operation="read" returns one chapter with its contract and prose; operation="check" returns the delivery report '
-        + 'and the same statistics without writing anything.',
+      description: TOOL_SURFACE.novel_write.summary,
       parameters: {
         operation: { type: 'string', enum: ['write', 'read', 'check'], description: 'write (default) | read | check.' },
         chapterId: { type: 'string', required: true, description: 'Id, slug, or title of the chapter.' },
@@ -2505,6 +2651,10 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           )
         }
 
+        // A chapter is what makes the investment question live, so the durable
+        // reminder is synced here rather than waiting for an evaluation that may
+        // never be run.
+        await syncReminder(next, exec, body, warnings)
         await resync(exec.agent?.session)
         return {
           ok: true,
@@ -2522,14 +2672,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_status',
-      description:
-        'The SOP dashboard, entirely derived from the project — nothing here is a second ledger you maintain by hand. '
-        + 'Reports the stage, what the next phase still needs, the two author checkpoints (设定确认 / 文风确认), chapter and '
-        + 'word counts, contract completeness, unpublished stock, promise recovery (including overdue), the latest reading '
-        + 'against its thresholds, and iterations still waiting for an outcome. '
-        + 'detail="dashboard" (default) is the operating view; "bible" returns cast, world and promises; "plan" returns '
-        + 'pitch, outline, volumes, beats, opening checklist and naming candidates; "chapter" with a chapterId returns one '
-        + 'chapter\'s contract, delivery report, the 去 AI 化 statistics and the prose.',
+      description: TOOL_SURFACE.novel_status.summary,
       parameters: {
         detail: {
           type: 'string',
@@ -2601,14 +2744,28 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
             '## 大纲',
             `一句话：${state.outline.logline || '—'}`,
             `最小可行：${state.outline.minimal || '—'}`,
+            '',
+            // Narrative completeness comes before the beats and the volumes: the
+            // dashboard should show the story's own debts first, because every
+            // other plan layer hangs off them.
+            '## 叙事完整性（全书）',
+            ...narrativeReport(OUTLINE_SPINE_PARTS, outlineSpineValues(state.outline)),
           )
+          const payoffNotes = outlinePayoffGaps(state.outline)
+          if (payoffNotes.length > 0) body.push('', '## 爽点与爆点欠账', ...payoffNotes.map((note) => `- ${note}`))
           if (state.outline.acts.length > 0) {
             body.push('', '三幕：', ...state.outline.acts.map((act, index) => `${String(index + 1)}. ${act}`))
           }
           body.push('', '## 分卷')
           for (const volume of state.outline.volumes) {
+            const gaps = volumeSpineGaps(volume)
             body.push(
               `- 第 ${String(volume.number)} 卷「${volume.title || '—'}」目标=${volume.goal || '—'} 高潮=${volume.climax || '—'} 卷末钩子=${volume.endHook || '—'}`,
+            )
+            body.push(
+              gaps.length === 0
+                ? '  - 叙事骨架：完整（梗概/主角/反派/阵营/对抗/得失）'
+                : `  - 叙事骨架缺 ${String(gaps.length)} 项：${gaps.map((gap) => gap.key).join('、')}`,
             )
           }
           body.push('', '## 节拍表')
@@ -2644,6 +2801,21 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
               : styleGateReached(state)
                 ? `待确认（第 ${String(STYLE_GATE_CHAPTER)} 章已成稿）`
                 : `未到期（第 ${String(STYLE_GATE_CHAPTER)} 章成稿后确认）`}`,
+            '',
+          )
+          // The story's own debts, before the chapter stats: if the outline
+          // cannot say what happens, no chapter count makes the project ready.
+          const spineGaps = outlineSpineGaps(state.outline)
+          const volumeGaps = state.outline.volumes.map((volume) => ({ volume, gaps: volumeSpineGaps(volume) }))
+          const volumeDebt = volumeGaps.reduce((total, entry) => total + entry.gaps.length, 0)
+          body.push(
+            '## 叙事完整性',
+            spineGaps.length === 0 && volumeDebt === 0
+              ? '- 全书大纲与分卷大纲的叙事骨架都已写全'
+              : `- 全书大纲缺 ${String(spineGaps.length)}/8 项`
+                + `${spineGaps.length > 0 ? `：${spineGaps.map((gap) => gap.key).join('、')}` : ''}`
+                + `；分卷大纲共缺 ${String(volumeDebt)} 项`
+                + `（明细：novel_status detail="plan"）`,
             '',
           )
           body.push(
@@ -2767,16 +2939,7 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
   registerScoped(ctx,
     defineTool({
       name: 'novel_repo',
-      description:
-        'The SOP closing phase: manuscript export, retrospective, IP assets, and reusable templates. '
-        + 'operation="export" renders the whole novel to Markdown beside the project. '
-        + 'operation="retro" writes the completion retrospective (highlights, problems) and derives the data summary, the '
-        + 'IP asset list, and a structural template from the project data. '
-        + 'operation="lesson" adds one reusable or avoid-this lesson; operation="asset" adds one IP-ready asset. '
-        + 'operation="template" exports the structural skeleton on its own — acts, volume rhythm, beat pattern expressed as '
-        + 'offsets inside a volume, hook patterns, emotional template. '
-        + 'Templates deliberately carry no cast and no proper nouns: the SOP requires a variant upgrade next time, and a '
-        + 'template that cannot carry characters cannot turn into a clone.',
+      description: TOOL_SURFACE.novel_repo.summary,
       parameters: {
         operation: {
           type: 'string',
@@ -2839,6 +3002,9 @@ export function registerTools(ctx: Context, projects: ProjectResolver, views: Wo
           if (retro.problems.length > 0) body.push('', '## 问题', ...retro.problems.map((item) => `- ${item}`))
           body.push('', `已归档 IP 素材 ${String(retro.assets.length)} 项，导出结构模板「${retro.templates[0]?.name ?? '—'}」`)
           body.push('', '## 待补的复盘问题（工具不替你回答）', ...lessonPrompts().map((prompt) => `- ${prompt}`))
+          // Completing the book is what retires the reminder: there is no longer
+          // an investment decision left to prompt.
+          await syncReminder(next, exec, body, warnings)
           await resync(exec.agent?.session)
           return {
             ok: true,
@@ -2978,18 +3144,7 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
   registerScoped(ctx,
     defineTool({
       name: 'novel_review',
-      description:
-        'Ask a model to judge the prose — the one tool here that does not compute. The other eight are deterministic: '
-        + 'thresholds, gates and arithmetic, identical on every run. Judging whether writing reads as machine-made, '
-        + 'whether an opening holds a reader, what a competitor is doing, and which lessons a finished book actually '
-        + 'taught cannot be computed, and the SOP assigns it to judgement (§1.2). This tool asks for that judgement '
-        + 'under a versioned rubric, and records the answer with the model and rubric version that produced it. '
-        + 'operation="ai-flavor" diagnoses one chapter (add rewrite=true for a rewritten draft); "opening" reviews the '
-        + 'gate chapters against the SOP opening checklist; "competitor" dismantles pasted competitor text; "retro" '
-        + 'distils the project\'s own data into reusable lessons. '
-        + 'It never writes prose: a rewrite is a proposal saved beside the project, and only novel_write replaces a '
-        + 'chapter. competitor/retro results are returned for inspection and are NOT saved unless you pass save=true. '
-        + 'The route follows reviewProvider/reviewModel when configured, otherwise the model this session is using.',
+      description: TOOL_SURFACE.novel_review.summary,
       parameters: {
         operation: {
           type: 'string',
@@ -3011,6 +3166,15 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
         text: {
           type: 'string',
           description: 'competitor: the competitor material to dismantle — blurb, opening chapters, or both.',
+        },
+        targets: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'competitor: several competitors to dismantle in one call, each an object { title, text }. Every entry '
+            + 'becomes its own child agent, run in parallel wherever the profile registers a subagent provider and '
+            + 'sequentially where it does not; either way the results are merged and saved together. This is the SOP\'s '
+            + '20–50-title study in one call instead of fifty. Overrides `title`/`text`.',
         },
         save: {
           type: 'boolean',
@@ -3040,6 +3204,22 @@ export function registerReviewTool(ctx: Context, projects: ProjectResolver, sett
         const warnings: string[] = []
         const body: string[] = []
         const id = `review-${String(state.reviews.length + 1)}`
+
+        // A batch of competitors is the SOP's most parallel step and its slowest:
+        // twenty to fifty independent books, each needing its own reading. Handled
+        // here, before the single-request path, so one call can carry the whole
+        // study; `title`/`text` keep working exactly as before for one book.
+        if (operation === 'competitor' && (args.targets?.length ?? 0) > 0) {
+          const batch = await runCompetitorBatch({ args, body, ctx, exec, id, route, settings, state, store, warnings })
+          return {
+            ok: batch.ok,
+            operation: 'competitor',
+            detail: batch.detail,
+            ...envelope(batch.after, batch.warnings),
+            body: batch.body,
+          }
+        }
+
         const target =
           operation === 'ai-flavor'
             ? resolveChapter(state, args.chapterId).id
@@ -3167,6 +3347,15 @@ type ReviewArgs = Record<string, unknown> & {
   readonly focus?: readonly string[] | undefined
   readonly title?: string | undefined
   readonly text?: string | undefined
+  /**
+   * Batch competitor entries, each `{ title, text }`.
+   *
+   * Typed as `unknown[]` rather than as the shape, because the parameter DSL
+   * cannot infer a nested `properties` block and widening the whole argument
+   * object to satisfy one parameter is a bad trade. `runCompetitorBatch`
+   * normalises and validates the entries.
+   */
+  readonly targets?: readonly unknown[] | undefined
   readonly maxChapters?: number | undefined
 }
 
@@ -3221,6 +3410,205 @@ function buildRequest(
     launchDecisions: state.launchDecisions,
     lessons: state.retro?.lessons ?? [],
   })
+}
+
+/**
+ * Dismantle a batch of competitors, one child agent each where the host can.
+ *
+ * The SOP asks for twenty to fifty same-shelf titles dismantled before the
+ * premise is fixed. Doing that as a sequence of one-shot calls spends the sum of
+ * their latencies to produce answers that never needed to be ordered, and does it
+ * inside the operator's own turn. This hands each book to its own child and merges
+ * what comes back.
+ *
+ * Three behaviours are deliberate:
+ *
+ * - **It degrades, it does not fail.** No `subagents` service, a single target, or
+ *   no agent on the execution means the same work runs sequentially through
+ *   `runReview`. The fan-out is an optimisation, never a new requirement.
+ * - **A partial result is a result.** A child that fails is reported by name and
+ *   the rest are still written, because eighteen dismantles out of twenty is
+ *   eighteen more than starting over would produce.
+ * - **Provenance stays per book.** Each target gets its own transcript file and
+ *   its own ledger record, so "which model read which book" survives the batch.
+ *
+ * @param input - the review execution's state, arguments and accumulators.
+ * @returns the tool result envelope.
+ */
+async function runCompetitorBatch(input: {
+  readonly args: ReviewArgs
+  readonly body: string[]
+  readonly ctx: Context
+  readonly exec: { readonly agent?: unknown; readonly signal?: AbortSignal }
+  readonly id: string
+  readonly route: LlmRoute
+  readonly settings: ReviewSettings
+  readonly state: NovelState
+  readonly store: SessionStore
+  readonly warnings: string[]
+}): Promise<{
+  readonly ok: boolean
+  readonly detail: string
+  readonly warnings: string[]
+  readonly body: string[]
+  readonly after: NovelState
+}> {
+  return competitorBatchOutcome(input)
+}
+
+/**
+ * The batch itself: dismantle every target and record what came back.
+ *
+ * Split from {@link runCompetitorBatch} only so the caller can build the result
+ * envelope itself — the schema-derived result type is not nameable from here.
+ *
+ * @param input - the review execution's state, arguments and accumulators.
+ * @returns the outcome pieces the envelope is built from.
+ */
+async function competitorBatchOutcome(input: {
+  readonly args: ReviewArgs
+  readonly body: string[]
+  readonly ctx: Context
+  readonly exec: { readonly agent?: unknown; readonly signal?: AbortSignal }
+  readonly id: string
+  readonly route: LlmRoute
+  readonly settings: ReviewSettings
+  readonly state: NovelState
+  readonly store: SessionStore
+  readonly warnings: string[]
+}): Promise<{
+  readonly ok: boolean
+  readonly detail: string
+  readonly warnings: string[]
+  readonly body: string[]
+  readonly after: NovelState
+}> {
+  const { args, body, ctx, exec, route, settings, state, store, warnings } = input
+  // The schema types the entries loosely (`additionalProperties`), because the
+  // parameter DSL does not infer a nested `properties` block and widening the
+  // whole argument object to satisfy one parameter is a bad trade. So the shape
+  // is normalised here, once, and a malformed entry is named rather than dropped.
+  const targets: { title: string; text: string }[] = []
+  for (const entry of args.targets ?? []) {
+    const record = entry as { readonly title?: unknown; readonly text?: unknown }
+    const text = typeof record.text === 'string' ? record.text : ''
+    if (typeof record.title !== 'string' && text === '') continue
+    targets.push({ title: typeof record.title === 'string' ? record.title : '', text })
+  }
+  const usable = targets.filter((target) => target.text.trim() !== '')
+  if (usable.length === 0) {
+    throw new NovelInputError('operation="competitor" 的 targets 里没有非空原文（每项形如 { title, text }）')
+  }
+  const requests = usable.map((target) =>
+    buildCompetitorRequest({ state, title: target.title.trim() || '（未命名竞品）', text: target.text }),
+  )
+
+  const provider = resolveSubagentProvider(ctx)
+  const parallel = provider !== undefined && requests.length > 1 && exec.agent !== undefined
+  let outcomes: { index: number; text: string; error: string }[]
+  if (parallel) {
+    outcomes = await runReviewFanout(ctx, provider, exec.agent, requests, {
+      signal: exec.signal,
+      timeoutMs: settings.timeoutMs,
+      maxTokens: settings.maxTokens,
+      labels: usable.map((target) => target.title.trim() || '（未命名竞品）'),
+    })
+  } else {
+    outcomes = []
+    for (const [index, request] of requests.entries()) {
+      try {
+        const single = await runReview(ctx, route, request, {
+          signal: exec.signal,
+          timeoutMs: settings.timeoutMs,
+          maxTokens: settings.maxTokens,
+          reasoningEffort: settings.reasoningEffort,
+        })
+        outcomes.push({ index, text: single.text, error: '' })
+      } catch (error) {
+        outcomes.push({ index, text: '', error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+  }
+
+  body.push(
+    '## 批量竞品拆解',
+    `方式：${
+      parallel
+        ? `子代理并行 ${String(requests.length)} 本（provider=${String(provider)}）`
+        : provider === undefined
+          ? '顺序执行（本 profile 没有 subagents 服务）'
+          : '顺序执行（单本，或执行上下文里没有 agent）'
+    }`,
+    `模型：${route.provider}/${route.model}`,
+  )
+
+  let saved = 0
+  for (const outcome of outcomes) {
+    const target = usable[outcome.index]
+    if (target === undefined) continue
+    const title = target.title.trim() || '（未命名竞品）'
+    if (outcome.error !== '') {
+      warnings.push(`「${title}」拆解失败：${outcome.error}`)
+      body.push(`- ✗ ${title}：${outcome.error}`)
+      continue
+    }
+    const output = parseReviewOutput(outcome.text)
+    if (output.dismantle === undefined) {
+      warnings.push(`「${title}」的回复里没有 dismantle 字段，未入库（记录文件里有完整回复）`)
+    }
+    const recordId = `${input.id}-${String(outcome.index + 1)}`
+    const artifact = await store.writeDerived(
+      `${DEFAULT_REVIEW_PATH}/${recordId}-competitor.md`,
+      transcript({
+        id: recordId,
+        operation: 'competitor',
+        target: title,
+        route: `${route.provider}/${route.model}`,
+        output,
+        model: route.model,
+      }),
+    )
+    const persisted = await persist(
+      state,
+      'competitor',
+      { ...args, save: args.save === true, title, text: target.text },
+      output,
+      store,
+    )
+    if (persisted !== '') saved += 1
+    const review: ReviewRecord = {
+      id: recordId,
+      at: new Date().toISOString(),
+      kind: 'competitor',
+      target: title,
+      provider: route.provider,
+      model: route.model,
+      promptVersion: REVIEW_PROMPT_VERSION,
+      summary: output.summary,
+      findings: output.findings,
+      artifact,
+    }
+    await store.update((current) => addReview(current, review))
+    body.push(`- ✓ ${title}${persisted === '' ? '' : ` — ${persisted}`}`)
+    body.push(...renderReview(output, title))
+  }
+
+  const failed = outcomes.filter((outcome) => outcome.error !== '').length
+  body.push(
+    '',
+    `合计 ${String(outcomes.length)} 本：成功 ${String(outcomes.length - failed)}，失败 ${String(failed)}，入库 ${String(saved)} 本`,
+  )
+  if (args.save !== true) {
+    body.push('尚未入库：确认拆解可用后重跑并加 save=true，或用 novel_plan operation="competitor" 手工录入。')
+  }
+  const after = (await store.read()) ?? state
+  return {
+    ok: failed === 0,
+    detail: `批量拆解 ${String(outcomes.length)} 本竞品：成功 ${String(outcomes.length - failed)}，失败 ${String(failed)}`,
+    warnings,
+    body,
+    after,
+  }
 }
 
 /**

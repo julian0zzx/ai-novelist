@@ -8,11 +8,13 @@
  * @module @ai-novelist/novelist-skill/core
  */
 
+export * from './sop.ts'
 export * from './types.ts'
 export * from './markdown.ts'
 export * from './paths.ts'
 export * from './content.ts'
 export * from './novel.ts'
+export * from './spine.ts'
 export * from './plan.ts'
 export * from './metrics.ts'
 export * from './write.ts'

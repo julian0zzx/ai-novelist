@@ -32,6 +32,7 @@ import {
   emptyWriting,
   evaluationHint,
   progressOf,
+  phaseForStage,
   stageLabel,
   styleGateReached,
   writingPlanGaps,
@@ -59,6 +60,15 @@ export interface NovelSnapshot {
   readonly stage: string
   /** The phase's label in the SOP's own vocabulary. */
   readonly stageLabel: string
+  /**
+   * The phase reference that teaches the phase the project is in.
+   *
+   * Empty when the deployment is not a skill bundle (a plain DSH plugin has no
+   * `references/` directory beside it). The line is what turns the six generated
+   * phase files from something the skill mentions into something the model is
+   * pointed at exactly when its stage changes.
+   */
+  readonly stageReference: string
   /** What the next phase still requires. */
   readonly blockers: readonly string[]
   /** Number of planned chapters. */
@@ -167,6 +177,7 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
         premise: state.meta.premise,
         stage: assessment.stage,
         stageLabel: stageLabel(assessment.stage),
+        stageReference: phaseForStage(assessment.stage)?.reference ?? '',
         blockers: assessment.blockers,
         chapters: chapters.length,
         words: progress.totalWords,
@@ -218,6 +229,7 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
           premise: '',
           stage: 'planning',
           stageLabel: '阶段一 策划',
+          stageReference: '',
           blockers: [],
           chapters: 0,
           words: 0,
@@ -409,6 +421,15 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
           ? 'No chapters are planned yet; start with novel_plan operation="chapter".'
           : `Latest chapter: #${String(snapshot.lastNumber)} "${snapshot.lastTitle}" (${snapshot.lastStatus}).`,
       )
+      // Progressive disclosure, aimed: the workflow is six phases and 600 lines,
+      // so the one to read is named by the stage the project is actually in rather
+      // than left for the model to pick. Silent where there is no skill bundle.
+      if (snapshot.stageReference !== '') {
+        lines.push(
+          `Read this phase only: ${snapshot.stageReference}`
+          + ' (references/common.md holds what every phase shares).',
+        )
+      }
     }
     if (snapshot !== undefined && snapshot.planGaps.length > 0) {
       lines.push(

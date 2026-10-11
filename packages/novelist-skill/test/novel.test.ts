@@ -271,6 +271,8 @@ describe('chapter contract', () => {
       'infoGap',
       'beats',
       'hook',
+      'keyBeat',
+      'price',
     ])
   })
 
@@ -285,6 +287,8 @@ describe('chapter contract', () => {
         infoGap: 'g',
         beats: ['shuang'],
         hook: 'h',
+        keyBeat: 'k',
+        price: 'p',
       },
       at('2024-01-01T00:00:00.000Z'),
     )
@@ -324,12 +328,12 @@ describe('progressOf', () => {
   it('derives stock, contract completeness, and overdue promises', () => {
     let state = upsertChapter(
       emptyNovel(),
-      { id: 'a', number: 1, body: '青云宗', status: 'final', plotTask: 'x', conflict: 'y', emotionalPayoff: 'z', infoGap: 'g', beats: ['shuang'], hook: 'h' },
+      { id: 'a', number: 1, body: '青云宗', status: 'final', plotTask: 'x', conflict: 'y', emotionalPayoff: 'z', infoGap: 'g', beats: ['shuang'], hook: 'h', keyBeat: 'k', price: 'p' },
       at('2024-01-01T00:00:00.000Z'),
     )
     state = upsertChapter(
       state,
-      { id: 'b', number: 2, body: '山门', status: 'drafting', plotTask: 'x', conflict: 'y', emotionalPayoff: 'z', infoGap: 'g', beats: ['turn'], hook: 'h' },
+      { id: 'b', number: 2, body: '山门', status: 'drafting', plotTask: 'x', conflict: 'y', emotionalPayoff: 'z', infoGap: 'g', beats: ['turn'], hook: 'h', keyBeat: 'k', price: 'p' },
       at('2024-01-01T00:00:00.000Z'),
     )
     state = upsertChapter(state, { id: 'c', number: 3, title: '试炼' }, at('2024-01-01T00:00:00.000Z'))
@@ -515,7 +519,25 @@ describe('assessStage', () => {
 
   it('holds serialization at the voice checkpoint once chapter 1 has prose', () => {
     let state = withPitchAndCompetitors()
-    state = { ...state, outline: { ...state.outline, logline: '少年上山', minimal: '摘要', acts: ['起'] } }
+    // A complete skeleton answers the narrative spine as well as the structural
+    // boxes: stage four is not finished while the outline cannot tell its story.
+    state = {
+      ...state,
+      outline: {
+        ...state.outline,
+        logline: '少年上山',
+        minimal: '摘要',
+        acts: ['起'],
+        synopsis: '少年上山查案，最后把旧账翻了过来。',
+        protagonistArc: '从只想问清死因，到愿意替别人扛事',
+        supportArcs: '同门从怕事到敢作证',
+        antagonistArc: '长老从压住旧案到被逼出手',
+        factionShift: '后山一脉分裂，前山成军',
+        conflictArcs: '试剑台认主、后山夜战、账房对质',
+        costs: '失去了隐姓埋名的余地',
+        gains: '断剑认主与一条翻案线索',
+      },
+    }
     state = upsertChapter(
       state,
       { id: 'c1', number: 1, plotTask: '上山', body: '山门很高。' },
@@ -532,7 +554,23 @@ describe('assessStage', () => {
     state = { ...state, outline: { ...state.outline, fullOutlineDone: true } }
     state = upsertVolume(
       state,
-      { number: 1, title: '第一卷', detail: '', goal: '入门', conflict: '试炼', climax: '登顶', endHook: '钟响', chapters: [1] },
+      {
+        number: 1,
+        title: '第一卷',
+        detail: '',
+        goal: '入门',
+        conflict: '试炼',
+        climax: '登顶',
+        endHook: '钟响',
+        synopsis: '少年入门，卷末登顶。',
+        protagonistArc: '从散修变成门内弟子',
+        antagonistArc: '对手第一次露头',
+        factionShift: '门内两派成形',
+        mainConflict: '入门试炼',
+        costs: '失去了自由身',
+        gains: '得了一个身份',
+        chapters: [1],
+      },
       at('2024-01-02T00:00:00.000Z'),
     )
     state = {

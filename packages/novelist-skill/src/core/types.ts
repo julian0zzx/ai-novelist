@@ -130,7 +130,17 @@ export const BEAT_KINDS = ['shuang', 'sweet', 'burn', 'tension', 'info', 'turn']
 /** One entry of {@link BEAT_KINDS}. */
 export type BeatKind = (typeof BEAT_KINDS)[number]
 
-/** The planning fields every chapter contract must answer. */
+/**
+ * The planning fields every chapter contract must answer.
+ *
+ * The last two carry the chapter's share of the *story* rather than its share of
+ * the plot machinery. `novel_plan`'s chapter step used to ask only "what happens"
+ * (剧情任务、冲突、情绪回报、信息差、节拍、章末钩子), so a rolling outline of chapters
+ * could be complete, rhythmic, and still never say how anyone changed or what it
+ * cost — which is how 爽点/爆点 tables end up hanging on nothing. They are
+ * waivable like every other field, because a genuinely transitional chapter can
+ * answer them in one clause, but they are not silent.
+ */
 export const CONTRACT_FIELDS = [
   'plotTask',
   'conflict',
@@ -138,10 +148,143 @@ export const CONTRACT_FIELDS = [
   'infoGap',
   'beats',
   'hook',
+  'keyBeat',
+  'price',
 ] as const
 
 /** One entry of {@link CONTRACT_FIELDS}. */
 export type ContractField = (typeof CONTRACT_FIELDS)[number]
+
+/** What a chapter's two narrative fields are called, for the tools. */
+export const CONTRACT_FIELD_LABELS: Readonly<Record<ContractField, string>> = {
+  plotTask: '剧情任务',
+  conflict: '冲突',
+  emotionalPayoff: '情绪回报',
+  infoGap: '信息差',
+  beats: '节拍',
+  hook: '章末钩子',
+  keyBeat: '关键转折',
+  price: '代价与收获',
+}
+
+/**
+ * The narrative-spine fields a volume plan answers, in report order.
+ *
+ * Deliberately the whole-book spine minus the two whole-book-only fields
+ * (`supportArcs`, `conflictArcs`): a volume covers one stage of each arc rather
+ * than the arc, so it advances the antagonist, the factions, and the cost — and
+ * it advances the companions inside `protagonistArc` rather than re-telling the
+ * book's companion roster.
+ */
+export const VOLUME_SPINE_FIELDS = [
+  'synopsis',
+  'protagonistArc',
+  'antagonistArc',
+  'factionShift',
+  'mainConflict',
+  'costs',
+  'gains',
+] as const
+
+/** One entry of {@link VOLUME_SPINE_FIELDS}. */
+export type VolumeSpineField = (typeof VOLUME_SPINE_FIELDS)[number]
+
+/**
+ * How one narrative-spine element is labelled, wherever it is reported.
+ *
+ * One table for both layers: the same element must read the same in the volume
+ * gap list and in the whole-book gap list, or the two lists stop being comparable.
+ */
+export const SPINE_LABELS: Readonly<Record<OutlineSpineField | VolumeSpineField, string>> = {
+  synopsis: '故事梗概',
+  protagonistArc: '主角成长线',
+  supportArcs: '伙伴成长线',
+  antagonistArc: '反派成长线',
+  factionShift: '阵营演变（反派的队伍怎么长起来）',
+  conflictArcs: '对抗副本（每一场对抗怎么打、奇遇在哪里）',
+  mainConflict: '本卷核心对抗',
+  costs: '失去了什么',
+  gains: '获得了什么',
+}
+
+/** One narrative element of a planning layer, with the requirement it answers. */
+export interface SpinePart<Field extends string> {
+  /** The field this part fills. */
+  readonly field: Field
+  /** The heading it lives under, which is also the label the tools report. */
+  readonly heading: string
+  /** What a complete answer says. */
+  readonly requirement: string
+}
+
+/**
+ * The narrative-spine fields the whole-book outline answers, in report order.
+ *
+ * This is the list the tool checks *before* it checks beats or length: a
+ * detailed outline that cannot say what the story is, how the cast changes, how
+ * the opposition grows, and what was won or lost has nothing for a 爽点 schedule
+ * to be attached to.
+ */
+export const OUTLINE_SPINE_FIELDS = [
+  'synopsis',
+  'protagonistArc',
+  'supportArcs',
+  'antagonistArc',
+  'factionShift',
+  'conflictArcs',
+  'costs',
+  'gains',
+] as const
+
+/** One entry of {@link OUTLINE_SPINE_FIELDS}. */
+export type OutlineSpineField = (typeof OUTLINE_SPINE_FIELDS)[number]
+
+/**
+ * The whole-book narrative spine as an ordered checklist.
+ *
+ * The headings are the `###` subheadings of `全书大纲.md`'s `## 叙事骨架` block, and
+ * the requirements are what `novel_plan` reports per missing element. Both layers'
+ * tables live here, beside the field lists they describe, so the codec and the
+ * checks cannot disagree about what an element is called.
+ */
+export const OUTLINE_SPINE_PARTS: readonly SpinePart<OutlineSpineField>[] = [
+  { field: 'synopsis', heading: '故事梗概', requirement: '整本书从开头到结局讲一遍：谁、要什么、遇到什么、最后怎样' },
+  { field: 'protagonistArc', heading: '主角成长线', requirement: '主角从什么状态变成什么状态，中间跨过哪几道坎' },
+  { field: 'supportArcs', heading: '伙伴成长线', requirement: '主要伙伴各自怎么变，在哪些节点改变' },
+  { field: 'antagonistArc', heading: '反派成长线', requirement: '反派怎么变强、怎么动摇、最后败在哪一步' },
+  { field: 'factionShift', heading: '阵营演变', requirement: '反派的队伍怎么扩张、怎么分裂，主角这边怎么成军' },
+  { field: 'conflictArcs', heading: '对抗副本', requirement: '每一场对抗怎么打、奇遇在哪、结果与代价是什么' },
+  { field: 'costs', heading: '失去了什么', requirement: '主角方失去了什么，逐项写清' },
+  { field: 'gains', heading: '获得了什么', requirement: '主角方获得了什么，逐项写清' },
+]
+
+/**
+ * The narrative spine one volume answers, in report order.
+ *
+ * Deliberately the whole-book spine minus the two whole-book-only fields: a
+ * volume covers one *stage* of each arc rather than the arc, so it advances the
+ * antagonist, the factions, and the cost, and it carries the companions inside
+ * `protagonistArc` rather than re-telling the book's companion roster.
+ */
+export const VOLUME_SPINE_PARTS: readonly SpinePart<VolumeSpineField>[] = [
+  { field: 'synopsis', heading: '本卷梗概', requirement: '这一卷从头到尾讲一遍，不看别的卷也读得懂' },
+  { field: 'protagonistArc', heading: '主角成长', requirement: '主角在这一卷里跨过哪一步、变成什么样' },
+  { field: 'antagonistArc', heading: '反派成长', requirement: '反派及其手下在这一卷里做了什么、变成什么样' },
+  { field: 'factionShift', heading: '阵营演变', requirement: '双方阵营在这一卷里的扩张、分裂与倒戈' },
+  { field: 'mainConflict', heading: '核心对抗', requirement: '这一卷的主对抗怎么打起来、怎么收场' },
+  { field: 'costs', heading: '代价与失去', requirement: '这一卷失去了什么，逐项写清' },
+  { field: 'gains', heading: '收获与获得', requirement: '这一卷获得了什么，逐项写清' },
+]
+
+/** One narrative-spine element that is still empty, with where it is written. */
+export interface SpineGap {
+  /** Which element. */
+  readonly key: OutlineSpineField | VolumeSpineField
+  /** What the element has to answer. */
+  readonly requirement: string
+  /** The tool call that fills it. */
+  readonly fill: string
+}
 
 /**
  * The checkpoints only the author can close.
@@ -577,6 +720,26 @@ export interface VolumePlan {
   readonly climax: string
   /** The hook that closes the volume. */
   readonly endHook: string
+  /**
+   * The volume told as a story, in this volume's own right.
+   *
+   * `detail` above carries the 卷内节奏 and is what the length target measures;
+   * this is the thing that is supposed to be *complete* before that target is
+   * worth checking — the reader's answer to "what happens in this volume".
+   */
+  readonly synopsis: string
+  /** How the protagonist changes across this volume. */
+  readonly protagonistArc: string
+  /** How the antagonist and their side change across this volume. */
+  readonly antagonistArc: string
+  /** How the antagonist's organisation grows, splits, or is broken here. */
+  readonly factionShift: string
+  /** The volume's central confrontation as a story, not a label. */
+  readonly mainConflict: string
+  /** What the protagonist side loses across this volume, named. */
+  readonly costs: string
+  /** What the protagonist side gains across this volume, named. */
+  readonly gains: string
   /** Chapter numbers this volume spans, inclusive; empty when open. */
   readonly chapters: readonly number[]
 }
@@ -617,6 +780,32 @@ export interface Outline {
    * is the detailed skeleton beside it.
    */
   readonly fullOutline: string
+  /**
+   * The whole book told as a story, start to finish.
+   *
+   * This is the layer the pipeline checks *first*. `fullOutline` above is the
+   * detailed skeleton — acts, turning points, foreshadowing, the ending frame —
+   * and a project can fill every one of those boxes while never once saying what
+   * actually happens to these people (which is exactly what happened to the book
+   * this field was added for: 20k characters of detail, no synopsis). Beats and
+   * length targets are checked only after this and {@link OUTLINE_SPINE_FIELDS}
+   * can be read as one continuous story.
+   */
+  readonly synopsis: string
+  /** How the protagonist changes across the whole book. */
+  readonly protagonistArc: string
+  /** How the companions change, one by one. */
+  readonly supportArcs: string
+  /** How the antagonist changes, and how their side grows. */
+  readonly antagonistArc: string
+  /** How the antagonist's organisation expands, splits, or is broken. */
+  readonly factionShift: string
+  /** The adversarial arcs: each confrontation, its奇遇, and how it turns. */
+  readonly conflictArcs: string
+  /** What the protagonist side loses across the book, named. */
+  readonly costs: string
+  /** What the protagonist side gains across the book, named. */
+  readonly gains: string
   /** Act structure in the author's words, one entry per act. */
   readonly acts: readonly string[]
   /** The minimal viable outline's one-screen summary. */
@@ -669,6 +858,10 @@ export interface Chapter {
   readonly beats: readonly BeatKind[]
   /** The chapter-end hook. */
   readonly hook: string
+  /** The turn this chapter delivers: whose arc moves, and how. */
+  readonly keyBeat: string
+  /** What this chapter costs or leaves behind, in story terms. */
+  readonly price: string
   /** Target length in characters; 0 when unset. */
   readonly targetWords: number
   /** Contract fields the author explicitly waived, with the reason. */

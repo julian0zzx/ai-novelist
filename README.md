@@ -57,7 +57,7 @@ re-read after the agent writes.
 
 ## The SOP this implements
 
-The workflow is [`docs/sop.md`](docs/sop.md) — 爆款网文创作全流程 SOP 3.2, whose closed loop
+The workflow is [`docs/sop.md`](docs/sop.md) — 爆款网文创作全流程 SOP 3.5, whose closed loop
 is **假设 → 验证 → 放大 → 复盘 → 复用**: form a hypothesis from a competitor study and a
 memorable point, put the opening package in front of real readers, record a human go/no-go on
 it, build the full skeleton only after a `go`, iterate while serializing, then turn the
@@ -188,15 +188,17 @@ author reads and rewrites lives in a file they can open:
 
 ```
 novel-workspace/
-  全书大纲.md            # logline, full outline, acts, minimal outline (the full outline ≈ total/100)
+  全书大纲.md            # logline, the narrative spine (synopsis, protagonist/support/antagonist arcs,
+                        # faction shift, adversarial arcs, costs, gains), full outline, acts, minimal outline
   世界观设定.md          # one section per world fact
   人物设定.md            # one section per character
-  分卷大纲.md            # one section per volume: goal/conflict/climax/hook + the volume's own rhythm (≈ volume/50)
+  分卷大纲.md            # one section per volume: the spine first (synopsis, arcs, factions, conflict,
+                        # costs, gains), then goal/conflict/climax/hook + the volume's own rhythm (≈ volume/50)
   章节大纲.md            # the chapter table + the rhythm table (each contract ≈ chapter/10)
   竞品拆解.md            # one section per comparable title, twelve editable fields (20–50 of them)
   章节/
     第001章-山门.md      # prose
-    第001章-山门.细纲.md # the six-field contract
+    第001章-山门.细纲.md # the contract: plot task, key turn, price paid, conflict, payoff, gap, beats, hook
   .novel/
     novel.json            # metadata + index (schemaVersion: 3)
     novel.v2.backup.json  # only after a migration; never overwritten
@@ -204,6 +206,11 @@ novel-workspace/
     templates/            # written by novel_repo operation="template"
     reviews/              # model transcripts and rewritten drafts
 ```
+
+**Every outline layer is checked story first, payoffs second, length last** (SOP 3.5 §1.5). Each
+layer names its narrative elements as fields, every empty one is reported, and the word-count line
+is not printed until they are — an outline that filled every category and hit its length target but
+cannot tell the whole story is reported as *no synopsis*, not as on target.
 
 **The file wins.** Edit any of them by hand and the next read adopts what you wrote and
 refreshes the index. The one guard rail is syntax: if a file cannot be parsed, the tool

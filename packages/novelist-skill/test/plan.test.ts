@@ -3,6 +3,8 @@ import {
   DRAFT_TARGET_RATIO,
   LENGTH_BENCHMARKS,
   LENGTH_TOLERANCE,
+  OUTLINE_SPINE_PARTS,
+  VOLUME_SPINE_PARTS,
   WRITING_PLAN_QUESTIONS,
   chapterContractLength,
   chapterOutlineTarget,
@@ -11,6 +13,7 @@ import {
   derivedTotalChapters,
   describeWritingPlan,
   draftTargetWords,
+  emptyOutline,
   emptyWriting,
   layerLengthCheck,
   layerWordTarget,
@@ -18,15 +21,21 @@ import {
   lengthStageFor,
   lengthToleranceLabel,
   lengthWindow,
+  narrativeReport,
   normalizeWritingPlan,
+  outlinePayoffGaps,
   outlineRatioLabel,
+  outlineSpineGaps,
+  outlineSpineValues,
   rhythmExpectation,
   volumeLengthNote,
+  volumeSpineGaps,
+  volumeSpineValues,
   volumeWordTarget,
   writingPlanConflicts,
   writingPlanGaps,
 } from '../src/core/index.ts'
-import type { Chapter, ChapterStatus } from '../src/core/types.ts'
+import type { Chapter, ChapterStatus, VolumePlan } from '../src/core/types.ts'
 
 /**
  * The length plan: the four questions asked at initialization, what the two
@@ -176,6 +185,8 @@ describe('the two length gates', () => {
     infoGap: '',
     beats: [],
     hook: '',
+    keyBeat: '',
+    price: '',
     targetWords,
     waived: {},
     delivered: [],
@@ -337,13 +348,15 @@ describe('the planning layers\' length budgets', () => {
       infoGap: '',
       beats: ['shuang', 'sweet', 'burn'],
       hook: '',
+      keyBeat: '关键转折',
+      price: '代价',
       targetWords: 3000,
       waived: { emotionalPayoff: '作者显式放弃' },
       delivered: [],
     }
-    // '剧情任务十四个字' is 8 characters; '冲突八个字' is 5. Beats and the waiver
-    // reason are not prose the author wrote into the contract.
-    expect(chapterContractLength(chapter)).toBe(13)
+    // '剧情任务十四个字' is 8 characters; '冲突八个字' is 5; '关键转折' is 4; '代价' is 2.
+    // Beats and the waiver reason are not prose the author wrote into the contract.
+    expect(chapterContractLength(chapter)).toBe(19)
   })
 
   it('derives the volume budget from chapters-per-volume and chapter length', () => {
@@ -351,5 +364,113 @@ describe('the planning layers\' length budgets', () => {
     // 40 章 × 3000 字 = 12 万字一卷 → 2400 字分卷大纲.
     expect(volumeWordTarget(writing)).toBe(120_000)
     expect(layerWordTarget(volumeWordTarget(writing), 'volume')).toBe(2400)
+  })
+})
+
+/**
+ * Narrative completeness: what a planning layer owes the *story*, checked before
+ * its beats and before its word count.
+ *
+ * The failure these pin is specific: a 20k-character 全书大纲 whose every
+ * structural category was filled and whose word count exceeded its 1/100 target,
+ * with no place in it that told the story. Length cannot detect that, so the
+ * spine is a separate check that runs first.
+ */
+describe('the narrative spine', () => {
+  /** A volume answering every element, over the empty shape's field list. */
+  const fullVolume = (overrides: Partial<VolumePlan> = {}): VolumePlan => ({
+    number: 1,
+    title: '第一卷',
+    detail: '卷内节奏',
+    goal: '入门',
+    conflict: '试炼',
+    climax: '登顶',
+    endHook: '钟响',
+    synopsis: '少年入门，卷末登顶。',
+    protagonistArc: '从散修变成门内弟子',
+    antagonistArc: '对手第一次露头',
+    factionShift: '门内两派成形',
+    mainConflict: '入门试炼',
+    costs: '失去了自由身',
+    gains: '得了一个身份',
+    chapters: [1, 30],
+    ...overrides,
+  })
+
+  it('asks the whole-book outline for eight named elements before anything else', () => {
+    const gaps = outlineSpineGaps(emptyOutline())
+    // The order is the reading order the report prints: story first, then whose
+    // arc moves, then what the story cost.
+    expect(gaps.map((gap) => gap.key)).toEqual([
+      'synopsis',
+      'protagonistArc',
+      'supportArcs',
+      'antagonistArc',
+      'factionShift',
+      'conflictArcs',
+      'costs',
+      'gains',
+    ])
+    // Each gap says what the element has to answer, so the model is not left to
+    // guess what "对抗副本" meant.
+    expect(gaps[0]?.requirement).toMatch(/整本书从开头到结局讲一遍/)
+    expect(gaps[0]?.fill).toContain('operation="outline"')
+  })
+
+  it('stops reporting an element once it is written, and reports the rest', () => {
+    const outline = {
+      ...emptyOutline(),
+      synopsis: '一个社畜在夜里替人吃噩梦。',
+      protagonistArc: '从怕接电话到敢按那个号码',
+    }
+    const gaps = outlineSpineGaps(outline)
+    expect(gaps.map((gap) => gap.key)).not.toContain('synopsis')
+    expect(gaps.map((gap) => gap.key)).not.toContain('protagonistArc')
+    expect(gaps).toHaveLength(6)
+  })
+
+  it('asks a volume for seven elements, one stage at a time', () => {
+    const gaps = volumeSpineGaps(fullVolume({ synopsis: '', gains: '' }))
+    expect(gaps.map((gap) => gap.key)).toEqual(['synopsis', 'gains'])
+    // The whole-book-only fields have no volume twin: a volume advances the
+    // companions inside the protagonist's line rather than re-listing them.
+    expect(VOLUME_SPINE_PARTS.map((part) => part.field)).not.toContain('supportArcs')
+    expect(VOLUME_SPINE_PARTS.map((part) => part.field)).not.toContain('conflictArcs')
+    // And a volume that answered everything reports nothing.
+    expect(volumeSpineGaps(fullVolume())).toEqual([])
+  })
+
+  it('reports the payoff schedule only after there is a story to hang it on', () => {
+    const bare = emptyOutline()
+    expect(outlinePayoffGaps(bare)).toEqual([
+      '情绪节拍表为空（每 3 章小爽点、每 10 章大爽点、每卷卷末爆点）：novel_plan operation="beat"',
+      '分卷大纲还没写：阶段性高潮与卷末爆点没有落点（novel_plan operation="volume"）',
+    ])
+    // Beats alone are not enough: a book with a rhythm table but no volumes has
+    // nowhere for its 爆点 to land.
+    const withBeats = { ...bare, beats: [{ chapter: 3, kind: 'shuang' as const, note: '' }] }
+    expect(outlinePayoffGaps(withBeats)).toHaveLength(1)
+    expect(outlinePayoffGaps(withBeats)[0]).toMatch(/还没有写|没有落点/)
+    // A volume with neither a climax nor an end hook is not a landing point
+    // either: the 爆点 has to be written, not merely have a volume around it.
+    const unrated = { ...withBeats, volumes: [fullVolume({ climax: '', endHook: '' })] }
+    expect(outlinePayoffGaps(unrated)[0]).toMatch(/卷末钩子/)
+    // A rated volume satisfies it.
+    const rated = { ...withBeats, volumes: [fullVolume()] }
+    expect(outlinePayoffGaps(rated)).toEqual([])
+  })
+
+  it('prints every element, answered or not, so the shape is visible at a glance', () => {
+    const outline = { ...emptyOutline(), synopsis: '一个社畜在夜里替人吃噩梦，最后把神位拆开还给所有人。' }
+    const lines = narrativeReport(OUTLINE_SPINE_PARTS, outlineSpineValues(outline))
+    expect(lines).toHaveLength(8)
+    expect(lines[0]).toContain('✅')
+    expect(lines[0]).toContain('一个社畜在夜里替人吃噩梦')
+    expect(lines[1]).toContain('⬜')
+    expect(lines[1]).toContain('主角成长线')
+    expect(lines[1]).toContain('未写')
+    // A long answer is truncated for the dashboard rather than flooding it.
+    const long = narrativeReport(VOLUME_SPINE_PARTS, volumeSpineValues(fullVolume({ gains: '甲'.repeat(200) })))
+    expect(long.at(-1)).toMatch(/…$/)
   })
 })

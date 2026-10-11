@@ -36,6 +36,8 @@ function chapter(overrides: Partial<Chapter> & { readonly number: number }): Cha
     infoGap: '',
     beats: [],
     hook: '',
+    keyBeat: '',
+    price: '',
     targetWords: 0,
     waived: {},
     delivered: [],
@@ -96,9 +98,9 @@ describe('boardOf', () => {
     expect(card?.written).toBe(false)
     expect(card?.hasHook).toBe(true)
     expect(card?.beats).toEqual(['shuang'])
-    // plotTask, conflict, emotionalPayoff, infoGap are still unanswered; the
-    // declared beat and hook are not.
-    expect(card?.missing).toEqual(['plotTask', 'conflict', 'emotionalPayoff', 'infoGap'])
+    // plotTask, conflict, emotionalPayoff, infoGap, keyBeat and price are still
+    // unanswered; the declared beat and hook are not.
+    expect(card?.missing).toEqual(['plotTask', 'conflict', 'emotionalPayoff', 'infoGap', 'keyBeat', 'price'])
   })
 
   it('carries the length gate its column is measured against', () => {
@@ -131,6 +133,8 @@ describe('boardOf', () => {
           infoGap: '悬念',
           beats: ['turn'],
           hook: '钩子',
+          keyBeat: '他第一次让出主动权',
+          price: '丢了一个熟人',
           waived: { conflict: '本弧线不需要' },
         }),
       ),

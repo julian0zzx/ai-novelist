@@ -18,6 +18,34 @@ let root: string
 let ctx: Context
 let tools: Map<string, ToolDefinition>
 
+/**
+ * The narrative spine a "finished skeleton" answers.
+ *
+ * Stage four is not done while a layer cannot tell its story (SOP 3.5 §1.5), so
+ * the phase-four specs have to write the spine the way a real project would.
+ */
+const SPINE = {
+  synopsis: '少年上山查案，最后把旧账翻了过来。',
+  protagonistArc: '从只想问清死因，到愿意替别人扛事',
+  supportArcs: '同门从怕事到敢作证',
+  antagonistArc: '长老从压住旧案到被逼出手',
+  factionShift: '后山一脉分裂，前山成军',
+  conflictArcs: '试剑台认主、后山夜战、账房对质',
+  costs: '失去了隐姓埋名的余地',
+  gains: '断剑认主与一条翻案线索',
+}
+
+/** The per-volume spine a "finished volume plan" answers. */
+const VOLUME_SPINE = {
+  synopsis: '少年入门，卷末登顶。',
+  protagonistArc: '从散修变成门内弟子',
+  antagonistArc: '对手第一次露头',
+  factionShift: '门内两派成形',
+  mainConflict: '入门试炼',
+  costs: '失去了自由身',
+  gains: '得了一个身份',
+}
+
 /** Minimal stand-in for the `tools` service: records what a plugin registers. */
 const recorder = {
   name: 'tools-recorder',
@@ -267,6 +295,9 @@ describe('phase one: the length plan', () => {
 
   it('keeps the volume outline answerable to the volume count the user gave', async () => {
     await call('novel_init', { title: '青云记', targetWords: 600000, chapterWords: 3000, volumes: 0 })
+    // 分卷大纲 is stage-four work: the SOP opens it only after a `go`, and this
+    // spec is about the volume-count rule, not the gate in front of it.
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     const single = await call('novel_plan', { operation: 'volume', number: 1, goal: '入门', climax: '初战' })
     expect((single['warnings'] as string[]).join(' ')).toMatch(/不分卷/)
 
@@ -277,6 +308,7 @@ describe('phase one: the length plan', () => {
 
   it('suggests the beat the rhythm rule expects once the volume length is known', async () => {
     await call('novel_init', { title: '青云记', targetWords: 1200000, chapterWords: 3000, volumes: 12 })
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     const planned = await call('novel_plan', { operation: 'chapter', id: 'chapter-3', title: '试剑', number: 3 })
     expect((planned['warnings'] as string[]).join(' ')).toMatch(/按节奏应为「小高潮」/)
 
@@ -878,6 +910,9 @@ describe('phase six: promises, retrospective, and reuse', () => {
   it('reports an open promise as overdue once its due chapter is written', async () => {
     await call('novel_init', { title: '青云记' })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
+    // A promise is stage-four work in the SOP's list, so it sits behind the same
+    // `go` as the outline; this spec is about the overdue check, not the gate.
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     await call('novel_bible', { kind: 'link', id: 'sword', note: '断剑的来历', dueAt: '1', payoff: '掌门认剑' })
     await confirmSettings()
     const written = await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。' })
@@ -889,6 +924,7 @@ describe('phase six: promises, retrospective, and reuse', () => {
 
   it('warns when a promise is planted without a due chapter', async () => {
     await call('novel_init', { title: '青云记' })
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     const result = await call('novel_bible', { kind: 'link', id: 'sword', note: '断剑的来历' })
     expect((result['warnings'] as string[]).join(' ')).toMatch(/未给 dueAt/)
   })
@@ -897,6 +933,7 @@ describe('phase six: promises, retrospective, and reuse', () => {
     await call('novel_init', { title: '青云记', premise: '少年携断剑上山。' })
     await call('novel_plan', { operation: 'pitch', memorablePoint: '携断剑的少年向上', coreEmotion: '被承认' })
     await call('novel_plan', { operation: 'outline', logline: '少年上山', acts: ['起', '承', '转'] })
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     await call('novel_plan', {
       operation: 'chapter',
       id: 'chapter-1',
@@ -942,16 +979,35 @@ describe('phase six: promises, retrospective, and reuse', () => {
     for (let index = 0; index < 20; index += 1) {
       await call('novel_plan', { operation: 'competitor', title: `同榜书 ${String(index)}` })
     }
-    await call('novel_plan', { operation: 'outline', logline: 'l', minimal: 'm', acts: ['a'], full: true })
-    await call('novel_plan', { operation: 'volume', number: 1, title: '第一卷', goal: '入门', climax: '试炼', conflict: 'c', endHook: 'h' })
+    // The launch decision authorises the full skeleton, so it precedes the
+    // outline, volume and beat work below — that ordering is the pipeline's own
+    // rule ("go 才解锁阶段四"), not this spec's convenience. The stage machine
+    // then reaches serialization on written work alone: a declaration, no reading,
+    // no evaluation.
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
+    await call('novel_plan', {
+      operation: 'outline',
+      logline: 'l',
+      minimal: 'm',
+      acts: ['a'],
+      ...SPINE,
+      full: true,
+    })
+    await call('novel_plan', {
+      operation: 'volume',
+      number: 1,
+      title: '第一卷',
+      goal: '入门',
+      climax: '试炼',
+      conflict: 'c',
+      endHook: 'h',
+      ...VOLUME_SPINE,
+    })
     await call('novel_plan', { operation: 'beat', number: 3, beatKind: 'shuang' })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
     for (const key of ['chapter-1-conflict-300', 'chapter-1-hook', 'chapter-2-golden-finger', 'chapter-3-payoff', 'first-10-goal-rival', 'first-10-climax', 'first-30k-unit']) {
       await call('novel_plan', { operation: 'opening', key, done: true })
     }
-    // The stage machine reaches serialization on written work alone — a launch
-    // decision, no reading, no evaluation.
-    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     await confirmSettings()
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。' })
 

@@ -7,6 +7,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { DEFAULT_STORAGE_LAYOUT } from '../src/core/paths.ts'
 import { decomposeContent, parseCompetitorFile, renderCompetitorFile } from '../src/core/content.ts'
+import { emptyOutline } from '../src/core/novel.ts'
 import { Config, apply } from '../src/index.ts'
 
 /**
@@ -171,16 +172,9 @@ describe('the competitor codec', () => {
         competitors: [],
         characters: {},
         world: {},
-        outline: {
-          logline: '',
-          fullOutline: '',
-          acts: [],
-          minimal: '',
-          volumes: [],
-          beats: [],
-          opening: [],
-          fullOutlineDone: false,
-        },
+        // The core's own empty shape, so a new outline field cannot silently
+        // turn this fixture into an undefined read.
+        outline: emptyOutline(),
         chapters: {},
       } as never,
       '2024-01-01T00:00:00.000Z',
@@ -279,7 +273,7 @@ async function write(path: string, text: string): Promise<void> {
  * than a refusal.
  */
 describe('novel_plan reports each layer against its length budget', () => {
-  /** A project with the length answers the ratios need. */
+  /** A project with the length answers the ratios need, and the `go` they sit behind. */
   async function withLengths(): Promise<void> {
     await call('novel_init', {
       title: '青云记',
@@ -288,6 +282,9 @@ describe('novel_plan reports each layer against its length budget', () => {
       volumes: 10,
       chaptersPerVolume: 40,
     })
+    // The length budgets are checked on stage-four layers, and the SOP opens those
+    // only after a declared `go`. This spec is about the budgets, not the gate.
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
   }
 
   it('budgets 全书大纲 at 1/100 of the total and warns when it is far short', async () => {
@@ -319,6 +316,7 @@ describe('novel_plan reports each layer against its length budget', () => {
 
   it('says so instead of inventing a target when 总字数 was never asked', async () => {
     await call('novel_init', { title: '青云记' })
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     const result = await call('novel_plan', { operation: 'outline', fullOutline: '甲'.repeat(50) })
     expect((result['warnings'] as string[]).join(' ')).toMatch(/总字数还没问用户/u)
   })

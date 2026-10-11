@@ -114,6 +114,25 @@ export const Config = z.object({
    * A value the exact route does not offer is not sent (see `host/llm.ts`).
    */
   reviewReasoningEffort: z.union([...REVIEW_REASONING_EFFORTS]).default(DEFAULT_REVIEW_REASONING_EFFORT),
+  /**
+   * How often the host should remind the author to run the on-demand investment
+   * evaluation, for a project that is actually being serialized.
+   *
+   * The SOP is explicit that this check gates nothing, and that its only failure
+   * is *"没人再问"* — nobody asking again. A line in the prompt only reaches an
+   * author already in the session, so the reminder is handed to `ctx.schedule`,
+   * which delivers it whether or not the session is open. `off` disables it, and
+   * a profile with no `schedule` service silently keeps the prompt line instead.
+   */
+  evaluationReminder: z.union(['off', 'daily', 'weekly']).default('weekly'),
+  /**
+   * IANA zone the reminder's wall-clock time is anchored in.
+   *
+   * The schedule service refuses a wall-clock rule without an explicit zone, and
+   * a host cannot infer the author's. `UTC` is a valid, unsurprising default; set
+   * it to the author's zone to have the nudge arrive at 09:00 local.
+   */
+  reminderTimeZone: z.string().default('UTC'),
 })
 
 /** Parsed {@link Config}, derived through Schemastery's global type namespace. */
@@ -192,7 +211,10 @@ export function apply(ctx: Context, config: ComposerConfig): void {
     void views.viewForSession(session).classify()
   })
 
-  registerTools(ctx, projects, views)
+  registerTools(ctx, projects, views, {
+    evaluationReminder: config.evaluationReminder,
+    reminderTimeZone: config.reminderTimeZone,
+  })
   registerWorkspacePrompt(ctx, views)
 
   // The eight tools compute; `novel_review` asks a model. It is mounted only

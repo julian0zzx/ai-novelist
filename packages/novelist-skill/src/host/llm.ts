@@ -454,3 +454,124 @@ function emptyReplyReason(input: {
   return `review call returned no text on ${where}`
     + `（finish=${input.finish}，没有推理内容${spent}）`
 }
+
+/**
+ * The subagent providers this deployment can actually fan work out to.
+ *
+ * `ctx.subagents` is a *registry*, not a runner: a provider registers under a
+ * name and `start` selects one. The names are the providers' business, so they
+ * are read rather than assumed, and `spawn` is preferred when present because it
+ * is the general-purpose in-process one.
+ *
+ * @param ctx - the context to read the service from.
+ * @returns the chosen provider name, or `undefined` when nothing can run a child.
+ */
+export function resolveSubagentProvider(ctx: Context): string | undefined {
+  const runtime = ctx.reflect.get('subagents') as { list?: () => string[] } | undefined
+  const names = runtime?.list?.() ?? []
+  if (names.length === 0) return undefined
+  return names.includes('spawn') ? 'spawn' : names[0]
+}
+
+/** One child's contribution to a fan-out, successful or not. */
+export interface FanoutOutcome {
+  /** Index into the requests the fan-out was given. */
+  readonly index: number
+  /** The child's assembled text, empty when it failed. */
+  readonly text: string
+  /** Why it failed, empty on success. */
+  readonly error: string
+}
+
+/**
+ * Run several review requests at once, one per child agent.
+ *
+ * Dismantling twenty to fifty competitors is the SOP's most parallel step and its
+ * slowest: each book is independent of every other, so a sequence of one-shot
+ * calls spends the sum of their latencies to produce twenty answers that never
+ * needed to be ordered. This delegates them to child agents instead.
+ *
+ * The children inherit the calling agent's model. That is deliberate and matches
+ * {@link resolveRoute}'s own lowest-precedence source: a `novel_review` with no
+ * configured route already follows the session's model, so a fan-out does the
+ * same rather than inventing a second opinion nobody asked for. Pinning the model
+ * requires `agentOptions`, which the seam types per provider; leaving it out keeps
+ * this working on every provider rather than only the ones that accept overrides.
+ *
+ * A child that fails is reported, not thrown: the caller merges what came back and
+ * decides whether enough survived to be worth writing.
+ *
+ * @param ctx - the context carrying `subagents`.
+ * @param provider - the provider name, from {@link resolveSubagentProvider}.
+ * @param parent - the calling agent, which the provider derives lineage from.
+ * @param requests - one request per child, in caller order.
+ * @param options - per-child timeout and output budget, plus caller cancellation.
+ * @returns one outcome per request, in the order given.
+ */
+export async function runReviewFanout(
+  ctx: Context,
+  provider: string,
+  parent: unknown,
+  requests: readonly ReviewRequest[],
+  options: {
+    readonly signal?: AbortSignal | undefined
+    readonly timeoutMs: number
+    readonly maxTokens?: number | undefined
+    /**
+     * Display labels, one per request.
+     *
+     * A child is listed by its label, so naming each one after the book it is
+     * reading is what makes a twenty-child fan-out legible in the session's
+     * subagent list. Omitted leaves the seam's positional default.
+     */
+    readonly labels?: readonly string[] | undefined
+  },
+): Promise<FanoutOutcome[]> {
+  const runtime = ctx.reflect.get('subagents') as
+    | {
+        start: (
+          name: string,
+          request: {
+            readonly label?: string
+            readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
+            readonly parent: unknown
+            readonly signal: AbortSignal
+          },
+        ) => Promise<{ readonly result: Promise<{ readonly output: readonly { readonly type: string; readonly text?: string }[]; readonly stopReason: string }>; dispose: () => Promise<void> }>
+      }
+    | undefined
+  if (runtime === undefined) throw new NovelReviewError('no subagents service is mounted in this profile')
+
+  const runs = await Promise.all(
+    requests.map(async (request, index) => {
+      const timeout = AbortSignal.timeout(options.timeoutMs)
+      const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
+      try {
+        const run = await runtime.start(provider, {
+          label: options.labels?.[index] ?? `review ${String(index + 1)}`,
+          prompt: [{ type: 'text', text: `${request.system}\n\n${request.user}` }],
+          parent,
+          signal,
+        })
+        try {
+          const result = await run.result
+          if (result.stopReason !== 'completed') {
+            return { index, text: '', error: `child stopped: ${result.stopReason}` }
+          }
+          const text = result.output
+            .filter((block) => block.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text ?? '')
+            .join('')
+          return text.trim() === ''
+            ? { index, text: '', error: 'child returned no text' }
+            : { index, text, error: '' }
+        } finally {
+          await run.dispose()
+        }
+      } catch (error) {
+        return { index, text: '', error: error instanceof Error ? error.message : String(error) }
+      }
+    }),
+  )
+  return runs.sort((left, right) => left.index - right.index)
+}

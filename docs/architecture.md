@@ -80,11 +80,13 @@ without booting a harness, and so that the file-access rules exist in exactly on
 ```
 src/core/          pure domain — no I/O, no clock, no Cordis
   types.ts           the persisted vocabulary (NovelState, NovelMetadata, StorageIndex, Chapter, …)
-  paths.ts           the §2 file tree as path arithmetic and filename sanitizing
+  paths.ts           the file tree of plan-markdown-storage.md §2 as path arithmetic and sanitizing
+  sop.ts             the SOP as data: the tool surface, its model-facing text, and the six phases
   markdown.ts        the restricted dialect: frontmatter, sections, tables, hashing
-  content.ts         §4's ownership table: state ⇄ Markdown files, per kind
+  content.ts         the §4 ownership table: state ⇄ Markdown files, per kind
   novel.ts           every state transition as a pure function, the metadata codec, derived views
-  plan.ts            what the plan still owes: outline/pitch/world/cast/contract gaps
+  plan.ts            what the plan still owes: pitch/world/cast/contract gaps and the length targets
+  spine.ts           what a planning layer owes the story, checked before it owes a word count
   metrics.ts         baselines → thresholds → verdicts → iteration rules → the evaluation hint
   write.ts           the delivery report: did the prose pay for the plan? (plus the 去 AI 化 statistics)
   review.ts          the model-backed rubrics, their request framing, and the tolerant reply parser
@@ -186,23 +188,51 @@ The dialect is deliberately four constructs and nothing else: YAML frontmatter, 
 sections, fenced ```yaml blocks, and pipe tables. `markdown.ts` parses and serializes them
 with no dependency, because the promise the store makes — *a broken file is named, never
 silently replaced* — is easier to keep when the parser's exact limits are visible in one
-file. `content.ts` maps those constructs onto the domain: §4's ownership table, one datum in
-one home. `wordCount` is the deliberate exception to "the file wins": it is derived, so it is
-recomputed on every read and back-filled on every write.
+file. `content.ts` maps those constructs onto the domain: the ownership table in
+[`plan-markdown-storage.md`](plan-markdown-storage.md) §4, one datum in one home. `wordCount`
+is the deliberate exception to "the file wins": it is derived, so it is recomputed on every
+read and back-filled on every write.
 
 ### `host/tools.ts` — the model's vocabulary
 
-Eight tools, one per SOP capability, so the model's vocabulary matches the workflow rather
-than the storage layout. They are deliberately thin: each parses arguments, calls a `core`
-function through the store, and renders a result the model can act on.
+**Nine** tools — eight registered unconditionally plus `novel_review`, mounted only where a
+model route exists — one per SOP capability, so the model's vocabulary matches the workflow
+rather than the storage layout. They are deliberately thin: each parses arguments, calls a
+`core` function through the store, and renders a result the model can act on.
 
-**Seven compute; one asks a model.** That split is the load-bearing decision in this file.
+Their descriptions are not written here. Every tool's model-facing text, its phase, its
+selector parameter and its operation list come from [`core/sop.ts`](../packages/novelist-skill/src/core/sop.ts),
+which is also what `scripts/pack.mjs` renders the shipped `SKILL.md`, `INSTALL.md` and
+`references/tools.md` from. One text describes the surface, so the documentation cannot
+describe a tool the plugin does not register — `test/sop-spec.test.ts` holds the two together.
+
+**Eight compute; one asks a model.** That split is the load-bearing decision in this file.
 `novel_assess` comparing a reading against a calibrated median must give the same verdict
 every time, or the SOP's evidence chain (C5, C8) collapses; `novel_review` judging whether a
 chapter reads as machine-written cannot be computed at all, and the SOP assigns it to
 judgement (§1.2). Mixing the two would break both, so the model never touches the ledgers
 (`iterations`, `evaluations`) that thresholds act on: a review is recorded as a review,
 with the provider, the model and the rubric version that produced it.
+
+**One body delegates.** The SOP's competitor study is twenty to fifty *independent* books —
+the one step whose cost is pure latency — so `novel_review operation="competitor"` also takes
+`targets` and dismantles the batch with one child agent per book (`runReviewFanout`, one of
+the two capabilities `host/llm.ts` contains). It degrades rather than fails: no `subagents`
+service, a single target, or no agent on the execution runs the same requests sequentially
+through `runReview`, and a child that dies costs its own book rather than the batch. A
+partial result is still a result, which is why the fan-out merges survivors instead of
+retrying the set.
+
+### `host/reminder.ts` — the durable half of an on-demand step
+
+The data evaluation gates nothing, and the SOP names its only failure mode: *"没人再问"* —
+nobody asks again. A line in the runtime context reaches an author who is already in the
+session; `ctx.schedule` reaches them next week. `syncEvaluationReminder` keeps at most one
+durable task in step with the project — armed while the book is serializing, refreshed when
+the appointment moves, withdrawn at completion — and reports every failure as an outcome
+instead of throwing, because a nudge the host could not persist must never fail a chapter
+write. What is *not* here is the decision: `core`'s `evaluationReminder` says whether a
+reminder is warranted, and this module only acts on it.
 
 | Tool | SOP phase | Owns |
 |---|---|---|
@@ -665,14 +695,25 @@ a 300 万字 epic alike. An unanswered length question yields **no** target rath
 invented denominator, the comparison is reported as a `warning` (the SOP's hard gate is the
 premise sign-off, not a word count), and a per-call `targetWords` replaces the ratio.
 
+**And a budget is checked last, because it cannot detect a missing story.** The same ratio that
+made "大纲太薄" checkable also made a long, category-complete, story-free outline checkable as
+*adequate*: length is a proxy for work, not for narrative. `spine.ts` is therefore a separate,
+prior check over per-layer **named** elements — eight on the whole-book outline, seven on a
+volume, `keyBeat`/`price` on a chapter contract — and `novel_plan`, `novel_status` and
+`assessStage` all report in the fixed order story → payoffs → length. The two findings stay
+distinguishable on purpose: "this layer does not say what happens" and "this layer is shorter
+than its target" need different fixes, and the second must not be able to mask the first.
+`spine.ts` sits beside `plan.ts` rather than inside it because the stage machine needs it and
+`plan.ts` already depends on `novel.ts`.
+
 ### Two axes: the pipeline and the on-demand evaluation
 
 Only one of the two things the plugin tracks is a phase.
 
 **The pipeline.** `assessStage` derives the stage from planned and written work alone —
-pitch, competitor coverage, the author's settings sign-off, the outline, the opening
-checklist, the launch decision, the volume and beat tables, chapters with prose, the voice
-sign-off, the retrospective. It never consults a reading or
+pitch, competitor coverage, the author's settings sign-off, the outline and its narrative
+spine, the opening checklist, the launch decision, the volume and beat tables, chapters with
+prose, the voice sign-off, the retrospective. It never consults a reading or
 an evaluation. That is what lets a project advance while the platform numbers are unavailable:
 the phase-three gate is a declared human `go` (`novel_plan operation="launch"`), not a
 computed pass, and the evidence behind it — an editor's read, a handful of readers, an author

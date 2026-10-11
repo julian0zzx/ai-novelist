@@ -116,6 +116,8 @@ describe('analyzeDelivery length gates', () => {
       infoGap: '为何上山',
       beats: ['tension'],
       hook: '钟响',
+      keyBeat: '他第一次自己决定上山',
+      price: '把退路留在了山下',
       targetWords: 3000,
       waived: {},
       delivered: ['plotTask'],

@@ -39,6 +39,7 @@ const snapshot = (overrides: Partial<NovelSnapshot> = {}): NovelSnapshot => ({
   premise: '',
   stage: 'planning',
   stageLabel: '阶段一 策划',
+  stageReference: '',
   blockers: [],
   chapters: 0,
   words: 0,
@@ -144,6 +145,27 @@ describe('renderWorkspaceContext', () => {
     expect(text).toContain('"青云记"')
     expect(text).toContain('3 chapters, 12000 characters (1 not yet written')
     expect(text).toContain('Latest chapter: #3 "出宗" (drafting)')
+  })
+
+  it('points at the reference for the phase the project is in, and only that one', () => {
+    const text = renderWorkspaceContext(
+      workspace('novel', {
+        reason: 'project-document',
+        snapshot: snapshot({ stage: 'opening-decision', stageReference: 'references/phase-3-launch-decision.md' }),
+      }),
+    )
+    expect(text).toContain('references/phase-3-launch-decision.md')
+    expect(text).toContain('references/common.md')
+    // The other five phases are not named: the point of the split is that the
+    // model reads the workflow one phase at a time.
+    expect(text).not.toContain('phase-5-serial.md')
+  })
+
+  it('stays silent about references where there is no skill bundle beside the plugin', () => {
+    const text = renderWorkspaceContext(
+      workspace('novel', { reason: 'project-document', snapshot: snapshot({ stage: 'planning', stageReference: '' }) }),
+    )
+    expect(text).not.toContain('references/')
   })
 
   it('asks for a plan when the project has no chapters', () => {

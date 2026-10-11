@@ -565,6 +565,8 @@ export function chapterOutlineTarget(chapterWords: number): number {
 export function chapterContractLength(chapter: Chapter): number {
   return [
     chapter.plotTask,
+    chapter.keyBeat,
+    chapter.price,
     chapter.conflict,
     chapter.emotionalPayoff,
     chapter.infoGap,

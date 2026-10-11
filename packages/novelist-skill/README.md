@@ -55,6 +55,7 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 
 | Module | Owns |
 |---|---|
+| `sop.ts` | The SOP as data, and the single source every generated artifact reads: `SOP_VERSION`, `SOP_PHASES` (each bound to the `ProjectStage` it belongs to, with the reference that teaches it), `TOOL_SURFACE` (each tool's model-facing `summary`, its `selector` parameter and its operation list), `TOOL_ORDER`, `phaseForStage` / `phaseIndexFor`. `host/tools.ts` takes its descriptions from here and `scripts/pack.mjs` renders `SKILL.md`, `INSTALL.md` and `references/*.md` from it, so the surface has one description instead of three. Pure data with no imports, which is what lets the build script load it too. |
 | `types.ts` | The persisted vocabulary: `NovelState`, `NovelMetadata` (what the document holds), `StorageIndex` (where the content lives), their records, `NOVEL_SCHEMA_VERSION = 3`, and the closed enums the tools validate against — `PROJECT_STAGES`, `METRIC_KEYS` / `METRIC_PERIODS`, `LINK_STATUSES`, `VERDICT_LEVELS`, `CHANGE_SCOPES`, `CHAPTER_STATUSES`, `BEAT_KINDS`, `CONTRACT_FIELDS`. |
 | `novel.ts` | Every state transition (`emptyNovel`, `update*`, `upsert*`, `remove*`, `addReading`, `addIteration`, `addReview`, `setOpeningCheck`), the metadata codec (`parseMetadata`, `serializeMetadata`, `stateOf`, `metadataOf`, `migrateV1`, `migrateV2`) plus the whole-document codec (`parseNovel`, `serializeNovel`), and the derived views (`progressOf`, `assessStage`, `stageLabel`, `missingContractFields`, `renderManuscript`). Also the small utilities the rest of the core shares: `slugify`, `normalizeId`, `countWords`, `resolveChapterId`, the `read*` coercion helpers, and the `Clock` seam. |
 | `markdown.ts` | The restricted Markdown dialect, with no dependency: `splitFrontmatter` / `parseFrontmatter` / `serializeFrontmatter` (scalars, string lists, one level of mapping, both list spellings), `splitSections` / `sectionText` / `sectionList` (fence-aware), `readEntries` / `renderEntry`, `parseTable` / `renderTable` / `escapeCell` (`\|` escapes, wrong-cell-count is an error not a shift), `parseDocument` / `renderDocument`, and `hashContent`. Every failure is a `MarkdownError` carrying the offending line. |
@@ -76,8 +77,9 @@ the clock injected, which is what makes the SOP's rules specifiable with plain a
 | `resolver.ts` | `createProjectResolver`: which novel is *this session* working on. Caches one `NovelStore` per normalized root; `storeForSession` / `rootForSession` resolve `session.header.cwd` → configured `workspaceRoot` → `process.cwd()`; `verdictFor` classifies a session's root (the store it hands back can also `probeWorkspace`); `listProjects` and `registerWorkspace` expose the optional `@deepseek-ai/dsh-workspace` registry when it is mounted — the current tool set does not call them. Publishes the resolver as `ctx.novelState`. |
 | `views.ts` | `createWorkspaceViews`: what the composer knows about one workspace, keyed by root. One `WorkspaceView` per directory holds the verdict, whether that classification is the call that wrote the document, and a snapshot cache; `classify()` runs at most once per root and hands concurrent callers the same promise; `viewForSession` routes a session to its own `cwd` and an agentless caller to the deployment root. The deployment's policy arrives as two callbacks (`normalize` for `workspaceMode`, `mayAdopt` for `adoptableVerdict`), so the registry itself knows nothing about profiles. `onSessionCreated` is the `global` lifecycle listener that starts classification when a session appears — global because a session's scope is not the plugin's. |
 | `prompt.ts` | The runtime-context section (`composer:workspace`): `renderWorkspaceContext` renders the workspace kind, the document path, the project numbers and the per-kind conduct text; `createSnapshotCache` keeps those numbers in a 1.5 s TTL cache because the prompt registry resolves text synchronously; `registerWorkspacePrompt` files it after the sandbox facts and resolves *which* workspace per assembly, from the agent that assembly is for. A failed refresh keeps the last good numbers and records why. |
-| `llm.ts` | The only module that talks to a model. `resolveRoute` (call override → configured `reviewProvider`/`reviewModel` → `agentDefaultModel.currentSelection()`; a half-given override is refused, not silently dropped), `runReview` (one `ctx.llm.stream` call assembled with the harness's `BlockAssembler`, with timeout, pre-flight cancellation, a caller-supplied output budget, an explicit reasoning effort chosen against the route's declared capabilities, and a by-cause empty-answer diagnosis), and `NovelReviewError`. |
-| `tools.ts` | The nine model-facing tools, their JSON schemas, the shared envelope and its renderer, `DEFAULT_MANUSCRIPT_PATH` / `DEFAULT_TEMPLATE_PATH` / `DEFAULT_REVIEW_PATH`, `registerTools`, and `registerReviewTool` (registered separately, because it needs a model the other seven never do). Each tool body resolves its store from the calling session, mutates through the store, then refreshes the view of *that* session's workspace. |
+| `llm.ts` | The only module that talks to a model. `resolveRoute` (call override → configured `reviewProvider`/`reviewModel` → `agentDefaultModel.currentSelection()`; a half-given override is refused, not silently dropped), `runReview` (one `ctx.llm.stream` call assembled with the harness's `BlockAssembler`, with timeout, pre-flight cancellation, a caller-supplied output budget, an explicit reasoning effort chosen against the route's declared capabilities, and a by-cause empty-answer diagnosis), `resolveSubagentProvider` / `runReviewFanout` (the delegation half: `ctx.subagents` is a registry, so the provider name is read from `list()` rather than assumed, and each request becomes one child whose text is awaited and collected — a failed child is reported, not thrown), and `NovelReviewError`. |
+| `reminder.ts` | The only module that talks to `ctx.schedule`. `syncEvaluationReminder` brings the host's durable reminder for one project into line with the project's state — create, refresh or delete at most one task, keyed by a stable title because the service keys tasks by an id this plugin does not persist. Every failure is returned as an outcome rather than thrown: the reminder wraps a step the SOP says gates nothing, so a chapter must not fail to record because the host could not persist a nudge. |
+| `tools.ts` | The nine model-facing tools, their JSON schemas, the shared envelope and its renderer, `DEFAULT_MANUSCRIPT_PATH` / `DEFAULT_TEMPLATE_PATH` / `DEFAULT_REVIEW_PATH`, `registerTools`, and `registerReviewTool` (registered separately, because it needs a model the other seven never do). Each tool body resolves its store from the calling session, mutates through the store, then refreshes the view of *that* session's workspace. Tool descriptions are **not** here: they come from `core/sop.ts`, and `runCompetitorBatch` is the one body that delegates — a batch of competitors fanned out one child agent per book, degrading to the sequential `runReview` path wherever no provider is registered. |
 
 ### `src/client/` — the browser half
 
@@ -121,7 +123,7 @@ whether the book is still worth continuing, and nothing in the pipeline waits fo
 | Tool | Operations / kinds | Notes |
 |---|---|---|
 | `novel_init` | — (one call, idempotent) | Project, commercial frame, `baselines` + `multipliers`, writing parameters. The length plan (`targetWords`, `chapterWords`, `volumes`) is asked of the user and never guessed: `totalChapters` is derived from total ÷ chapter length, unanswered questions are reported as a checklist, and contradictions between the numbers are warned about. `volumes: 0` is the explicit 不分卷 answer; omitting it leaves the question open. Never overwrites an existing premise (it warns and points at `novel_plan operation="pitch"`). Unknown metric keys in `baselines` are ignored with a warning. |
-| `novel_plan` | `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`, `launch` | `competitor` writes each dismantle into `竞品拆解.md` (all twelve fields), so the study is a file the author can read and reuse. `outline` takes `fullOutline` (the `## 完整大纲` body) and `volume` takes `detail` (the volume's own 分卷剧情大纲); both, and a chapter's contract, are measured against the SOP ratio for that layer (÷100 / ÷50 / ÷10) and reported as a **warning** when short, overridable per call with `targetWords`. `chapter` accepts `waive` + `waiveReason`, `remove: true`, and derives the id from `id`/`title`. `opening` without a `key` lists the checklist and reports `ok: false` (nothing changed). `launch` records the phase-three human go/no-go (`verdict` = `go` / `revise` / `abandon`); `go` is what unlocks phase four, and a `revise` or `abandon` **throws** unless `fallback` and `abandonIf` are supplied. Writing a settings layer out of order is warned about, not refused. |
+| `novel_plan` | `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`, `launch` | `competitor` writes each dismantle into `竞品拆解.md` (all twelve fields), so the study is a file the author can read and reuse. `outline` takes the narrative spine (`synopsis`, `protagonistArc`, `supportArcs`, `antagonistArc`, `factionShift`, `conflictArcs`, `costs`, `gains`) and `fullOutline` (the `## 完整大纲` body); `volume` takes its own seven (`synopsis`, `protagonistArc`, `antagonistArc`, `factionShift`, `mainConflict`, `costs`, `gains`) and `detail` (the volume's own 分卷剧情大纲); `chapter` adds `keyBeat` and `price` to the contract. **Every layer reports story → payoffs → length in that order**, and the ratio target (÷100 / ÷50 / ÷10) is only printed after the narrative elements have been reported; falling short of it is a **warning**, never a refusal, and is overridable per call with `targetWords`. A partial `volume` call keeps the elements it did not name. `chapter` accepts `waive` + `waiveReason`, `remove: true`, and derives the id from `id`/`title`. `opening` without a `key` lists the checklist and reports `ok: false` (nothing changed). `launch` records the phase-three human go/no-go (`verdict` = `go` / `revise` / `abandon`); `go` is what unlocks phase four, and a `revise` or `abandon` **throws** unless `fallback` and `abandonIf` are supplied. Writing a settings layer out of order is warned about, not refused. |
 | `novel_bible` | `character`, `world`, `link`, `review` | `link` carries `plantedAt` / `dueAt` / `payoff` / `status` / `volume`; `review` reports world gaps, cast gaps and unrecovered or overdue promises. |
 | `novel_confirm` | `status`, `discuss`, `confirm`; `kind` = `settings`/`premise`, `world`, `cast`, `outline`, `volume`, `style` | The author checkpoints, and the record of the conversation that closes them. The settings are settled **one layer at a time, in order** (立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲); a later layer's `discuss`/`confirm` **throws** while an earlier one is open, and `status` reports every layer plus which one is in turn. `discuss` requires the user's own words in `feedback`; `confirm` requires both `summary` and `note`. The premise needs 2 rounds, every later layer and the voice need 1. `settings` and `premise` are the same checkpoint two ways, and rounds recorded under either spelling count for both. |
 | `novel_write` | `write`, `read`, `check` | `chapterId` is required; `write` replaces the body (never appends) and takes `delivered` = the contract fields the draft reached. A first draft is written to 125% of the chapter target (去 AI 化与手改会成段删减), so the tool prints both length windows and checks the draft against whichever gate the chapter's status implies (`planned`/`drafting` = 125%, `revised`/`final` = -5%/+15%). Every `write` and `check` also returns the SOP's 去 AI 化 statistics — long paragraphs, average paragraph length, dialogue density, repeated sentence openings — as countable symptoms; the tool never edits the prose, so a revision goes back through `write`. Marking `status: 'final'` prints the pre-publish blockers and the compliance checklist, but does not refuse. |
@@ -178,14 +180,14 @@ content lives in the Markdown files that index names, so an author can read and 
 
 | File | Holds |
 |---|---|
-| `全书大纲.md` | `logline`, the `## 完整大纲` body (`fullOutline`), `acts[]`, `minimal`, `fullOutlineDone` |
+| `全书大纲.md` | `logline`, the `## 叙事骨架` block (eight named narrative elements as `###` subsections), the `## 完整大纲` body (`fullOutline`), `acts[]`, `minimal`, `fullOutlineDone` |
 | `人物设定.md` | One `##` section per character: `id`, `role`, `goal`, `fear`, `obsession`, `weakness`, `camp`, `growthArc`, `notes`, and the prose `description` |
 | `世界观设定.md` | One `##` section per fact: `id`, `kind`, `name`, `cost`, `limits`, and the prose `detail` |
-| `分卷大纲.md` | One `##` section per volume: `number`, `title`, `goal`, `conflict`, `climax`, `endHook`, `chapters`, and the prose `detail` (the volume's own 分卷剧情大纲) |
+| `分卷大纲.md` | One `##` section per volume: `number`, `title`, `goal`, `conflict`, `climax`, `endHook`, `chapters`, the prose `detail` (the volume's own 分卷剧情大纲), and the volume's seven narrative elements as `###` subsections. A volume entry cannot contain another `##`: it would parse as the next volume |
 | `章节大纲.md` | The chapter table (number, title, volume, target words, one-line summary) and the rhythm table — the plan layer's only home for those |
 | `竞品拆解.md` | One `##` section per comparable title: `id`, `title`, `tags`, `blurb`, `openingEvent`, `goldenFinger`, `protagonistDesire`, `antagonistMotive`, `shuangFrequency`, `emotionCurve`, `paywallPoint`, `chapterHooks`, `commentKeywords`, `takeaway` |
 | `章节/第NNN章-*.md` | `status` and the prose (`wordCount` is derived: recomputed on read, back-filled on write) |
-| `章节/第NNN章-*.细纲.md` | `beats`, `waived`, `delivered`, and the five contract sections |
+| `章节/第NNN章-*.细纲.md` | `beats`, `waived`, `delivered`, and the seven contract sections (剧情任务、关键转折、代价与收获、冲突、情绪回报、信息差、章末钩子) |
 
 `title`, `volume`, and `targetWords` live **only** in the chapter plan table; the contract file
 does not repeat them, so a title edited there is a title changed everywhere. `id` is the stable
@@ -194,6 +196,28 @@ key and travels in each file's frontmatter, which is how a rename can be recover
 `竞品拆解.md` is the one top-level file whose absence is not "empty": dismantles recorded before
 the file existed live in `novel.json`, and a read falls back to them rather than losing research.
 It is also the file behind the SOP's 20-title gate — a dismantle typed straight into it counts.
+
+### Narrative completeness, then payoffs, then length
+
+An outline's length is checkable; whether it *tells the story* was not, so a 20k-character outline
+that filled every structural category and beat its 1/100 target was reported as fine while a reader
+could not say what happens in the book. The check therefore runs in a fixed order, and the order is
+the rule:
+
+1. **Story** — `outlineSpineGaps` / `volumeSpineGaps` report each named element that is empty:
+   eight on the whole-book outline (故事梗概、主角成长线、伙伴成长线、反派成长线、阵营演变、对抗副本、
+   失去了什么、获得了什么), seven on a volume, plus `keyBeat`/`price` on a chapter contract.
+2. **Payoffs** — `outlinePayoffGaps` reports an empty rhythm table and volumes with no climax or
+   end hook to be the 爆点's landing point.
+3. **Length** — only then is the ratio target printed.
+
+`novel_plan` prints them in that order for every layer, `novel_status detail="plan"` shows the same
+spine per volume, and phase four is not complete while a spine is incomplete. Every element is a
+named field, so a missing one is reported by name rather than absorbed into a prose blob; anything
+the author deliberately skips is waived out loud (`waive` + `waiveReason` on a chapter contract).
+
+The checks live in `src/core/spine.ts`, apart from `plan.ts` so the stage machine can use them
+without closing a cycle (`plan.ts` already depends on `novel.ts`).
 
 ### Planning length budgets
 
@@ -207,7 +231,7 @@ serial and a 300 万字 epic alike:
 |---|---|---|
 | 全书大纲 (`fullOutline`) | 总字数 ÷ 100 | `## 完整大纲` in `全书大纲.md` |
 | 分卷大纲 (`detail`) | 本卷字数 ÷ 50 | the volume entry's prose in `分卷大纲.md` |
-| 章节大纲 (the six contract fields) | 单章字数 ÷ 10 | the contract sections in `*.细纲.md` |
+| 章节大纲 (the contract fields) | 单章字数 ÷ 10 | the contract sections in `*.细纲.md` |
 
 The ratios are SOP constants (`OUTLINE_LAYER_RATIOS`), reportable at `novel_plan` time and
 overridable per call with an explicit `targetWords`. Falling short is a **warning**, never a

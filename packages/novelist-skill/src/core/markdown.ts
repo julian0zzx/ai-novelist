@@ -442,6 +442,54 @@ function fenceMarker(line: string): string | undefined {
 }
 
 /**
+ * Split a section body into its `###` subsections, keeping any text before the
+ * first subheading as a preamble.
+ *
+ * `splitSections` deliberately stops at `##`, so a section's *internal* structure
+ * was previously unreadable: everything under a `##` heading was one prose blob,
+ * which is why a whole-book outline could be 20k characters of prose with no
+ * named place for "故事梗概" or "主角成长线". Text outside any subsection comes back
+ * as the preamble rather than being dropped, so prose written above the first
+ * `###` survives a read-write round trip.
+ *
+ * @param body - a section's body text, without its own heading.
+ * @returns the preamble text and one entry per `###` subsection, in file order.
+ */
+export function splitSubsections(body: string): { readonly preamble: string; readonly subsections: MdSection[] } {
+  const lines = body.split('\n')
+  const subsections: MdSection[] = []
+  const preamble: string[] = []
+  let fence: string | undefined
+  let title: string | undefined
+  let buffer: string[] = []
+  const flush = (): void => {
+    if (title === undefined) return
+    subsections.push({ title, body: buffer.join('\n').replace(/\s+$/u, '') })
+  }
+  for (const line of lines) {
+    const marker = fenceMarker(line)
+    if (marker !== undefined) {
+      if (fence === undefined) fence = marker
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined
+      if (title === undefined) preamble.push(line)
+      else buffer.push(line)
+      continue
+    }
+    const heading = fence === undefined ? /^###[ \t]+(.*?)[ \t]*$/u.exec(line) : null
+    if (heading !== null) {
+      flush()
+      title = heading[1] ?? ''
+      buffer = []
+      continue
+    }
+    if (title === undefined) preamble.push(line)
+    else buffer.push(line)
+  }
+  flush()
+  return { preamble: preamble.join('\n').replace(/^\s+|\s+$/gu, ''), subsections }
+}
+
+/**
  * Find one section by heading text.
  *
  * @param sections - the sections to search, typically from {@link splitSections}.

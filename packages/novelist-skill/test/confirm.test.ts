@@ -450,8 +450,12 @@ describe('the settings layers, settled one at a time in order', () => {
 
   it('warns rather than refuses when a layer is written out of order, and refuses to confirm it', async () => {
     await premiseSigned()
-    // Writing 分卷大纲 before 人设 is a disagreement, not a forbidden act: every
-    // `novel_plan` gate is soft.
+    // Two gates are in play here and only one of them is about order. The launch
+    // gate is hard and comes first: 分卷大纲 is stage-four work, so the SOP will
+    // not have it built before a human has said `go`. Record that, and what
+    // remains is the *ordering* question this spec is about — writing 分卷大纲
+    // before 人设, which is a disagreement rather than a forbidden act.
+    await call('novel_plan', { operation: 'launch', verdict: 'go' })
     const written = await call('novel_plan', {
       operation: 'volume',
       number: 1,

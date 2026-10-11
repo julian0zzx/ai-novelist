@@ -63,6 +63,10 @@ import {
   type WorldEntry,
   type WritingPlan,
 } from './types.ts'
+// The spine checks live in their own module precisely so this file can use them:
+// `plan.ts` depends on this one, and importing them from there would close a
+// cycle between the two.
+import { outlineSpineGaps, volumeSpineGaps } from './spine.ts'
 
 /** Raised for input that cannot become a valid state. */
 export class NovelInputError extends Error {
@@ -356,6 +360,14 @@ export function emptyOutline(): Outline {
   return {
     logline: '',
     fullOutline: '',
+    synopsis: '',
+    protagonistArc: '',
+    supportArcs: '',
+    antagonistArc: '',
+    factionShift: '',
+    conflictArcs: '',
+    costs: '',
+    gains: '',
     acts: [],
     minimal: '',
     volumes: [],
@@ -745,6 +757,13 @@ function readVolume(value: Record<string, unknown>): VolumePlan | undefined {
     conflict: readString(value, 'conflict', ''),
     climax: readString(value, 'climax', ''),
     endHook: readString(value, 'endHook', ''),
+    synopsis: readString(value, 'synopsis', ''),
+    protagonistArc: readString(value, 'protagonistArc', ''),
+    antagonistArc: readString(value, 'antagonistArc', ''),
+    factionShift: readString(value, 'factionShift', ''),
+    mainConflict: readString(value, 'mainConflict', ''),
+    costs: readString(value, 'costs', ''),
+    gains: readString(value, 'gains', ''),
     chapters: readNumberArray(value, 'chapters'),
   }
 }
@@ -777,6 +796,14 @@ function readOutline(value: unknown): Outline {
   return {
     logline: readString(value, 'logline', ''),
     fullOutline: readString(value, 'fullOutline', ''),
+    synopsis: readString(value, 'synopsis', ''),
+    protagonistArc: readString(value, 'protagonistArc', ''),
+    supportArcs: readString(value, 'supportArcs', ''),
+    antagonistArc: readString(value, 'antagonistArc', ''),
+    factionShift: readString(value, 'factionShift', ''),
+    conflictArcs: readString(value, 'conflictArcs', ''),
+    costs: readString(value, 'costs', ''),
+    gains: readString(value, 'gains', ''),
     acts: readStringArray(value, 'acts'),
     minimal: readString(value, 'minimal', ''),
     volumes: readList(value['volumes'], readVolume),
@@ -822,6 +849,8 @@ function readChapter(id: string, value: Record<string, unknown>): Chapter {
     infoGap: readString(value, 'infoGap', ''),
     beats: readStringArray(value, 'beats') as Chapter['beats'],
     hook: readString(value, 'hook', ''),
+    keyBeat: readString(value, 'keyBeat', ''),
+    price: readString(value, 'price', ''),
     targetWords: readNumber(value, 'targetWords', 0),
     waived,
     delivered: readContractFields(value['delivered']),
@@ -1786,6 +1815,146 @@ export function proseGate(state: NovelState, chapterNumber: number): ProseGate {
 }
 
 /**
+ * The launch gate in front of the full skeleton.
+ *
+ * The SOP states one boundary in so many words — *"go（通过）→ 进入阶段四：完整大纲、
+ * 分卷、伏笔、上架卡点"*, and principle 3, *"上线决策 go 后才投入完整大纲、分卷、
+ * 伏笔、上架卡点"* — and until this gate existed it was the one declared boundary
+ * nothing enforced. A project whose author had not yet decided whether the opening
+ * package was worth betting on could still have a volume outline, a beat sheet and
+ * a foreshadowing ledger built for it, which is precisely the investment stage
+ * three exists to withhold.
+ *
+ * It stays narrow. Everything *before* the launch decision remains soft-gated, as
+ * the SOP's principle 10 requires ("判断归人，纪律归工具"): an author who plans a
+ * chapter early is warned about, not stopped. What this refuses is only the work
+ * the SOP explicitly postpones until after a human has said `go`.
+ *
+ * @param state - the project.
+ * @param what - the work being attempted, named for the refusal message.
+ * @returns whether the work may proceed.
+ */
+export function skeletonGate(state: NovelState, what: string): ProseGate {
+  const decision = state.launchDecisions.at(-1)
+  if (decision?.verdict === 'go') return { allowed: true, reasons: [], next: [] }
+  const verdict =
+    decision === undefined
+      ? '上线决策还没有记录'
+      : decision.verdict === 'revise'
+        ? '最近一次上线决策是「改后再说」，不是 go'
+        : '最近一次上线决策是「放弃」，不是 go'
+  return {
+    allowed: false,
+    reasons: [
+      `${verdict}：${what}是 SOP 放在「go 之后」的投入（阶段四），`
+      + '先让作者对开篇包拍板，再搭完整骨架——否则阶段三就成了一次没有内容的授权',
+    ],
+    next: [
+      'novel_plan operation="launch"（verdict = go / revise / abandon；非 go 必须写 fallback 与 abandonIf）',
+    ],
+  }
+}
+
+/** The single next thing the state machine asks for. */
+export interface NextStep {
+  /** The one call to make now, in the SOP's own terms. */
+  readonly action: string
+  /**
+   * Whether a hard gate is shut.
+   *
+   * A blocked step is not advice: nothing else substitutes for it, and
+   * `novel_write` refuses prose until it is cleared.
+   */
+  readonly blocked: boolean
+}
+
+/**
+ * The state machine's output: what to do now, out of everything the SOP wants.
+ *
+ * `assessStage` already reports the phase and the ordered list of what the next
+ * one still needs; the problem with handing a model a list is that a list is not
+ * a decision. This picks the one step that comes first — the shut hard gate if
+ * there is one, otherwise the first blocker — so every tool result ends with the
+ * same imperative rather than an assortment to choose from.
+ *
+ * @param state - the project.
+ * @returns the step, and whether a hard gate is what demands it.
+ */
+export function nextStep(state: NovelState): NextStep {
+  const highest = Object.values(state.chapters).reduce((max, chapter) => Math.max(max, chapter.number), 0)
+  // The chapter about to be written, which is what the style gate keys on: it
+  // opens the moment the gate chapter has prose.
+  const gate = proseGate(state, highest + 1)
+  if (!gate.allowed) {
+    return { action: gate.next[0] ?? gate.reasons[0] ?? '', blocked: true }
+  }
+  const assessment = assessStage(state)
+  const blocker = assessment.blockers[0]
+  if (blocker !== undefined) return { action: blocker, blocked: false }
+  return { action: `「${stageLabel(assessment.stage)}」阶段已完成，可以进入下一阶段`, blocked: false }
+}
+
+/** Whether a durable check-in should be armed for a project, and what it says. */
+export interface EvaluationReminder {
+  /** Whether the host should hold a recurring reminder for this project. */
+  readonly arm: boolean
+  /** Why it should not be armed, when it should not be. */
+  readonly reason: string
+  /** What the reminder delivers. Empty when `arm` is false. */
+  readonly text: string
+}
+
+/**
+ * The on-demand evaluation's one failure mode, addressed from project state.
+ *
+ * The SOP is explicit that the data check gates nothing and that *"它唯一的失败方式
+ * 是没人再问"* — its only failure is that nobody asks again. A hint printed into a
+ * prompt only reaches an author who is already in the session; a durable reminder
+ * reaches them next week whether or not they were. This function decides whether
+ * one is warranted; `host/reminder.ts` does the I/O.
+ *
+ * It is deliberately narrow about *when*: only while the book is actually being
+ * serialized. Before that there is nothing to look at, and after it there is
+ * nothing left to decide — which is what keeps the reminder from becoming the
+ * always-present line that trains an author to ignore it.
+ *
+ * @param state - the project.
+ * @returns whether to arm one, why not, and the text.
+ */
+export function evaluationReminder(state: NovelState): EvaluationReminder {
+  const assessment = assessStage(state)
+  if (assessment.stage === 'completed') {
+    return { arm: false, reason: '已完本，投入评估不再需要提醒', text: '' }
+  }
+  if (assessment.stage !== 'serializing') {
+    return {
+      arm: false,
+      reason: `项目还在「${stageLabel(assessment.stage)}」阶段，没有连载读数可提醒`,
+      text: '',
+    }
+  }
+  const written = Object.values(state.chapters).filter((chapter) => chapter.body.trim() !== '').length
+  const last = state.evaluations.at(-1)
+  const title = state.meta.title === '' ? '这本书' : `《${state.meta.title}》`
+  const appointment =
+    last === undefined
+      ? '还没有做过第一次投入评估'
+      : last.nextAtChapter > 0
+        ? `按约定在第 ${String(last.nextAtChapter)} 章复查`
+        : last.nextTrigger === ''
+          ? '上次评估没有留下下次约定'
+          : `按约定：${last.nextTrigger}`
+  return {
+    arm: true,
+    reason: '连载中：按需评估唯一的失败方式是没人再问',
+    text:
+      `${title}已写 ${String(written)} 章，${appointment}。`
+      + '平台上有数据时用 novel_assess operation="record" 抄一次读数，再用 operation="evaluate" 拿裁决；'
+      + '这一步按需，不阻断连载，也不拦任何阶段。',
+  }
+}
+
+/**
  * Which SOP phase the project has actually reached.
  *
  * The stage is **derived**, never stored: a stored stage is a second source of
@@ -1901,6 +2070,25 @@ export function assessStage(state: NovelState): StageAssessment {
   if (!state.outline.fullOutlineDone) outlineBlockers.push('完整大纲未确认（operation="outline" 且 full=true）')
   if (state.outline.volumes.length === 0) outlineBlockers.push('分卷大纲未写入（operation="volume"）')
   if (state.outline.beats.length === 0) outlineBlockers.push('情绪节拍表为空（operation="beat"）')
+  // The story's own debts block the phase that depends on them, and they are
+  // reported first among the outline blockers: a skeleton with no narrative spine
+  // is the one gap that makes the beats below it unreadable, and the 爆点 has
+  // nothing to land on. The spine is a soft gate everywhere else — this is only
+  // the "is phase four finished" question.
+  const spineGaps = outlineSpineGaps(state.outline)
+  if (spineGaps.length > 0) {
+    outlineBlockers.unshift(
+      `全书大纲叙事骨架缺 ${String(spineGaps.length)} 项（${spineGaps.map((gap) => gap.key).join('、')}）：`
+      + '先把故事讲完整（novel_plan operation="outline"）',
+    )
+  }
+  const volumeSpineDebt = state.outline.volumes.filter((volume) => volumeSpineGaps(volume).length > 0)
+  if (volumeSpineDebt.length > 0) {
+    outlineBlockers.push(
+      `分卷大纲叙事骨架缺项：第 ${volumeSpineDebt.map((volume) => String(volume.number)).join('、')} 卷`
+      + '（novel_plan operation="volume"）',
+    )
+  }
   const outlineLayer = standing.layers.find((layer) => layer.key === 'outline')
   const volumeLayer = standing.layers.find((layer) => layer.key === 'volume')
   if (outlineLayer !== undefined && !outlineLayer.confirmed) {
@@ -2184,6 +2372,8 @@ export function upsertChapter(
     infoGap: patch.infoGap ?? existing?.infoGap ?? '',
     beats: patch.beats ?? existing?.beats ?? [],
     hook: patch.hook ?? existing?.hook ?? '',
+    keyBeat: patch.keyBeat ?? existing?.keyBeat ?? '',
+    price: patch.price ?? existing?.price ?? '',
     targetWords: patch.targetWords ?? existing?.targetWords ?? 0,
     waived: patch.waived ?? existing?.waived ?? {},
     delivered: patch.delivered ?? existing?.delivered ?? [],

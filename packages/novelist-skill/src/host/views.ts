@@ -40,8 +40,19 @@ import type { ProjectResolver } from './resolver.ts'
  * `@deepseek-ai/dsh-session` nor an agent loop.
  */
 export interface SessionRef {
-  /** The session's recorded working directory, when it has one. */
-  readonly header: { readonly cwd?: string }
+  readonly header: {
+    /** The session's recorded working directory, when it has one. */
+    readonly cwd?: string
+    /**
+     * The session's durable id.
+     *
+     * Optional because a `SessionRef` is a structural view of whatever the harness
+     * hands a tool, and only the reminder needs it: `ctx.schedule` binds a task to
+     * the session it must be delivered to, and a session without an id simply gets
+     * no reminder rather than a broken one.
+     */
+    readonly id?: string
+  }
 }
 
 /**
