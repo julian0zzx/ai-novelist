@@ -17,13 +17,19 @@
 import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from './paths.ts'
 import {
   CHAPTER_STATUSES,
+  COMPETITOR_TARGET,
   CONFIRMATION_KINDS,
   CONFIRMATION_MIN_ROUNDS,
   CONTRACT_FIELDS,
+  GOLDEN_CHAPTERS,
   NOVEL_SCHEMA_VERSION,
+  OUTLINE_STYLE_FIELDS,
   REVIEW_SEVERITIES,
   SETTINGS_LAYERS,
+  SPINE_LABELS,
+  styleParamName,
   STYLE_GATE_CHAPTER,
+  chapterNumberOf,
   type Chapter,
   type ChapterStatus,
   type Character,
@@ -32,6 +38,7 @@ import {
   type ConfirmationKind,
   type ConfirmationStanding,
   type ContractField,
+  type DeAiStanding,
   type DiscussionRound,
   type Evaluation,
   type Iteration,
@@ -45,6 +52,7 @@ import {
   type NovelProgress,
   type NovelState,
   type Outline,
+  type OutlineStyleField,
   type PlatformProfile,
   type Premise,
   type ProjectStage,
@@ -66,7 +74,7 @@ import {
 // The spine checks live in their own module precisely so this file can use them:
 // `plan.ts` depends on this one, and importing them from there would close a
 // cycle between the two.
-import { outlineSpineGaps, volumeSpineGaps } from './spine.ts'
+import { outlineSpineGaps, outlineStyleGaps, volumeSpineGaps } from './spine.ts'
 
 /** Raised for input that cannot become a valid state. */
 export class NovelInputError extends Error {
@@ -355,6 +363,13 @@ export function emptyWriting(): WritingPlan {
   }
 }
 
+/** An all-empty 写作风格 block, for a project that has not written one yet. */
+export function emptyOutlineStyle(): Readonly<Record<OutlineStyleField, string>> {
+  const style = {} as Record<OutlineStyleField, string>
+  for (const field of OUTLINE_STYLE_FIELDS) style[field] = ''
+  return style
+}
+
 /** An outline with no decisions in it. */
 export function emptyOutline(): Outline {
   return {
@@ -368,6 +383,7 @@ export function emptyOutline(): Outline {
     conflictArcs: '',
     costs: '',
     gains: '',
+    style: emptyOutlineStyle(),
     acts: [],
     minimal: '',
     volumes: [],
@@ -674,6 +690,8 @@ function readCharacter(id: string, value: Record<string, unknown>): Character {
     name: readString(value, 'name', id),
     role: readString(value, 'role', ''),
     description: readString(value, 'description', ''),
+    personality: readString(value, 'personality', ''),
+    voice: readString(value, 'voice', ''),
     goal: readString(value, 'goal', ''),
     fear: readString(value, 'fear', ''),
     obsession: readString(value, 'obsession', ''),
@@ -785,6 +803,24 @@ function readBeat(value: Record<string, unknown>): Outline['beats'][number] | un
 }
 
 /**
+ * Read the outline's 写作风格 block.
+ *
+ * A document written before the style moved into the outline layer has no
+ * `style` object at all, and reads as an all-empty block — which is what the
+ * prose gate reports, rather than a parse failure.
+ *
+ * @param value - the raw `style` field.
+ * @returns one entry per style element.
+ */
+function readStyle(value: unknown): Outline['style'] {
+  const style = { ...emptyOutlineStyle() } as Record<OutlineStyleField, string>
+  if (isRecord(value)) {
+    for (const field of OUTLINE_STYLE_FIELDS) style[field] = readString(value, field, '')
+  }
+  return style
+}
+
+/**
  * Read the outline.
  *
  * @param value - the raw `outline` field.
@@ -804,6 +840,7 @@ function readOutline(value: unknown): Outline {
     conflictArcs: readString(value, 'conflictArcs', ''),
     costs: readString(value, 'costs', ''),
     gains: readString(value, 'gains', ''),
+    style: readStyle(value['style']),
     acts: readStringArray(value, 'acts'),
     minimal: readString(value, 'minimal', ''),
     volumes: readList(value['volumes'], readVolume),
@@ -1594,18 +1631,22 @@ function roundsSince(state: NovelState, kind: ConfirmationKind, confirmation: Co
 }
 
 /**
- * Whether the chapter the style gate names already has prose.
+ * Whether the golden three chapters all have prose.
  *
- * The style checkpoint is not "due" until then: before the first chapter exists
- * there is no voice to judge, and reporting it as open would be noise.
+ * The style review is not "due" until they do: the author is being asked whether
+ * 表达方式与遣词用句 need adjusting, and three chapters is the shortest sample in
+ * which a voice is actually visible. A book whose whole plan is shorter than
+ * three chapters (an experiment, a 短篇) is judged on what exists.
  *
  * @param state - the project.
- * @returns whether the gate chapter is written.
+ * @returns whether the chapters the review reads are written.
  */
 export function styleGateReached(state: NovelState): boolean {
-  return Object.values(state.chapters).some(
-    (chapter) => chapter.number <= STYLE_GATE_CHAPTER && chapter.body.trim() !== '',
-  )
+  const chapters = Object.values(state.chapters)
+    .filter((chapter) => chapter.number > 0)
+    .sort((a, b) => a.number - b.number)
+  if (chapters.length === 0) return false
+  return chapters.slice(0, GOLDEN_CHAPTERS).every((chapter) => chapter.body.trim() !== '')
 }
 
 /**
@@ -1707,6 +1748,28 @@ export function confirmationStanding(state: NovelState): ConfirmationStanding {
   const settingsConfirmed = layers.every((layer) => layer.confirmed)
   const nextLayer = layers.find((layer) => !layer.confirmed)
 
+  // The 去 AI 化 standing, read from the reviews ledger: the review is a tool call,
+  // so its record is the receipt and a second ledger would be a second thing to
+  // keep in step with it. `due` and `gatesProse` are the same condition as the
+  // voice review's — the golden three chapters exist — because the SOP puts the
+  // two steps together (第 21、23 步) and an author reading three chapters should be
+  // asked about the voice and shown the AI-flavour diagnosis in one sitting.
+  const deAiReviews = state.reviews.filter((review) => review.kind === 'ai-flavor')
+  const latestDeAi = deAiReviews.at(-1)
+  const reviewedNumbers = new Set(deAiReviews.map((review) => chapterNumberOf(review.target)))
+  const golden = Object.values(state.chapters)
+    .filter((chapter) => chapter.number > 0 && chapter.number <= GOLDEN_CHAPTERS && chapter.body.trim() !== '')
+    .sort((left, right) => left.number - right.number)
+  const goldenReached = styleGateReached(state)
+  const deAi: DeAiStanding = {
+    done: latestDeAi !== undefined,
+    at: latestDeAi?.at ?? '',
+    target: latestDeAi?.target ?? '',
+    unreviewed: golden.filter((chapter) => !reviewedNumbers.has(chapter.number)).map((chapter) => chapter.number),
+    due: goldenReached,
+    gatesProse: goldenReached,
+  }
+
   const blockers: string[] = []
   for (const layer of layers) {
     if (layer.confirmed) continue
@@ -1730,6 +1793,28 @@ export function confirmationStanding(state: NovelState): ConfirmationStanding {
         : `${layer.label}已讨论但用户尚未确认${order}（${confirm}）`,
     )
   }
+  // The 去 AI 化 receipt comes first, because it is the prerequisite of the voice
+  // review rather than a sibling of it: the author is meant to have the diagnosis
+  // in hand when they read the three chapters and answer whether the voice needs
+  // adjusting. Reporting only "文风待确认" would let the diagnosis be skipped
+  // silently, which is exactly what this gate exists to stop.
+  if (!deAi.done && deAi.due) {
+    blockers.push(
+      `第 1–${String(GOLDEN_CHAPTERS)} 章已成稿，但还没有做过一次去 AI 化诊断：`
+      + '先 novel_review operation="ai-flavor"（每章一次更准），把「原文引用 + 为什么像 AI + 怎么改」拿到手，'
+      + '改完再让用户读稿复核文风——诊断没做过，第 '
+      + `${String(GOLDEN_CHAPTERS + 1)} 章起不写（novel_write 会拒绝）`,
+    )
+  } else if (deAi.unreviewed.length > 0) {
+    // Not a gate: one recorded review satisfies the requirement. This is the
+    // advisory half, so an author who reviewed chapter 1 is told which of the
+    // golden chapters nobody has looked at.
+    const missingChapters = deAi.unreviewed.map((number) => String(number)).join('、')
+    blockers.push(
+      `去 AI 化诊断只覆盖了部分黄金三章：第 ${missingChapters} 章还没有诊断过`
+      + '（novel_review operation="ai-flavor" chapterId=<章>）',
+    )
+  }
   if (style === undefined && styleGateReached(state)) {
     blockers.push(
       styleReady
@@ -1750,6 +1835,7 @@ export function confirmationStanding(state: NovelState): ConfirmationStanding {
     settingsReady,
     styleReady,
     nextLayer,
+    deAi,
     blockers,
   }
 }
@@ -1777,10 +1863,13 @@ export interface ProseGate {
  * how a model ran from an inspiration to four finished chapters without the
  * author ever being asked. What is enforced here is narrow and cheap — the
  * author must have signed the **premise** layer off before chapter one exists,
- * and the voice off after it — so an author who talks to the tool is never
- * stopped, and a chapter 1 that is drafted while the volume outline is still
- * being argued about is not blocked by this gate. The layers after the premise
- * are enforced by order, not by refusal: `confirmationStanding` reports them as
+ * the 写作风格 block of the 全书大纲 must be written before any chapter exists
+ * (a voice chosen while writing is a voice the author never got to steer), and
+ * the voice must be **reviewed** once the golden three chapters have prose and
+ * before chapter four — so an author who talks to the tool is never stopped, and
+ * a chapter 1 that is drafted while the volume outline is still being argued
+ * about is not blocked by this gate. The layers after the premise are otherwise
+ * enforced by order, not by refusal: `confirmationStanding` reports them as
  * blockers for the *next* layer, and `novel_confirm` refuses to skip ahead.
  *
  * @param state - the project.
@@ -1803,13 +1892,40 @@ export function proseGate(state: NovelState, chapterNumber: number): ProseGate {
     next.push(`novel_confirm operation="discuss" kind="${kind}"（每一轮都写下用户的原话）`)
     next.push(`novel_confirm operation="confirm" kind="${kind}"（用户认可后才能确认）`)
   }
+  const styleSpec = outlineStyleGaps(state.outline)
+  if (styleSpec.length > 0) {
+    reasons.push(
+      '全书大纲还没有写明《写作风格》：基调/人称与视角/句式与节奏/遣词用句/对话与描写/情绪落点/负面清单'
+      + `七项里还缺 ${String(styleSpec.length)} 项（${styleSpec.map((gap) => SPINE_LABELS[gap.key]).join('、')}）。`
+      + '文风若等到第 1 章之后再定，第 1 章就只能按模型自己的口味写——先把它写进大纲，正文才有基准',
+    )
+    next.push(`novel_plan operation="outline" ${OUTLINE_STYLE_FIELDS.map((field) => `${styleParamName(field)}=…`).join(' ')}`)
+    next.push('写作风格写完后，与用户讨论并确认「全书大纲」这一层（novel_confirm kind="outline"）')
+  }
   if (!standing.styleConfirmed && chapterNumber > STYLE_GATE_CHAPTER) {
     reasons.push(
-      `第 ${String(STYLE_GATE_CHAPTER)} 章之后要先让用户确认文风：把已写的章节交给用户读，`
-      + '确认文风之后再往下写，避免整本书跑偏后才返工',
+      `黄金三章（第 1–${String(STYLE_GATE_CHAPTER)} 章）已经成稿，第 ${String(STYLE_GATE_CHAPTER + 1)} 章之前要先让用户复核文风：`
+      + '把这三章交给用户读，问清表达方式与遣词用句要不要调整；要调就先改风格与已写章节，再确认，'
+      + '否则整本书会带着同一种跑偏的语感写完',
     )
-    next.push('novel_confirm operation="discuss" kind="style"（用户读稿后的原话）')
-    next.push('novel_confirm operation="confirm" kind="style"（用户认可文风）')
+    next.push('novel_confirm operation="discuss" kind="style"（用户读稿后对文风/表达方式/遣词用句的原话）')
+    next.push('novel_confirm operation="confirm" kind="style"（用户认可这一版文风基准）')
+  }
+  // The 去 AI 化 receipt. Reporting an AI-flavoured book was possible before only
+  // by the model choosing to ask for the diagnosis; this makes one recorded review
+  // a condition of writing on, so "nobody ever ran it" is no longer a silent
+  // outcome. It sits before the voice review in the author's sequence because the
+  // diagnosis is what the author should be holding when they read the three
+  // chapters and answer the voice question.
+  if (!standing.deAi.done && chapterNumber > STYLE_GATE_CHAPTER && standing.deAi.due) {
+    reasons.push(
+      `黄金三章（第 1–${String(STYLE_GATE_CHAPTER)} 章）已经成稿，但还没有做过一次去 AI 化诊断：`
+      + '去 AI 化是 SOP 第 23 步，不是可选项——先对成稿跑 novel_review operation="ai-flavor"（逐章更准），'
+      + '拿到「原文引用 + 为什么像 AI + 怎么改」，你自己改完再让用户读稿复核文风；'
+      + '没有这一步，AI 味会带着写完整本书',
+    )
+    next.push('novel_review operation="ai-flavor" chapterId=…（黄金三章逐章诊断；加 rewrite=true 会另给一份改写提案）')
+    next.push('按诊断改完把整章重新 novel_write 覆盖，再 novel_confirm operation="discuss"/"confirm" kind="style"')
   }
   return { allowed: reasons.length === 0, reasons, next }
 }
@@ -1982,18 +2098,32 @@ export function assessStage(state: NovelState): StageAssessment {
   const lastDecision = state.launchDecisions.at(-1)
   const standing = confirmationStanding(state)
 
-  // The voice checkpoint is a gate on the *position*, not a phase: it applies
-  // the moment the gate chapter has prose, wherever the phase machine happens to
-  // be. It therefore rides on every phase's blocker list rather than only on
-  // 阶段五's — a project that wrote chapter 1 before its outline existed is
-  // still a project whose author has not heard the voice.
+  // The voice review is a gate on the *position*, not a phase: it applies the
+  // moment the golden three chapters have prose, wherever the phase machine
+  // happens to be. It therefore rides on every phase's blocker list rather than
+  // only on 阶段五's — a project that wrote its first three chapters before its
+  // outline existed is still a project whose author has not heard the voice.
   const styleBlocker =
     !standing.styleConfirmed && styleGateReached(state)
-      ? `第 ${String(STYLE_GATE_CHAPTER)} 章已成稿：先让用户读稿并确认文风（novel_confirm kind="style"），`
+      ? `黄金三章（第 1–${String(STYLE_GATE_CHAPTER)} 章）已成稿：先让用户读稿并复核文风`
+        + `（novel_confirm operation="discuss" 再 operation="confirm" kind="style"），`
         + `再写第 ${String(STYLE_GATE_CHAPTER + 1)} 章`
       : undefined
-  const gated = (blockers: readonly string[]): string[] =>
-    styleBlocker === undefined ? [...blockers] : [...blockers, styleBlocker]
+  // The 去 AI 化 receipt rides on the same position as the voice review, and is
+  // reported before it: the diagnosis is what the author reads the three chapters
+  // against. It is a hard gate for the chapter after the golden three (see
+  // `proseGate`), so the stage report must name it rather than leaving the author
+  // to discover it at the refusal.
+  const deAiBlocker =
+    !standing.deAi.done && standing.deAi.due
+      ? `黄金三章已成稿，但还没有做过一次去 AI 化诊断：先 novel_review operation="ai-flavor" 逐章诊断`
+        + `（去 AI 化是 SOP 第 23 步，未做过前 novel_write 拒绝写第 ${String(STYLE_GATE_CHAPTER + 1)} 章）`
+      : undefined
+  const gated = (blockers: readonly string[]): string[] => [
+    ...(deAiBlocker === undefined ? [] : [deAiBlocker]),
+    ...(styleBlocker === undefined ? [] : [styleBlocker]),
+    ...blockers,
+  ]
 
   // Phase one → two: the pitch and the competitor study are the SOP's own
   // checkpoint ("能否一句话说清谁看、为什么追、为什么付费？竞品 ≥20 本"),
@@ -2001,7 +2131,9 @@ export function assessStage(state: NovelState): StageAssessment {
   // something the two of them settle together, not something the tool announces.
   const planningBlockers: string[] = []
   if (!hasPitch) planningBlockers.push('唯一记忆点未写入（novel_plan operation="pitch"）')
-  if (competitors < 20) planningBlockers.push(`竞品拆解不足 20 本，当前 ${String(competitors)} 本`)
+  if (competitors < COMPETITOR_TARGET) {
+    planningBlockers.push(`竞品拆解不足 ${String(COMPETITOR_TARGET)} 本，当前 ${String(competitors)} 本`)
+  }
   if (!standing.settingsConfirmed) {
     const missing = CONFIRMATION_MIN_ROUNDS.settings - standing.settingsRounds
     planningBlockers.push(
@@ -2075,13 +2207,30 @@ export function assessStage(state: NovelState): StageAssessment {
   // is the one gap that makes the beats below it unreadable, and the 爆点 has
   // nothing to land on. The spine is a soft gate everywhere else — this is only
   // the "is phase four finished" question.
+  // The story's own debts block the phase that depends on them, and they are
+  // reported first among the outline blockers: a skeleton with no narrative spine
+  // is the one gap that makes the beats below it unreadable, and the 爆点 has
+  // nothing to land on. The style block is the same kind of debt — the outline
+  // layer owns it, and `novel_write` refuses prose until it is written. Both are
+  // soft gates everywhere else: this is only the "is phase four finished"
+  // question, answered in the SOP's order (故事 → 文风 → 其余).
+  const contentGaps: string[] = []
   const spineGaps = outlineSpineGaps(state.outline)
   if (spineGaps.length > 0) {
-    outlineBlockers.unshift(
+    contentGaps.push(
       `全书大纲叙事骨架缺 ${String(spineGaps.length)} 项（${spineGaps.map((gap) => gap.key).join('、')}）：`
       + '先把故事讲完整（novel_plan operation="outline"）',
     )
   }
+  const styleGaps = outlineStyleGaps(state.outline)
+  if (styleGaps.length > 0) {
+    contentGaps.push(
+      `全书大纲《写作风格》缺 ${String(styleGaps.length)} 项（${styleGaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}）：`
+      + '基调、人称与视角、句式与节奏、遣词用句、对话与描写、情绪落点、负面清单都要写下来'
+      + '（novel_plan operation="outline"）——正文按它写',
+    )
+  }
+  if (contentGaps.length > 0) outlineBlockers.unshift(...contentGaps)
   const volumeSpineDebt = state.outline.volumes.filter((volume) => volumeSpineGaps(volume).length > 0)
   if (volumeSpineDebt.length > 0) {
     outlineBlockers.push(
@@ -2430,6 +2579,8 @@ export function upsertCharacter(
     name: patch.name ?? existing?.name ?? id,
     role: patch.role ?? existing?.role ?? '',
     description: patch.description ?? existing?.description ?? '',
+    personality: patch.personality ?? existing?.personality ?? '',
+    voice: patch.voice ?? existing?.voice ?? '',
     goal: patch.goal ?? existing?.goal ?? '',
     fear: patch.fear ?? existing?.fear ?? '',
     obsession: patch.obsession ?? existing?.obsession ?? '',

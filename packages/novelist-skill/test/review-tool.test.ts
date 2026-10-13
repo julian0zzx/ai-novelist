@@ -308,7 +308,7 @@ describe('novel_review operations', () => {
     const text = await callText('novel_review', { operation: 'ai-flavor', chapterId: 'chapter-1' })
     expect(text).toContain('总结式抒情')
     expect(text).toContain('他心中五味杂陈')
-    expect(text).toContain('prompt review-rubric-1')
+    expect(text).toContain('prompt review-rubric-2')
 
     const state = await stored()
     expect(state.reviews).toHaveLength(1)
@@ -317,7 +317,7 @@ describe('novel_review operations', () => {
       kind: 'ai-flavor',
       target: 'chapter-1',
       model: 'deepseek-chat',
-      promptVersion: 'review-rubric-1',
+      promptVersion: 'review-rubric-2',
     })
     // Highest severity first, whatever order the model used.
     expect(state.reviews[0]?.findings.map((finding) => finding.severity)).toEqual(['high', 'low'])
@@ -328,7 +328,7 @@ describe('novel_review operations', () => {
   it('keeps the model transcript beside the project', async () => {
     await call('novel_review', { operation: 'ai-flavor', chapterId: 'chapter-1' })
     const transcript = await readFile(join(root, '.novel/reviews/review-1-ai-flavor.md'), 'utf8')
-    expect(transcript).toContain('review-rubric-1')
+    expect(transcript).toContain('review-rubric-2')
     expect(transcript).toContain('deepseek/deepseek-chat')
     expect(transcript).toContain('模型原始回复')
     expect(transcript).toContain('五味杂陈')
@@ -349,6 +349,26 @@ describe('novel_review operations', () => {
     expect(rewrite).toContain('云雾压着石阶')
     // A proposal, never the chapter itself.
     expect((await stored()).chapters['chapter-1']?.body).not.toContain('云雾压着石阶')
+  })
+
+  it('judges the chapter against the book’s own style, and hands over what was counted', async () => {
+    // The two additions that make the diagnosis specific to *this* book: the
+    // 写作风格 it is supposed to be written in (including the 负面清单), and the
+    // contrast frames the mechanical pass already counted, which the model is
+    // asked to judge rather than to re-count.
+    const body = '他不是没听见，是不想听见。这不是钱的事，是命的事。'
+    // The chapter body is set through the store's own write path, because
+    // `beforeEach` has already seeded the project.
+    const at = (): string => '2026-01-01T00:00:00.000Z'
+    await store().update((current) =>
+      upsertChapter(current, { id: 'chapter-1', body }, at),
+    )
+    await call('novel_review', { operation: 'ai-flavor', chapterId: 'chapter-1' })
+    expect(calls[0]?.user).toContain('本书《写作风格》')
+    expect(calls[0]?.user).toContain('负面清单')
+    expect(calls[0]?.system).toContain('违反本书自己写下的')
+    expect(calls[0]?.user).toContain('机械统计已发现')
+    expect(calls[0]?.user).toContain('对举句式共 2 处')
   })
 
   it('honours a dimension filter', async () => {
@@ -448,8 +468,12 @@ describe('novel_review failure handling', () => {
   })
 
   it('refuses a chapter that has no prose yet', async () => {
-    await call('novel_write', { chapterId: 'chapter-1', body: '', delivered: [] })
-    await expect(call('novel_review', { operation: 'ai-flavor', chapterId: 'chapter-1' })).rejects.toThrow(
+    // A second chapter that is planned but still unwritten. Reaching it through a
+    // write that empties chapter 1 would trip the prose gate instead — rightly, a
+    // write that deletes prose is not how a chapter comes to have none — and this
+    // spec is about what novel_review does with such a chapter.
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-2', title: '梦醒', number: 2, plotTask: '醒来' })
+    await expect(call('novel_review', { operation: 'ai-flavor', chapterId: 'chapter-2' })).rejects.toThrow(
       /还没有正文/,
     )
   })

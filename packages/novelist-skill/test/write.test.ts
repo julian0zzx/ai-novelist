@@ -68,6 +68,41 @@ describe('styleObservations', () => {
     expect(styleObservations(repeated(3)).join(' ')).not.toContain('句式重复感')
   })
 
+  it('counts the 「不是……是……」 contrast frame that no other rule can see', () => {
+    // Two frames in one body: the sentence heads differ and neither paragraph is
+    // long, so the four statistics above are blind to it. This is the pattern the
+    // step used to miss.
+    const body = '他不是没听见，是不想听见。这不是钱的事，是命的事。'
+    const observation = styleObservations(body).find((line) => line.includes('对举句式'))
+    expect(observation).toContain('「不是……是……」对举句式共 2 处')
+    expect(observation).toContain('「不是没听见，是」')
+    expect(observation).toContain('AI 味句式')
+  })
+
+  it('leaves one contrast frame alone, and reads the same device only once', () => {
+    // A single occurrence is a sentence an author may have wanted; a chapter is
+    // not "AI-flavoured" for one of them.
+    expect(styleObservations('他不是没听见，是不想听见。').join(' ')).not.toContain('对举句式')
+    // 「不是钱，而是名单」 is the 「不是……而是……」 frame, and must not also be
+    // counted as 「不是……是……」 on top of it.
+    const once = styleObservations('他要的不是钱，而是那张名单。').join(' ')
+    expect(once).not.toContain('对举句式')
+    const twice = styleObservations('他要的不是钱，而是那张名单。她要的不是名，而是那口气。').join(' ')
+    expect(twice).toContain('「不是……而是……」对举句式共 2 处')
+    expect(twice).toContain('「不是钱，而是」')
+  })
+
+  it('reports the book’s own forbidden phrases by name', () => {
+    const body = '他嘴角勾起一抹弧度，说：不行。'
+    expect(styleObservations(body, ['嘴角勾起', '瞳孔骤然一缩'])).toContain(
+      '命中本书《写作风格》负面清单 1 条：「嘴角勾起」——负面清单是这本书明令禁止的写法，逐条清掉',
+    )
+    // A taboo list that is absent or blank adds nothing, rather than reporting an
+    // empty hit list on every chapter.
+    expect(styleObservations(body).join(' ')).not.toContain('负面清单')
+    expect(styleObservations(body, ['', '   ']).join(' ')).not.toContain('负面清单')
+  })
+
   it('reports every symptom it finds, in a fixed order', () => {
     // Four sentences, each one long enough to make the single paragraph exceed
     // 220 characters, all opening with the same two characters, no dialogue:

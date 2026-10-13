@@ -102,7 +102,7 @@ src/host/          the deployment surface
 src/client/        the browser surface
   index.tsx          the right-Sidebar tab type + its body
   kanban.tsx         the conversation view beside Chat and Trajectory
-  board.ts           the board a NovelState projects onto, as pure data
+  board.ts           the board a NovelState projects onto (process documents + chapters), as pure data
   project.ts         the one project reader both surfaces share
   remote.ts          the Remote face captured at activation, and its release
 src/index.ts       the Cordis plugin: Config, resolver construction, tool registration
@@ -392,11 +392,72 @@ disagree), reads `.novel/novel.json`, and returns `null` in exactly one case, `s
 because a document that is there but broken is precisely what the user needs to be told, and
 hiding the tab would hide the diagnosis with it.
 
-`client/board.ts` holds the projection itself: `boardOf(state)` returns the four
-`CHAPTER_STATUSES` columns, each card's word count, beats, hook state and unanswered
-contract fields, plus the stage `assessStage` derives and the standing `progressOf`
-derives. It is pure data with no React in sight, which is what makes the board specifiable
-in `test/board.test.ts` without a browser.
+`client/board.ts` holds the projection itself: `boardOf(state)` returns the process
+documents, the four `CHAPTER_STATUSES` columns, each card's word count, beats, hook state and
+unanswered contract fields, plus the stage `assessStage` derives and the standing
+`progressOf` derives. It is pure data with no React in sight, which is what makes the board
+specifiable in `test/board.test.ts` without a browser.
+
+The projection has two halves because a novel project does. The chapter columns answer "how
+far along is the prose", which is silence for a project that is still settling its settings —
+the common state of a new book. `boardOf.documents` answers the other question, one card per
+planning artefact in the order the SOP produces them:
+
+| id | artefact | finished when |
+|---|---|---|
+| `pitch` | 立意与核心设定 | the five pitch fields are written **and** the premise layer is signed off |
+| `competitors` | 竞品拆解 | ≥ 20 titles dismantled |
+| `naming` | 候选书名 | ≥ 3 candidate sets |
+| `world` | 世界观设定 | every entry has a detail, a cost and a limit, and the layer is signed off |
+| `cast` | 人物设定 | no `castGaps` remain, and the layer is signed off |
+| `outline` | 全书大纲 | the narrative spine reads whole, and the layer is signed off |
+| `style` | 写作风格 | all seven elements are written |
+| `volumes` | 分卷大纲 | every volume's spine is complete, and the layer is signed off |
+| `beats` | 爽点节拍表 | at least one beat is placed |
+| `de-ai` | 去 AI 化诊断 | one `ai-flavor` review is on the ledger (and it names the golden chapters nobody has diagnosed) |
+| `opening` | 开篇工程清单 | every item is confirmed |
+| `launch` | 上线决策 | the latest decision is `go` |
+| `serial` | 连载数据 | a reading and an evaluation exist |
+| `retro` | 完本复盘 | the retrospective holds lessons |
+
+Three properties of that table are the point:
+
+* **Completion and sign-off are separate questions.** `cardState` takes both, and
+  `needsSignOff` is what distinguishes the artefacts the SOP runs a checkpoint over (立意、
+  世界观、人物设定、全书大纲、分卷大纲) from the ones it never checks back on (竞品、候选物料、
+  写作风格、节拍表、开篇清单). Without it a complete competitor study would read as unfinished
+  because no author "confirmed" it; with it, a full outline nobody has been shown reads as
+  `draft` — which is the state the checkpoints exist to empty.
+* **The completeness checks are the core's own** (`missingPitchFields`, `worldGaps`,
+  `castGaps`, `outlineSpineGaps`, `outlineStyleGaps`, `volumeSpineGaps`, plus
+  `COMPETITOR_TARGET` and `NAMING_MIN_CANDIDATES`, which the tools share), so the board and
+  `novel_status` cannot report different findings and a threshold lives in one place. `gaps`
+  carries the domain's own labels, which is what a card's tooltip shows.
+* **Order is read from `confirmationStanding`, never re-derived.** 「按顺序」 is a property of
+  that function; a second copy of the rule in the board is how a board starts disagreeing
+  with `novel_confirm`.
+
+A card is labelled and described by the view's dictionary (`doc.<id>.label` / `.detail` /
+`.next` in `client/kanban.tsx`), not by the projection: copy is not project state. The key
+type is a template literal over the document ids, so a new document in `board.ts` brings its
+three keys with it as a type error rather than as a blank card. The cards render in one
+scrollable row between the overview and the chapter columns, and each carries the gate it
+sits behind (`卡住正文` for the three the prose gate enforces, `go 之后才做` for the work the
+launch decision authorises) — an open document should say why it matters, not only that it is
+open.
+
+The 去 AI 化 statistics have the same shape, and grew for the same reason the gate did. The
+mechanical pass in `write.ts` reports what a counter can find — long paragraphs, average length,
+dialogue density, repeated sentence openings — and now also the **对举句 count** and the book's own
+**负面清单** hits, because the pattern that shipped a whole book of AI-sounding prose
+(「不是 A，是 B」 several times a chapter) is invisible to all four of the original checks: it is
+neither a long paragraph nor a repeated opening, and the sentence heads differ. `contrastFrames`
+walks the four frames most-specific-first and lets a match consume its span, so one device reads
+as one device. The judge then gets two things it did not used to: `styleBrief` — the book's seven
+style elements and its 负面清单, unwritten ones included — so the review is a comparison against a
+written standard instead of a taste, and the counted symptoms, so it spends its attention on what
+a counter cannot see. Rubric version 1 → 2 records that the instruction moved.
+
 
 ## Workspace awareness
 
@@ -656,15 +717,29 @@ listed. "The record would be meaningless" is a different thing from "the SOP wou
 did this later".
 
 **One refusal is a workflow opinion, and it is the exception that proves the rule.**
-`novel_write` refuses prose while the author has not signed the **premise** layer off, and —
-once chapter 1 has prose — while the voice is unsigned (`proseGate`, `novel_confirm`). Every
-other gate here reports a disagreement and lets the call stand, and that is exactly how a model
-once went from a one-line inspiration to four finished chapters without the author being asked
-anything. A soft warning is the right shape for "the SOP would rather you had an outline
+`novel_write` refuses prose in three situations, all of them receipts rather than judgements:
+
+1. the author has not signed the **premise** layer off, and the 写作风格 block of the 全书大纲 is
+   not written (`proseGate`, `novel_confirm`) — a book whose voice was chosen while writing
+   chapter 1 is a book whose voice nobody was asked about;
+2. once the golden three chapters have prose, the **voice has not been reviewed** — the author
+   has read a rhythm, not a sample;
+3. once the golden three chapters have prose, **no 去 AI 化 diagnosis has been recorded at all**
+   (`confirmationStanding.deAi`). SOP step 23 said to run `novel_review operation="ai-flavor"`
+   and nothing observed whether anyone had; the receipt is the `reviews` ledger entry the tool
+   writes, so "nobody ever ran it" now stops the pipeline at chapter 4 instead of surfacing
+   forty chapters later.
+
+Every other gate here reports a disagreement and lets the call stand, and that is exactly how a
+model once went from a one-line inspiration to four finished chapters without the author being
+asked anything. A soft warning is the right shape for "the SOP would rather you had an outline
 first"; it is the wrong shape for "you are about to write a book for someone who was never
-consulted". The gate stays narrow — one pre-prose layer, plus the voice, both owned by the
-author, both cheap to close — so it can never be the thing that stops an author who is talking
-to the tool.
+consulted", and equally wrong for "this book is being written in a voice nobody has diagnosed".
+The gate stays narrow — one pre-prose layer, the voice, and one diagnosis receipt, all owned by
+the author, all cheap to close — so it can never be the thing that stops an author who is
+talking to the tool. The 去 AI 化 gate is a *receipt* check and not a quality check: the tool
+cannot tell whether the prose improved, only whether the diagnosis was ever put in front of the
+author, and a review that finds nothing is a valid, recorded outcome.
 
 **The settings are settled one layer at a time.** `SETTINGS_LAYERS` fixes the order —
 立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲 — and `confirmationStanding` derives each
@@ -672,11 +747,16 @@ layer's standing from the confirmations that already exist, so `blockedBy` and `
 functions of the ledger rather than a second state to keep in step. That derivation is what
 lets the plugin hold two lines at once: `novel_confirm` **refuses** a `discuss` or `confirm`
 for a layer whose predecessor is open (the order is the feature), while `novel_plan` only
-**warns** when a layer is written out of order, and `novel_write` gates on nothing but the
-premise. The layers after the premise therefore do not block chapter 1 — an author may be
-arguing about the volume outline while the opening is already drafted — and the stage machine
-still holds phase one open until all five are closed, because "the settings are settled" is
-what phase one claims.
+**warns** when a layer is written out of order, and `novel_write` gates on the premise **and on
+one part of the 全书大纲 layer**: the 写作风格 block. The layers after the premise otherwise do not
+block chapter 1 — an author may be arguing about the volume outline while the opening is already
+drafted — and the stage machine still holds phase one open until all five are closed, because
+"the settings are settled" is what phase one claims. The style block is the exception because it
+is not an ordering question but a *voice* question: the moment chapter 1 is written the book's
+voice exists, and an author shown it afterwards can only accept it or rewrite the chapter. Seven
+named elements, checked for presence before prose, and the second checkpoint (`kind="style"`) is
+the **review** of what the golden three chapters actually sound like — due after chapter 3 and
+before chapter 4.
 
 `settingsConfirmed` (all five layers) and `preProseConfirmed` (the premise) are deliberately
 distinct: the stage machine and the board read the first, `proseGate` reads the second. The

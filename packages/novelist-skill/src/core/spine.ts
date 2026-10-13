@@ -19,10 +19,13 @@
 
 import {
   OUTLINE_SPINE_PARTS,
+  OUTLINE_STYLE_PARTS,
   SPINE_LABELS,
+  styleParamName,
   VOLUME_SPINE_PARTS,
   type Outline,
   type OutlineSpineField,
+  type OutlineStyleField,
   type SpineGap,
   type SpinePart,
   type VolumePlan,
@@ -61,6 +64,26 @@ export function volumeSpineGaps(volume: VolumePlan): SpineGap[] {
     key: part.field,
     requirement: part.requirement,
     fill: `novel_plan operation="volume" number=${String(volume.number)} ${part.field}=…`,
+  }))
+}
+
+/**
+ * 写作风格 elements the whole-book outline has not answered yet.
+ *
+ * Checked beside the narrative spine and **before** any chapter is written: the
+ * style used to be settled after chapter 1 was handed to the author, which is
+ * exactly one chapter too late — a voice chosen while writing chapter 1 is a
+ * voice the author never got to steer. A gap here is what `novel_write` names
+ * when it refuses prose.
+ *
+ * @param outline - the whole-book outline.
+ * @returns the unanswered elements, in reading order; empty when the style is written.
+ */
+export function outlineStyleGaps(outline: Outline): SpineGap[] {
+  return OUTLINE_STYLE_PARTS.filter((part) => outline.style[part.field].trim() === '').map((part) => ({
+    key: part.field,
+    requirement: part.requirement,
+    fill: `novel_plan operation="outline" ${styleParamName(part.field)}=…`,
   }))
 }
 
@@ -133,6 +156,16 @@ export function outlineSpineValues(outline: Outline): Readonly<Record<OutlineSpi
     costs: outline.costs,
     gains: outline.gains,
   }
+}
+
+/**
+ * The whole-book style block's current values, keyed for {@link narrativeReport}.
+ *
+ * @param outline - the whole-book outline.
+ * @returns one entry per style element.
+ */
+export function outlineStyleValues(outline: Outline): Readonly<Record<OutlineStyleField, string>> {
+  return outline.style
 }
 
 /**

@@ -4,6 +4,8 @@ import {
   LENGTH_BENCHMARKS,
   LENGTH_TOLERANCE,
   OUTLINE_SPINE_PARTS,
+  OUTLINE_STYLE_FIELDS,
+  OUTLINE_STYLE_PARTS,
   VOLUME_SPINE_PARTS,
   WRITING_PLAN_QUESTIONS,
   chapterContractLength,
@@ -13,6 +15,7 @@ import {
   derivedTotalChapters,
   describeWritingPlan,
   draftTargetWords,
+  emptyNovel,
   emptyOutline,
   emptyWriting,
   layerLengthCheck,
@@ -23,10 +26,14 @@ import {
   lengthWindow,
   narrativeReport,
   normalizeWritingPlan,
+  castGaps,
   outlinePayoffGaps,
   outlineRatioLabel,
   outlineSpineGaps,
   outlineSpineValues,
+  outlineStyleGaps,
+  outlineStyleValues,
+  styleParamName,
   rhythmExpectation,
   volumeLengthNote,
   volumeSpineGaps,
@@ -35,7 +42,8 @@ import {
   writingPlanConflicts,
   writingPlanGaps,
 } from '../src/core/index.ts'
-import type { Chapter, ChapterStatus, VolumePlan } from '../src/core/types.ts'
+import type { Chapter, ChapterStatus, OutlineStyleField, VolumePlan } from '../src/core/types.ts'
+import { STYLE_BLOCK } from './style-fixture.ts'
 
 /**
  * The length plan: the four questions asked at initialization, what the two
@@ -472,5 +480,80 @@ describe('the narrative spine', () => {
     // A long answer is truncated for the dashboard rather than flooding it.
     const long = narrativeReport(VOLUME_SPINE_PARTS, volumeSpineValues(fullVolume({ gains: '甲'.repeat(200) })))
     expect(long.at(-1)).toMatch(/…$/)
+  })
+})
+
+describe('the 写作风格 block', () => {
+  it('asks the outline for seven named elements, and names the parameter that fills each', () => {
+    const gaps = outlineStyleGaps(emptyOutline())
+    expect(gaps.map((gap) => gap.key)).toEqual([...OUTLINE_STYLE_FIELDS])
+    expect(OUTLINE_STYLE_PARTS).toHaveLength(7)
+    // Every gap points at the parameter a caller actually sends, so the message
+    // and the schema cannot drift apart.
+    for (const gap of gaps) expect(gap.fill).toContain(styleParamName(gap.key as OutlineStyleField))
+    expect(gaps[0]?.fill).toContain('styleTone=')
+    expect(gaps[6]?.fill).toContain('styleTaboos=')
+  })
+
+  it('stops reporting an element once it is written', () => {
+    const outline = { ...emptyOutline(), style: { ...STYLE_BLOCK, diction: '' } }
+    expect(outlineStyleGaps(outline).map((gap) => gap.key)).toEqual(['diction'])
+    expect(outlineStyleValues(outline).tone).toBe(STYLE_BLOCK.tone)
+    expect(outlineStyleGaps({ ...emptyOutline(), style: STYLE_BLOCK })).toEqual([])
+  })
+
+  it('prints the style with the same report shape as the narrative spine', () => {
+    const lines = narrativeReport(OUTLINE_STYLE_PARTS, outlineStyleValues({ ...emptyOutline(), style: STYLE_BLOCK }))
+    expect(lines).toHaveLength(7)
+    expect(lines[0]).toContain('文风基调')
+    expect(lines[0]).toContain('✅')
+    const bare = narrativeReport(OUTLINE_STYLE_PARTS, outlineStyleValues(emptyOutline()))
+    expect(bare[0]).toContain('⬜')
+    expect(bare[0]).toContain('未写')
+  })
+})
+
+describe('the cast checklist', () => {
+  /** A project with one character, over the empty shape. */
+  const withCharacter = (patch: Record<string, string>): ReturnType<typeof emptyNovel> => ({
+    ...emptyNovel(),
+    characters: {
+      'lin-yue': {
+        id: 'lin-yue',
+        name: '林越',
+        role: 'protagonist',
+        description: '',
+        personality: '',
+        voice: '',
+        goal: '',
+        fear: '',
+        obsession: '',
+        weakness: '',
+        camp: '',
+        growthArc: '',
+        notes: '',
+        ...patch,
+      },
+    },
+  })
+
+  it('holds every character to a role, a goal, a personality and a voice', () => {
+    const gaps = castGaps(withCharacter({}))
+    expect(gaps[0]?.missing).toEqual(['goal', 'personality', 'voice', 'fear', 'obsession', 'weakness', 'growthArc'])
+    // A character with no role at all is unidentified rather than merely thin.
+    expect(castGaps(withCharacter({ role: '' }))[0]?.missing).toContain('role')
+
+    // A walk-on with a role, a goal and a voice is complete: the protagonist's
+    // additional spine (恐惧/执念/软肋/成长线) is not demanded of them.
+    const walkOn = castGaps(
+      withCharacter({ role: 'gatekeeper', goal: '拦住上山的人', personality: '死板', voice: '一句话不问第二遍' }),
+    )
+    expect(walkOn).toEqual([])
+  })
+
+  it('names a character whose only trait is a goal — the "不够丰满" case', () => {
+    const gaps = castGaps(withCharacter({ role: 'rival', goal: '压住林越' }))
+    expect(gaps[0]?.missing).toEqual(['personality', 'voice'])
+    expect(gaps[0]?.name).toBe('林越')
   })
 })

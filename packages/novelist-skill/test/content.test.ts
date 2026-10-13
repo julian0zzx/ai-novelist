@@ -17,6 +17,7 @@ import {
   type ChapterPlanRow,
 } from '../src/core/index.ts'
 import type { NovelState, StorageIndex } from '../src/core/types.ts'
+import { STYLE_BLOCK } from './style-fixture.ts'
 
 /** Fixed clock so every rendered timestamp is exact. */
 const STAMP = '2026-09-13T14:20:34.921Z'
@@ -46,6 +47,8 @@ function fixture(): NovelState {
         name: '林越',
         role: 'protagonist',
         description: '十六岁，瘦，左手虎口有旧疤。\n他问：「父亲的剑，为何断在|山门？」',
+        personality: '外冷内倔，受不得激；压力越大越沉默，沉默过后下狠手',
+        voice: '短句，先问价再动手；急了才连说两句',
         goal: '上山问清父亲的死因',
         fear: '发现父亲确实背叛了师门',
         obsession: '断剑不离手',
@@ -59,6 +62,8 @@ function fixture(): NovelState {
         name: '守门弟子',
         role: 'gatekeeper',
         description: '',
+        personality: '',
+        voice: '',
         goal: '',
         fear: '',
         obsession: '',
@@ -88,6 +93,9 @@ function fixture(): NovelState {
     },
     outline: {
       ...state.outline,
+      // The 写作风格 block is part of this file since SOP 3.6: seven named elements
+      // under `## 写作风格`, round-tripped like the narrative spine beside it.
+      style: STYLE_BLOCK,
       logline: '一个断剑少年，为了父亲的死因上山，却在山门里发现了更深的背叛。',
       acts: ['第一幕：上山', '第二幕：立住脚｜站稳', '第三幕：断剑认主'],
       minimal: '少年上山——被刁难——试剑台认主——发现真相。\n一句话说完。',
@@ -204,6 +212,7 @@ describe('content codec round trip', () => {
   it('preserves the outline, cast, world, and volumes field for field', () => {
     const state = fixture()
     const { back } = roundTrip(state)
+    expect(back.outline.style).toEqual(state.outline.style)
     expect(back.outline.logline).toBe(state.outline.logline)
     expect(back.outline.acts).toEqual(state.outline.acts)
     expect(back.outline.minimal).toBe(state.outline.minimal)

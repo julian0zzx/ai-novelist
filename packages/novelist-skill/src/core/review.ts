@@ -31,7 +31,7 @@ import type {
   ReviewFinding,
   ReviewSeverity,
 } from './types.ts'
-import { REVIEW_SEVERITIES } from './types.ts'
+import { REVIEW_SEVERITIES, OUTLINE_STYLE_PARTS } from './types.ts'
 
 /**
  * Version of every rubric in this file, stamped onto each record.
@@ -40,7 +40,7 @@ import { REVIEW_SEVERITIES } from './types.ts'
  * the version travels with the result. Bump it whenever the wording below
  * changes in a way that could move a judgement.
  */
-export const REVIEW_PROMPT_VERSION = 'review-rubric-1'
+export const REVIEW_PROMPT_VERSION = 'review-rubric-2'
 
 /**
  * Fallback output ceiling for one review call, in tokens.
@@ -70,6 +70,12 @@ export const REVIEW_MAX_INPUT_CHARS = 24000
 export const AI_FLAVOR_DIMENSIONS: readonly { readonly key: string; readonly rule: string }[] = [
   { key: '翻译腔', rule: '「值得注意的是」「在这个过程中」「在一定程度上」这类书面连接词，被动句，超长定语从句，名词化动词' },
   { key: '整齐句式', rule: '三句排比、对仗、每句等长、每段结构一致——人写不出这么整齐的节奏' },
+  {
+    key: '对举句',
+    rule: '「不是 A，是 B」「是 A，不是 B」「不是 A，而是 B」「与其说 A，不如说 B」这类否定—修正对举句。'
+      + '它像在讲道理而不是在演场景，同一个节奏出现两三次就非常明显；'
+      + '注意「不是因为 A，是因为 B」这种隔着半句的变体也算。逐处引用并数出一章里出现几次',
+  },
   { key: '总结式抒情', rule: '把情绪讲出来而不是演出来：「这一刻，他明白了什么是……」「心中五味杂陈」' },
   { key: '套话身体反应', rule: '「嘴角勾起一抹弧度」「瞳孔骤然一缩」「心中一凛」「不由自主地」等网文套件' },
   { key: '解释型对话', rule: '对话在替作者交代设定：人人说话都完整、文雅、信息密度过高，没有打断、抢话、答非所问' },
@@ -180,15 +186,75 @@ const REVIEWER_STANCE =
 // ── 1. 去 AI 化 ───────────────────────────────────────────────────────────────
 
 /**
+ * The book's own 写作风格, as the block every prose judgement is made against.
+ *
+ * A generic "does this read like AI" question is answered generically: the model
+ * marks the usual tells and says nothing about the voice this author actually
+ * asked for. Handing it the seven elements — and above all the 负面清单, which is
+ * the author's own list of forbidden writing — turns the review into a comparison
+ * against a written standard instead of a matter of taste, and gives the findings
+ * something to quote when they say a line breaks the book's own rule.
+ *
+ * Elements the outline has not written are reported as unwritten rather than
+ * omitted: a review that silently judges against five of seven elements would let
+ * a project believe its style guide was complete.
+ *
+ * @param state - the project.
+ * @returns one line per style element, plus the negative list on its own line.
+ */
+export function styleBrief(state: NovelState): string {
+  const style = state.outline.style
+  const written = OUTLINE_STYLE_PARTS.map(
+    (part) => `- ${part.heading}：${style[part.field].trim() === '' ? '（未写）' : style[part.field].trim()}`,
+  )
+  return [...written, `- 负面清单（本书明令禁止的写法，逐条比对）：${style.taboos.trim() === '' ? '（未写）' : style.taboos.trim()}`].join('\n')
+}
+
+/**
+ * The 负面清单 split into the phrases a body can actually be compared against.
+ *
+ * The field is free prose — an author writes "禁翻译腔、禁滥用副词、不要章末总结" in
+ * one line — so the report can only look for the fragments that are specific
+ * enough to be a phrase: short entries are dropped rather than matched against
+ * every chapter, because a two-character fragment matches ordinary prose and a
+ * warning that fires on every chapter is a warning nobody reads.
+ *
+ * @param taboos - the outline's 负面清单 text.
+ * @returns the phrases worth searching for.
+ */
+export function styleTabooPhrases(taboos: string): string[] {
+  return taboos
+    .split(/[、,，;；。\n]+/u)
+    .map((phrase) => phrase.replace(/^(?:禁|禁止|不要|不能|不得|避免|少用|别用)+/u, '').trim())
+    .filter((phrase) => phrase.length >= 3)
+}
+
+/**
  * Build the 去 AI 化 review request for one chapter.
  *
- * @param input - the project, the chapter, and the optional dimension filter.
+ * Two inputs come from the project rather than from the rubric, and both matter
+ * for the answer: the book's 写作风格 (基调、节奏、遣词用句、负面清单) is the standard
+ * the prose is judged against, and the mechanically counted contrast frames are
+ * handed in as an observation so the reviewer spends its attention on what a
+ * counter cannot see. A judge that is not told what the book is trying to sound
+ * like can only report the average of its training data.
+ *
+ * @param input - the project, the chapter, the optional dimension filter, and the
+ * phrase-level hits the mechanical pass already found.
  * @returns the framed request.
  */
 export function buildAiFlavorRequest(input: {
   readonly state: NovelState
   readonly chapter: Chapter
   readonly focus?: readonly string[] | undefined
+  /**
+   * Counts and quotes the mechanical pass found, in its own words.
+   *
+   * Passed through rather than recomputed: `novel_write` already produced them
+   * from the same functions, and two counters in one codebase is one counter too
+   * many.
+   */
+  readonly counted?: readonly string[] | undefined
 }): ReviewRequest {
   const selected = input.focus === undefined || input.focus.length === 0
     ? AI_FLAVOR_DIMENSIONS
@@ -197,6 +263,7 @@ export function buildAiFlavorRequest(input: {
     .map((dimension, index) => `${String(index + 1)}. ${dimension.key}：${dimension.rule}`)
     .join('\n')
   const chapter = input.chapter
+  const counted = input.counted ?? []
   const system = [
     REVIEWER_STANCE,
     '',
@@ -204,12 +271,17 @@ export function buildAiFlavorRequest(input: {
     rubric,
     '',
     '判断标准是"读者会不会出戏"，不是"文笔够不够文学"。宁可少报，也不要为了凑数把正常句子算作问题。',
+    '另外，把这一章与下面给出的《写作风格》逐条对照：违反本书自己写下的基调、节奏、遣词用句或负面清单的句子，都要报出来，并在 why 里点明违反了哪一条。',
     '',
     outputContract(),
   ].join('\n')
   const user = [
     projectBrief(input.state),
     '',
+    '本书《写作风格》（判断语感的标准，不是建议）：',
+    styleBrief(input.state),
+    '',
+    ...(counted.length === 0 ? [] : ['机械统计已发现（不必重复计数，请判断它们是否成立、还有哪些它数不到）：', ...counted.map((line) => `- ${line}`), '']),
     `第 ${String(chapter.number)} 章「${chapter.title || chapter.id}」（${String(countWords(chapter.body))} 字）`,
     `本章任务：${chapter.plotTask || '（未填）'}`,
     `情绪回报：${chapter.emotionalPayoff || '（未填）'}`,
@@ -251,9 +323,13 @@ export function buildRewriteRequest(input: {
     '2. 只改写法：去掉 AI 味、口语化、短段落、动作与画面优先、对话像人说话。',
     '3. 字数与原文相当（±15%）。',
     '4. 只输出重写后的正文，不要任何说明、标题、Markdown 标记或 JSON 包装。',
+    '5. 改完必须符合下面的《写作风格》，并逐条避开它的负面清单——重写不是换一种 AI 腔。',
   ].join('\n')
   const user = [
     projectBrief(input.state),
+    '',
+    '本书《写作风格》（重写的目标语感）：',
+    styleBrief(input.state),
     '',
     `第 ${String(chapter.number)} 章「${chapter.title || chapter.id}」`,
     `需修正的问题：`,

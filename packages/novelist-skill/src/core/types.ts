@@ -195,7 +195,7 @@ export type VolumeSpineField = (typeof VOLUME_SPINE_FIELDS)[number]
  * One table for both layers: the same element must read the same in the volume
  * gap list and in the whole-book gap list, or the two lists stop being comparable.
  */
-export const SPINE_LABELS: Readonly<Record<OutlineSpineField | VolumeSpineField, string>> = {
+export const SPINE_LABELS: Readonly<Record<OutlineSpineField | VolumeSpineField | OutlineStyleField, string>> = {
   synopsis: '故事梗概',
   protagonistArc: '主角成长线',
   supportArcs: '伙伴成长线',
@@ -205,6 +205,13 @@ export const SPINE_LABELS: Readonly<Record<OutlineSpineField | VolumeSpineField,
   mainConflict: '本卷核心对抗',
   costs: '失去了什么',
   gains: '获得了什么',
+  tone: '文风基调',
+  perspective: '人称与视角',
+  rhythm: '句式与节奏',
+  diction: '遣词用句',
+  dialogue: '对话与描写',
+  emotion: '情绪与爽点落点',
+  taboos: '负面清单',
 }
 
 /** One narrative element of a planning layer, with the requirement it answers. */
@@ -259,6 +266,80 @@ export const OUTLINE_SPINE_PARTS: readonly SpinePart<OutlineSpineField>[] = [
 ]
 
 /**
+ * The 写作风格 elements the whole-book outline answers, in report order.
+ *
+ * The style used to be settled *after* chapter 1 was handed over, which is one
+ * chapter too late: by then the voice of the book has already been chosen by
+ * whoever wrote it, and the author is being asked to approve a fait accompli.
+ * It is now part of the 全书大纲 layer — a named element each, checked for
+ * presence before prose is allowed to exist, so chapter 1 is written against a
+ * voice the author has already seen — and the checkpoint after the golden three
+ * chapters is a *review* of what those three chapters actually sound like.
+ */
+export const OUTLINE_STYLE_FIELDS = [
+  'tone',
+  'perspective',
+  'rhythm',
+  'diction',
+  'dialogue',
+  'emotion',
+  'taboos',
+] as const
+
+/** One entry of {@link OUTLINE_STYLE_FIELDS}. */
+export type OutlineStyleField = (typeof OUTLINE_STYLE_FIELDS)[number]
+
+/**
+ * The `novel_plan operation="outline"` parameter that carries one style element.
+ *
+ * The field names are the file's `###` headings in code shape (`tone`), the
+ * parameters are prefixed (`styleTone`), and every message the tool prints has to
+ * spell the parameter the caller should actually send — so the mapping lives in
+ * one function rather than in a template string per call site.
+ *
+ * @param field - the style element.
+ * @returns the parameter name.
+ */
+export function styleParamName(field: OutlineStyleField): string {
+  return `style${field[0]?.toUpperCase() ?? ''}${field.slice(1)}`
+}
+
+/**
+ * The whole-book style guide as an ordered checklist.
+ *
+ * The headings are the `###` subheadings of `全书大纲.md`'s `## 写作风格` block.
+ * The list is deliberately concrete — 基调、视角、节奏、用词、对话与描写、情绪落点、
+ * 负面清单 — because "文风再稳一点" is not something a chapter can be held to,
+ * whereas "单句成段只用在情绪拐点" is.
+ */
+export const OUTLINE_STYLE_PARTS: readonly SpinePart<OutlineStyleField>[] = [
+  {
+    field: 'tone',
+    heading: '文风基调',
+    requirement: '一句话说清这本书读起来是什么味道、参照哪一类语感，并给两三句「像这样写」的样例',
+  },
+  {
+    field: 'perspective',
+    heading: '人称与视角',
+    requirement: '第几人称、镜头贴谁、能不能切视角、镜头远近；必须与 novel_init 定的 pov 一致',
+  },
+  { field: 'rhythm', heading: '句式与节奏', requirement: '长短句比例、段落长度、断句与单句成段用在哪' },
+  {
+    field: 'diction',
+    heading: '遣词用句',
+    requirement: '用词层级（书面/口语/方言/网络语）、称呼习惯、比喻与意象的密度、禁用的词',
+  },
+  { field: 'dialogue', heading: '对话与描写', requirement: '对话占比、内心戏怎么落地、动作与环境描写的密度与顺序' },
+  { field: 'emotion', heading: '情绪与爽点落点', requirement: '情绪落在哪些可观察的细节上、爽点怎么给、每章收尾时读者该有什么感受' },
+  {
+    field: 'taboos',
+    heading: '负面清单',
+    requirement: '本书明令禁止的写法：AI 味句式、翻译腔、滥用副词与形容词、章末总结、把情绪直接说出来……',
+  },
+]
+
+
+/**
  * The narrative spine one volume answers, in report order.
  *
  * Deliberately the whole-book spine minus the two whole-book-only fields: a
@@ -279,7 +360,7 @@ export const VOLUME_SPINE_PARTS: readonly SpinePart<VolumeSpineField>[] = [
 /** One narrative-spine element that is still empty, with where it is written. */
 export interface SpineGap {
   /** Which element. */
-  readonly key: OutlineSpineField | VolumeSpineField
+  readonly key: OutlineSpineField | VolumeSpineField | OutlineStyleField
   /** What the element has to answer. */
   readonly requirement: string
   /** The tool call that fills it. */
@@ -291,9 +372,11 @@ export interface SpineGap {
  *
  * Both exist because the pipeline otherwise runs from an inspiration straight to
  * prose: the *settings* checkpoints cover the book's setup, and `style` is the
- * sign-off on the prose voice that must follow the first chapter and precede the
- * second. A checkpoint is not a judgement the tool makes — it is a record that
- * the author was asked and answered (see {@link DiscussionRound}).
+ * author's review of the prose voice — due once the golden three chapters have
+ * prose, because 表达方式与遣词用句 need three chapters of material to be judged, and
+ * because the style itself was already settled inside the 全书大纲 layer before
+ * chapter 1 was written. A checkpoint is not a judgement the tool makes — it is a
+ * record that the author was asked and answered (see {@link DiscussionRound}).
  *
  * The settings are decomposed into {@link SETTINGS_LAYERS} — 立意、世界观、人物设定、
  * 全书大纲、分卷大纲 — settled one at a time in that order. Most layers answer to
@@ -307,12 +390,35 @@ export const CONFIRMATION_KINDS = ['settings', 'premise', 'world', 'cast', 'outl
 export type ConfirmationKind = (typeof CONFIRMATION_KINDS)[number]
 
 /**
+ * Comparable titles the SOP's competitor step aims for (20–50).
+ *
+ * A floor rather than a target: below twenty dismantles the study cannot show
+ * whether a device is a genre convention or this author's habit, which is the
+ * only question it is there to answer. Named here because three separate places
+ * report the same number — `assessStage`'s phase-one blocker, `novel_plan`'s
+ * warnings, and the Kanban board's 竞品拆解 card — and a threshold that lives in
+ * three places drifts.
+ */
+export const COMPETITOR_TARGET = 20
+
+/**
+ * Candidate title/blurb/tag sets the SOP asks for before validation.
+ *
+ * The validation step tests naming candidates against readers, so fewer than
+ * three of them is not a smaller version of the same experiment — it is no
+ * experiment. Shared by `openingPackageGaps` and the board's 候选物料 card for the
+ * same reason as {@link COMPETITOR_TARGET}.
+ */
+export const NAMING_MIN_CANDIDATES = 3
+
+/**
  * Discussion rounds each checkpoint needs before it can be signed off.
  *
  * Settings take more than one round on purpose: the SOP asks for the setup to be
  * *discussed*, not announced, and a single round is what "the model decided and
- * told the author" looks like. The style checkpoint follows the first chapter,
- * so one round — show the chapter, hear the verdict — is the honest shape.
+ * told the author" looks like. The style checkpoint follows the golden three
+ * chapters, so one round — show the chapters, hear whether 文风/表达方式/遣词用句
+ * need adjusting — is the honest shape.
  */
 export const CONFIRMATION_MIN_ROUNDS: Readonly<Record<ConfirmationKind, number>> = {
   settings: 2,
@@ -353,28 +459,93 @@ export interface SettingsLayer {
  * is confirmed.
  *
  * `premise` is the exception the rest of the pipeline leans on: the pitch is the
- * smallest layer and the only one `novel_write` hard-gates on, so it is the
- * pre-prose checkpoint. The layers after it are ordered and soft-gated — the
- * tool reports that they are out of order rather than refusing, because a model
- * writing scene-setting notes early is not the failure that produced four
- * unapproved chapters.
+ * smallest layer and the one `novel_write` hard-gates on, so it is the
+ * pre-prose checkpoint. The 全书大纲 layer is the second exception in one narrow
+ * respect: its 写作风格 block is itself a prose gate ({@link OUTLINE_STYLE_PARTS}),
+ * because a chapter written before the voice is written down is a chapter the
+ * author never had a chance to steer. The layers after the premise are otherwise
+ * ordered and soft-gated — the tool reports that they are out of order rather
+ * than refusing, because a model writing scene-setting notes early is not the
+ * failure that produced four unapproved chapters.
  */
 export const SETTINGS_LAYERS: readonly SettingsLayer[] = [
   { key: 'premise', label: '立意与核心设定', kind: 'premise', gatesProse: true },
   { key: 'world', label: '世界观设定', kind: 'world', gatesProse: false },
   { key: 'cast', label: '人物设定', kind: 'cast', gatesProse: false },
-  { key: 'outline', label: '全书大纲', kind: 'outline', gatesProse: false },
+  { key: 'outline', label: '全书大纲（含写作风格）', kind: 'outline', gatesProse: false },
   { key: 'volume', label: '分卷大纲', kind: 'volume', gatesProse: false },
 ]
 
 /**
- * The chapter the style must be signed off after.
+ * The chapters the author reads before the voice is reviewed.
  *
- * The author chose to confirm the voice on the first finished chapter rather
- * than after the opening gate: chapter 1 is where a wrong voice is cheapest to
- * fix, and it is written before any of the book's length is committed.
+ * The checkpoint used to fall after chapter 1 and before chapter 2, which made
+ * the model stop for a sign-off before it had written anything the author could
+ * judge a voice *by*: one chapter is a sample, three chapters are a rhythm. The
+ * golden three are also the chapters the SOP engineers hardest (第 2 章亮金手指、
+ * 第 3 章小爽点), so they are where 表达方式 and 遣词用句 are visible in enough
+ * material to be judged.
  */
-export const STYLE_GATE_CHAPTER = 1
+export const GOLDEN_CHAPTERS = 3
+
+/**
+ * The chapter the style must be reviewed after.
+ *
+ * Kept as its own name because the gate reads as a *position* ("past the golden
+ * three"), while {@link GOLDEN_CHAPTERS} is the number the SOP talks about.
+ */
+export const STYLE_GATE_CHAPTER = GOLDEN_CHAPTERS
+
+/**
+ * Extract the chapter number a review looked at, from its target string.
+ *
+ * A review target is whatever the caller addressed the chapter by — an id
+ * (`chapter-3`, `ch-003`), a title, or a number — so the number is read back out
+ * of it rather than trusted. `0` means the target names no chapter, which is the
+ * honest answer for a review of the whole project.
+ *
+ * @param target - the recorded target.
+ * @returns the chapter number, or 0 when the target names none.
+ */
+export function chapterNumberOf(target: string): number {
+  const explicit = /(?:^|[^0-9])(\d{1,4})(?:[^0-9]|$)/u.exec(target)
+  return explicit?.[1] === undefined ? 0 : Number.parseInt(explicit[1], 10)
+}
+
+/**
+ * The 去 AI 化 review the SOP requires before serialization continues.
+ *
+ * The SOP's step 23 puts 去 AI 化 in the pipeline but, unlike the data check, gave
+ * it no appointment and no receipt: `novel_review operation="ai-flavor"` was a tool
+ * the model could simply never call, and a book could reach chapter forty with its
+ * 写作风格 负面清单 never once checked. This is the standing that closes that hole —
+ * one recorded review, due with the voice review once the golden three chapters
+ * have prose.
+ *
+ * It is deliberately a *receipt* check and not a quality check: the tool cannot
+ * judge whether the prose improved, only whether the author was ever shown the
+ * diagnosis. What the review finds is the author's business, and a review that
+ * finds nothing is a valid, recorded outcome.
+ */
+export interface DeAiStanding {
+  /** Whether at least one 去 AI 化 review is on the ledger. */
+  readonly done: boolean
+  /** When the latest one was taken, ISO-8601; empty when none was. */
+  readonly at: string
+  /** The chapter the latest review looked at, empty when none was. */
+  readonly target: string
+  /** Golden chapters that still have no review of their own, by number. */
+  readonly unreviewed: readonly number[]
+  /**
+   * Whether the review is due — the golden three chapters have prose.
+   *
+   * Carried separately because "not done" and "not yet due" are different facts:
+   * before the golden three exist there is nothing to diagnose.
+   */
+  readonly due: boolean
+  /** Whether prose past {@link STYLE_GATE_CHAPTER} is held back until it is done. */
+  readonly gatesProse: boolean
+}
 
 // ── the project's commercial frame ────────────────────────────────────────────
 
@@ -540,8 +711,26 @@ export interface Character {
   readonly name: string
   /** Narrator-facing role, for example `protagonist` or `antagonist`. */
   readonly role: string
-  /** Appearance, voice, habits, and anything else the prose must honor. */
+  /** Appearance, habits, and anything else the prose must honor. */
   readonly description: string
+  /**
+   * The personality the prose has to keep: their底色, their contradictions, and
+   * what they do under pressure.
+   *
+   * A separate field from {@link description} because "some characters are not
+   * fleshed out" is a finding about *behaviour*, and free prose about looks does
+   * not make it checkable — see `castGaps`.
+   */
+  readonly personality: string
+  /**
+   * How this character talks: sentence length, catchphrases, how they address
+   * people, and how their feelings reach the surface.
+   *
+   * Voice is what makes two characters distinguishable in a scene of dialogue
+   * with no attributions, which is exactly where a thin cast reads as one person
+   * wearing several names.
+   */
+  readonly voice: string
   /** What this character wants; what drives their scenes. */
   readonly goal: string
   /** What they are afraid of, which is what makes them human. */
@@ -806,6 +995,14 @@ export interface Outline {
   readonly costs: string
   /** What the protagonist side gains across the book, named. */
   readonly gains: string
+  /**
+   * The book's 写作风格, one named element per entry.
+   *
+   * Part of this layer rather than a checkpoint of its own, because the voice has
+   * to exist *before* the first chapter does — see {@link OUTLINE_STYLE_PARTS}.
+   * `novel_write` refuses prose while any element here is empty.
+   */
+  readonly style: Readonly<Record<OutlineStyleField, string>>
   /** Act structure in the author's words, one entry per act. */
   readonly acts: readonly string[]
   /** The minimal viable outline's one-screen summary. */
@@ -1052,32 +1249,42 @@ export interface Confirmation {
 export interface ConfirmationStanding {
   /** The latest settings sign-off, or `undefined` when the author never gave one. */
   readonly settings: Confirmation | undefined
-  /** The latest style sign-off, or `undefined`. */
+  /** The latest 文风复核 sign-off, or `undefined`. */
   readonly style: Confirmation | undefined
   /** Discussion rounds recorded since the settings sign-off (all of them, when there is none). */
   readonly settingsRounds: number
-  /** Discussion rounds recorded since the style sign-off. */
+  /** Discussion rounds recorded since the 文风复核 sign-off. */
   readonly styleRounds: number
   /** One entry per settings layer, in the SOP's order. */
   readonly layers: readonly SettingsLayerStanding[]
   /** Whether the settings sign-off exists. */
   readonly settingsConfirmed: boolean
-  /** Whether the style sign-off exists. */
+  /** Whether the 文风复核 sign-off exists. */
   readonly styleConfirmed: boolean
   /**
    * Whether every layer that gates prose has been confirmed.
    *
-   * This is what `novel_write` hard-gates on: the premise. The remaining layers
-   * are ordered rather than blocking, so an author can draft chapter 1 while the
-   * volume outline is still being argued about.
+   * This is one of the two things `novel_write` hard-gates on: the premise. (The
+   * other is the 写作风格 block of the 全书大纲, which is not a confirmation but a
+   * field check — see `outlineStyleGaps`.) The remaining layers are ordered rather
+   * than blocking, so an author can draft chapter 1 while the volume outline is
+   * still being argued about.
    */
   readonly preProseConfirmed: boolean
   /** Whether the rounds recorded so far are enough to close the settings checkpoint. */
   readonly settingsReady: boolean
-  /** Whether the rounds recorded so far are enough to close the style checkpoint. */
+  /** Whether the rounds recorded so far are enough to close the 文风复核. */
   readonly styleReady: boolean
   /** The layer the author should be settling now, or `undefined` when all are confirmed. */
   readonly nextLayer: SettingsLayerStanding | undefined
+  /**
+   * The 去 AI 化 review's standing.
+   *
+   * Derived from the reviews ledger rather than from a checkpoint of its own: the
+   * review is a tool call, so its record *is* the receipt, and a second ledger
+   * would be a second thing to keep in step. See {@link DeAiStanding}.
+   */
+  readonly deAi: DeAiStanding
   /** The checkpoints still open, phrased as what has to happen next. */
   readonly blockers: readonly string[]
 }

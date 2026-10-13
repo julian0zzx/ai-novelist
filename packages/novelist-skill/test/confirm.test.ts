@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -6,6 +6,8 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Config, apply } from '../src/index.ts'
+import { addReview, emptyNovel, metadataOf, parseMetadata, serializeMetadata, stateOf } from '../src/core/index.ts'
+import { STYLE_ARGS } from './style-fixture.ts'
 
 /**
  * The two author checkpoints, driven end to end through the tool surface.
@@ -63,7 +65,13 @@ async function callText(name: string, args: Record<string, unknown>): Promise<st
     .replace(/\\n/gu, '\n')
 }
 
-/** A project with one planned chapter, signed off exactly as far as asked. */
+/**
+ * A project with four planned chapters, signed off exactly as far as asked.
+ *
+ * Four, because the 文风复核 now falls after the golden three chapters and gates
+ * the fourth: a fixture with fewer chapters could not tell "the review is due"
+ * apart from "there is nothing to review".
+ */
 async function seeded(options: { readonly confirmSettings?: boolean } = {}): Promise<void> {
   await call('novel_init', {
     title: '我在梦里开无双，醒了还要交房租',
@@ -71,6 +79,8 @@ async function seeded(options: { readonly confirmSettings?: boolean } = {}): Pro
   })
   await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '房租', number: 1, plotTask: '交租' })
   await call('novel_plan', { operation: 'chapter', id: 'chapter-2', title: '梦醒', number: 2, plotTask: '醒来' })
+  await call('novel_plan', { operation: 'chapter', id: 'chapter-3', title: '楼顶', number: 3, plotTask: '试手' })
+  await call('novel_plan', { operation: 'chapter', id: 'chapter-4', title: '旧账', number: 4, plotTask: '收网' })
   if (options.confirmSettings !== false) await signSettingsOff()
 }
 
@@ -106,6 +116,9 @@ async function signPremiseOff(): Promise<void> {
  */
 async function signSettingsOff(): Promise<void> {
   await signPremiseOff()
+  // The 写作风格 block belongs to the 全书大纲 layer and gates the prose, so it is
+  // written before that layer can be confirmed (SOP 3.6).
+  await call('novel_plan', { operation: 'outline', logline: '梦里的神，现实里的租客', minimal: '一屏摘要', acts: ['起'], ...STYLE_ARGS })
   for (const [kind, label] of [
     ['world', '世界观设定'],
     ['cast', '人物设定'],
@@ -286,70 +299,133 @@ describe('the settings checkpoint in front of the prose', () => {
   })
 })
 
-describe('the voice checkpoint after chapter 1', () => {
-  it('refuses chapter 2 until the user has heard the voice', async () => {
-    await seeded()
-    await call('novel_write', { chapterId: 'chapter-1', body: '房东在门外敲门。' })
+describe('the 文风复核 after the golden three chapters', () => {
+  /** Write the three chapters whose prose the author is asked to judge. */
+  async function writeGoldenThree(): Promise<void> {
+    for (const id of ['chapter-1', 'chapter-2', 'chapter-3']) {
+      await call('novel_write', { chapterId: id, body: `第 ${id} 章的正文。` })
+    }
+  }
 
-    await expect(call('novel_write', { chapterId: 'chapter-2', body: '梦里他站在楼顶。' })).rejects.toThrow(
-      /确认文风/u,
+  /**
+   * Record one 去 AI 化 review, the way `novel_review` records its own.
+   *
+   * The tool's receipt *is* the reviews ledger, so this writes the same entry the
+   * tool would — the gate reads the record, not the call. Going through the core
+   * codec keeps the file the store would have written.
+   *
+   * @param target - the chapter id the review looked at.
+   */
+  async function recordDeAi(target = 'chapter-1'): Promise<void> {
+    const path = join(root, '.novel/novel.json')
+    const { metadata } = parseMetadata(await readFile(path, 'utf8'))
+    const state = stateOf(metadata, { outline: emptyNovel().outline, characters: {}, world: {}, chapters: {} })
+    const next = addReview(
+      state,
+      {
+        id: `review-${String(state.reviews.length + 1)}`,
+        at: '2024-01-01T00:00:00.000Z',
+        kind: 'ai-flavor',
+        target,
+        provider: 'test',
+        model: 'test',
+        promptVersion: 'review-rubric-2',
+        summary: '对举句偏多',
+        findings: [],
+        artifact: '',
+      },
+      () => '2024-01-01T00:00:00.000Z',
     )
-    // Chapter 1 stays revisable: the checkpoint is about running on, not about
-    // freezing the chapter the user is being asked about.
+    await writeFile(path, serializeMetadata(metadataOf(next)), 'utf8')
+  }
+
+  it('lets the golden three chapters through before the review', async () => {
+    await seeded()
+    await writeGoldenThree()
+    // The checkpoint is about running on, not about freezing the chapters the
+    // user is being asked about: revising one stays possible.
     const revised = await call('novel_write', { chapterId: 'chapter-1', body: '房东在门外砸门。' })
     expect(String(revised['detail'])).toMatch(/第 1 章已写入/u)
   })
 
-  it('refuses to confirm a voice before there is a chapter to hear it in', async () => {
+  it('refuses chapter 4 until the user has reviewed the voice', async () => {
     await seeded()
+    await writeGoldenThree()
+    await recordDeAi()
+    await expect(call('novel_write', { chapterId: 'chapter-4', body: '梦里他站在楼顶。' })).rejects.toThrow(
+      /复核文风/u,
+    )
+  })
+
+  it('refuses chapter 4 until a 去 AI 化 diagnosis has actually been recorded', async () => {
+    await seeded()
+    await writeGoldenThree()
+    // SOP step 23 used to depend on the model choosing to run it. The receipt is
+    // the reviews ledger, so "nobody ever ran it" is now a refusal rather than a
+    // book written in the same AI voice to chapter forty.
+    await expect(call('novel_write', { chapterId: 'chapter-4', body: '梦里他站在楼顶。' })).rejects.toThrow(
+      /去 AI 化/u,
+    )
+    await recordDeAi()
+    // The gate is the receipt, not the wording of the refusal: one recorded
+    // review opens it, and what the review found is the author's business.
+    await expect(call('novel_write', { chapterId: 'chapter-4', body: '梦里他站在楼顶。' })).rejects.toThrow(
+      /复核文风/u,
+    )
+  })
+
+  it('refuses to review a voice before the golden three have prose', async () => {
+    await seeded()
+    await call('novel_write', { chapterId: 'chapter-1', body: '房东在门外敲门。' })
     await call('novel_confirm', {
       operation: 'discuss',
       kind: 'style',
-      proposal: '我打算用短句。',
-      feedback: '可以',
+      proposal: '第 1 章按大纲的写作风格写完了。',
+      feedback: '先看两章再说。',
     })
     await expect(
       call('novel_confirm', { operation: 'confirm', kind: 'style', summary: '短句为主' }),
-    ).rejects.toThrow(/第 1 章成稿/u)
+    ).rejects.toThrow(/黄金三章/u)
   })
 
-  it('opens the rest of the book once the voice is signed off', async () => {
+  it('opens the rest of the book once the voice is reviewed', async () => {
     await seeded()
-    await call('novel_write', { chapterId: 'chapter-1', body: '房东在门外敲门。' })
+    await writeGoldenThree()
     await call('novel_confirm', {
       operation: 'discuss',
       kind: 'style',
-      proposal: '第 1 章成稿，短句为主，对话推进。',
-      feedback: '这个语感可以。',
+      proposal: '黄金三章成稿，短句为主，对话推进。',
+      feedback: '这个语感可以，但第三章的形容词还是多了点。',
       topics: ['文风'],
     })
+    await recordDeAi()
     const confirmed = await call('novel_confirm', {
       operation: 'confirm',
       kind: 'style',
-      summary: '短句为主、对话推进、少形容词。',
+      summary: '短句为主、对话推进、少形容词；第三章起再加一档克制。',
       note: '这个语感可以。',
     })
-    expect(String(confirmed['detail'])).toMatch(/文风已确认/u)
+    expect(String(confirmed['detail'])).toMatch(/文风复核已确认/u)
 
-    const second = await call('novel_write', { chapterId: 'chapter-2', body: '梦里他站在楼顶。' })
-    expect(String(second['detail'])).toMatch(/第 2 章已写入/u)
+    const fourth = await call('novel_write', { chapterId: 'chapter-4', body: '梦里他站在楼顶。' })
+    expect(String(fourth['detail'])).toMatch(/第 4 章已写入/u)
   })
 
-  it('stops reporting the chapter-2 blocker once the voice is confirmed', async () => {
+  it('stops reporting the chapter-4 blocker once the voice is reviewed', async () => {
     await seeded()
-    await call('novel_write', { chapterId: 'chapter-1', body: '房东在门外敲门。' })
-    const gated = await call('novel_write', { operation: 'check', chapterId: 'chapter-2' })
-    expect((gated['blockers'] as string[]).join(' ')).toMatch(/确认文风/u)
+    await writeGoldenThree()
+    const gated = await call('novel_write', { operation: 'check', chapterId: 'chapter-4' })
+    expect((gated['blockers'] as string[]).join(' ')).toMatch(/复核文风/u)
 
     await call('novel_confirm', {
       operation: 'discuss',
       kind: 'style',
-      proposal: '第 1 章成稿',
-      feedback: '可以',
+      proposal: '黄金三章成稿，用户读过。',
+      feedback: '不用改。',
     })
-    await call('novel_confirm', { operation: 'confirm', kind: 'style', summary: '短句为主', note: '可以' })
-    const open = await call('novel_write', { operation: 'check', chapterId: 'chapter-2' })
-    expect((open['blockers'] as string[]).join(' ')).not.toMatch(/确认文风/u)
+    await call('novel_confirm', { operation: 'confirm', kind: 'style', summary: '短句为主', note: '不用改。' })
+    const open = await call('novel_write', { operation: 'check', chapterId: 'chapter-4' })
+    expect((open['blockers'] as string[]).join(' ')).not.toMatch(/复核文风/u)
   })
 })
 
@@ -432,6 +508,30 @@ describe('the settings layers, settled one at a time in order', () => {
     ).rejects.toThrow(/note/u)
   })
 
+  it('refuses to confirm the 全书大纲 while its 写作风格 block is unwritten', async () => {
+    await seeded({ confirmSettings: false })
+    await premiseSigned()
+    for (const kind of ['world', 'cast'] as const) {
+      await call('novel_confirm', { operation: 'discuss', kind, proposal: `${kind} 草案`, feedback: '可以' })
+      await call('novel_confirm', { operation: 'confirm', kind, summary: `${kind} 定稿`, note: '可以' })
+    }
+    await call('novel_confirm', { operation: 'discuss', kind: 'outline', proposal: '大纲草案', feedback: '故事可以' })
+    // The style block is part of this layer and is what chapter 1 is written
+    // against, so the layer cannot be recorded as settled without it.
+    await expect(
+      call('novel_confirm', { operation: 'confirm', kind: 'outline', summary: '大纲定稿', note: '可以' }),
+    ).rejects.toThrow(/写作风格/u)
+
+    await call('novel_plan', { operation: 'outline', ...STYLE_ARGS })
+    const confirmed = await call('novel_confirm', {
+      operation: 'confirm',
+      kind: 'outline',
+      summary: '大纲定稿（含写作风格七要素）',
+      note: '可以',
+    })
+    expect(String(confirmed['detail'])).toMatch(/全书大纲（含写作风格）已确认/u)
+  })
+
   it('treats `settings` and `premise` as the same checkpoint in the round count', async () => {
     await seeded({ confirmSettings: false })
     // Two rounds under the `settings` spelling…
@@ -507,11 +607,16 @@ describe('the settings layers, settled one at a time in order', () => {
     expect((await call('novel_status', {}))['stage']).toMatch(/opening-package/u)
   })
 
-  it('writes prose once the premise is confirmed, without waiting for the volume outline', async () => {
+  it('writes prose once the premise is confirmed and the 写作风格 is written, without waiting for the volume outline', async () => {
     await premiseSigned()
-    // The gate is the premise: a chapter 1 drafted while the world is still being
-    // argued about is allowed, because the ordering is carried by the layers and
-    // `novel_confirm`, not by refusing the prose.
+    // Two gates are shut here, and the second is the point of SOP 3.6. The premise
+    // is the author's sign-off on the setup; the 写作风格 block is what chapter 1 is
+    // written *against*, so prose stays refused until it exists — even though the
+    // world, the cast and the volumes are all still being argued about.
+    await expect(call('novel_write', { chapterId: 'chapter-1', body: '房东在门外敲门。' })).rejects.toThrow(
+      /写作风格/u,
+    )
+    await call('novel_plan', { operation: 'outline', ...STYLE_ARGS })
     const written = await call('novel_write', { chapterId: 'chapter-1', body: '房东在门外敲门。' })
     expect(String(written['detail'])).toMatch(/第 1 章已写入/u)
 

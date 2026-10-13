@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AI_FLAVOR_DIMENSIONS,
+  OUTLINE_STYLE_PARTS,
   REVIEW_PROMPT_VERSION,
   buildAiFlavorRequest,
   buildCompetitorRequest,
@@ -58,7 +59,7 @@ function fixture(): NovelState {
 describe('review rubric', () => {
   it('pins the rubric version that every record carries', () => {
     // Bumping this is a decision, not a side effect: records cite it.
-    expect(REVIEW_PROMPT_VERSION).toBe('review-rubric-1')
+    expect(REVIEW_PROMPT_VERSION).toBe('review-rubric-2')
   })
 
   it('keeps the 去 AI 化 dimensions stable and distinct', () => {
@@ -66,6 +67,7 @@ describe('review rubric', () => {
     expect(keys).toEqual([
       '翻译腔',
       '整齐句式',
+      '对举句',
       '总结式抒情',
       '套话身体反应',
       '解释型对话',
@@ -138,6 +140,31 @@ describe('request builders', () => {
       focus: ['不存在的维度'],
     })
     expect(request.system).toContain('翻译腔')
+  })
+
+  it('judges the prose against the book’s own 写作风格, not against taste', () => {
+    const state = fixture()
+    const request = buildAiFlavorRequest({ state, chapter: state.chapters['chapter-1']! })
+    expect(request.user).toContain('本书《写作风格》')
+    // Every element is listed, written or not: a review that silently judged
+    // against five of seven would let the project believe the guide was complete.
+    for (const part of OUTLINE_STYLE_PARTS) expect(request.user).toContain(part.heading)
+    expect(request.user).toContain('负面清单')
+    expect(request.system).toContain('违反本书自己写下的')
+  })
+
+  it('hands the review what the mechanical pass already counted', () => {
+    const state = fixture()
+    const request = buildAiFlavorRequest({
+      state,
+      chapter: state.chapters['chapter-1']!,
+      counted: ['「不是……是……」对举句式共 2 处：「不是没听见，是」'],
+    })
+    expect(request.user).toContain('机械统计已发现')
+    expect(request.user).toContain('不是没听见，是')
+    // With nothing counted, the block is absent rather than empty.
+    const bare = buildAiFlavorRequest({ state, chapter: state.chapters['chapter-1']!, counted: [] })
+    expect(bare.user).not.toContain('机械统计已发现')
   })
 
   it('asks a rewrite to preserve the plot and the ending', () => {

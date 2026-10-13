@@ -25,6 +25,7 @@ import {
   CHAPTER_STATUSES,
   CONTRACT_FIELDS,
   OUTLINE_SPINE_PARTS,
+  OUTLINE_STYLE_PARTS,
   VOLUME_SPINE_PARTS,
   type Chapter,
   type ChapterStatus,
@@ -34,6 +35,7 @@ import {
   type NovelState,
   type Outline,
   type OutlineSpineField,
+  type OutlineStyleField,
   type SpinePart,
   type StorageIndex,
   type VolumePlan,
@@ -123,6 +125,8 @@ export interface OutlineFileContent {
   readonly logline: string
   /** The narrative spine, `synopsis` included, as the file's `## 叙事骨架` block. */
   readonly spine: Readonly<Record<OutlineSpineField, string>>
+  /** The 写作风格 block, as the file's `## 写作风格` block. */
+  readonly style: Readonly<Record<OutlineStyleField, string>>
   /** The whole-book detailed outline (SOP step 15). */
   readonly fullOutline: string
   /** Act structure. */
@@ -137,13 +141,16 @@ export interface OutlineFileContent {
  * The `##` headings `全书大纲.md` fixes, in file order.
  *
  * The whole-book narrative spine lives inside {@link OUTLINE_SECTIONS.spine} as
- * `###` subsections — one file, one `##` block — while a volume's spine is `###`
- * subsections of its own volume entry (see {@link parseVolumeFile}), because a
- * second `##` inside a volume entry would read as the next volume.
+ * `###` subsections — one file, one `##` block — and the 写作风格 block is built
+ * the same way, because both are lists of named elements rather than one body of
+ * prose. A volume's spine is `###` subsections of its own volume entry (see
+ * {@link parseVolumeFile}), because a second `##` inside a volume entry would read
+ * as the next volume.
  */
 export const OUTLINE_SECTIONS = {
   logline: '一句话',
   spine: '叙事骨架',
+  style: '写作风格',
   full: '完整大纲',
   acts: '三幕',
   minimal: '最小可行大纲',
@@ -160,13 +167,16 @@ export const OUTLINE_SECTIONS = {
 export function parseOutlineFile(raw: string, where: string): OutlineFileContent {
   const sections = sectionsOf(raw, where)
   const front = docFrontmatter(raw, where)
-  // The spine is one `##` section of `###` elements, so a missing section yields
-  // an all-empty spine, and an element the author renamed reads as empty rather
-  // than as a silent pass (`spineGaps` reports it with the heading it wanted).
+  // The spine and the style block are each one `##` section of `###` elements, so
+  // a missing section yields all-empty values, and an element the author renamed
+  // reads as empty rather than as a silent pass (the gap checks report it with
+  // the heading they wanted).
   const spineSections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.spine)?.body ?? '').subsections
+  const styleSections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.style)?.body ?? '').subsections
   return {
     logline: sectionText(sections, OUTLINE_SECTIONS.logline),
     spine: spineOf(OUTLINE_SPINE_PARTS, spineSections),
+    style: spineOf(OUTLINE_STYLE_PARTS, styleSections),
     fullOutline: sectionText(sections, OUTLINE_SECTIONS.full),
     acts: sectionList(sections, OUTLINE_SECTIONS.acts),
     minimal: sectionText(sections, OUTLINE_SECTIONS.minimal),
@@ -195,14 +205,19 @@ function emptySpine(): Readonly<Record<OutlineSpineField, string>> {
   return spineOf(OUTLINE_SPINE_PARTS, [])
 }
 
+/** An all-empty 写作风格 block, for a project with no outline file yet. */
+function emptyStyle(): Readonly<Record<OutlineStyleField, string>> {
+  return spineOf(OUTLINE_STYLE_PARTS, [])
+}
+
 /**
  * Render `全书大纲.md`.
  *
  * Section order is the pipeline order: the logline, then the narrative spine
- * (故事梗概 … 获得了什么), then the detailed skeleton, then its act list. A reader
- * who stops after the spine still knows the story; a reader who only reads the
- * skeleton has the machinery without the story, which is the order this file is
- * meant to prevent.
+ * (故事梗概 … 获得了什么), then the 写作风格 it is told in, then the detailed skeleton,
+ * then its act list. A reader who stops after the spine still knows the story; a
+ * reader who only reads the skeleton has the machinery without the story, which
+ * is the order this file is meant to prevent.
  *
  * @param outline - the fields the file owns.
  * @returns the file text.
@@ -215,6 +230,7 @@ export function renderOutlineFile(outline: OutlineFileContent): string {
   return renderDocument({ fullOutlineDone: outline.fullOutlineDone }, '全书大纲', [
     renderSection(OUTLINE_SECTIONS.logline, outline.logline),
     renderSection(OUTLINE_SECTIONS.spine, renderSpine(OUTLINE_SPINE_PARTS, outline.spine)),
+    renderSection(OUTLINE_SECTIONS.style, renderSpine(OUTLINE_STYLE_PARTS, outline.style)),
     renderSection(OUTLINE_SECTIONS.full, outline.fullOutline),
     renderListSection(OUTLINE_SECTIONS.acts, outline.acts),
     renderSection(OUTLINE_SECTIONS.minimal, outline.minimal),
@@ -255,6 +271,11 @@ export function parseCastFile(raw: string, where: string): Record<string, Charac
       // `description:` key is kept ahead of it, because a keyed value is a
       // deliberate one whereas prose may have accumulated from several edits.
       description: [declared, entry.prose].filter((part) => part !== '').join('\n\n'),
+      // Named fields rather than more prose in `description`: `castGaps` has to be
+      // able to say *which* character is flat, and "性格" and "说话方式" are the two
+      // things a thin character is missing.
+      personality: frontString(entry.fields, 'personality', ''),
+      voice: frontString(entry.fields, 'voice', ''),
       goal: frontString(entry.fields, 'goal', ''),
       fear: frontString(entry.fields, 'fear', ''),
       obsession: frontString(entry.fields, 'obsession', ''),
@@ -283,6 +304,8 @@ export function renderCastFile(characters: Readonly<Record<string, Character>>):
           id: character.id,
           name: character.name,
           role: character.role,
+          personality: character.personality,
+          voice: character.voice,
           goal: character.goal,
           fear: character.fear,
           obsession: character.obsession,
@@ -1051,6 +1074,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
         gains: state.outline.gains,
       },
       fullOutline: state.outline.fullOutline,
+      style: state.outline.style,
       acts: state.outline.acts,
       minimal: state.outline.minimal,
       fullOutlineDone: state.outline.fullOutlineDone,
@@ -1124,7 +1148,15 @@ export function composeContent(
   const outlineFile = read(index.outlineFile)
   const outlineText =
     outlineFile === undefined
-      ? { logline: '', spine: emptySpine(), fullOutline: '', acts: [], minimal: '', fullOutlineDone: false }
+      ? {
+          logline: '',
+          spine: emptySpine(),
+          style: emptyStyle(),
+          fullOutline: '',
+          acts: [],
+          minimal: '',
+          fullOutlineDone: false,
+        }
       : parseOutlineFile(outlineFile, index.outlineFile)
 
   const planFile = read(index.chapterPlanFile)
@@ -1139,6 +1171,7 @@ export function composeContent(
     ...emptyOutline(),
     logline: outlineText.logline,
     ...outlineText.spine,
+    style: outlineText.style,
     fullOutline: outlineText.fullOutline,
     acts: outlineText.acts,
     minimal: outlineText.minimal,

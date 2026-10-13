@@ -357,6 +357,8 @@ describe('NovelStore migration', () => {
             name: '林越',
             role: 'protagonist',
             description: '十六岁，瘦。',
+            personality: '外冷内倔',
+            voice: '短句，先问价再动手',
             goal: '上山',
             fear: '被逐',
             obsession: '断剑不离手',

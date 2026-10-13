@@ -27,10 +27,12 @@ import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
 import {
   assessReading,
   assessStage,
+  castGaps,
   confirmationStanding,
   describeWritingPlan,
   emptyWriting,
   evaluationHint,
+  outlineStyleGaps,
   progressOf,
   phaseForStage,
   stageLabel,
@@ -123,8 +125,35 @@ export interface NovelSnapshot {
   /** One line per settings layer, in the SOP's order, as the prompt shows them. */
   readonly settingsLayers: readonly string[]
   readonly styleConfirmed: boolean
-  /** Whether the style checkpoint is due — the gate chapter has prose. */
+  /** Whether the style review is due — the golden three chapters have prose. */
   readonly styleDue: boolean
+  /**
+   * The 去 AI 化 review's standing, as the prompt renders it.
+   *
+   * Carried because it is now a *prose gate*: `novel_write` refuses to write past
+   * the golden three chapters until one review is on the ledger, so the model has
+   * to see it before it makes the call rather than at the refusal. `unreviewed`
+   * is the advisory half — the golden chapters nobody has diagnosed yet.
+   */
+  readonly deAiDone: boolean
+  readonly deAiDue: boolean
+  readonly deAiUnreviewed: readonly number[]
+  /**
+   * 写作风格 elements the 全书大纲 has not answered yet.
+   *
+   * Carried because they are a *prose gate*: `novel_write` refuses while this is
+   * non-empty, and the step-by-step context is where that has to be visible
+   * before the call is made.
+   */
+  readonly styleGaps: readonly string[]
+  /**
+   * Characters with a name and a goal but no 性格 or 说话方式.
+   *
+   * Advisory, never a gate: it is reported so "有些角色不够丰满" is a number rather
+   * than an impression, and so a model carrying a scene does not give four people
+   * one voice.
+   */
+  readonly thinCast: readonly string[]
   /** The checkpoints still open, in the SOP's words. */
   readonly confirmationGaps: readonly string[]
   /** Reading position of the last planned chapter. */
@@ -214,6 +243,11 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
         ),
         styleConfirmed: standing.styleConfirmed,
         styleDue: styleGateReached(state),
+        deAiDone: standing.deAi.done,
+        deAiDue: standing.deAi.due,
+        deAiUnreviewed: standing.deAi.unreviewed,
+        styleGaps: outlineStyleGaps(state.outline).map((gap) => gap.key),
+        thinCast: castGaps(state).map((gap) => `${gap.name}（缺 ${gap.missing.join('、')}）`),
         confirmationGaps: standing.blockers,
         lastNumber: last?.number ?? 0,
         lastTitle: last?.title ?? '',
@@ -252,7 +286,12 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
           nextSettingsKind: '',
           settingsLayers: [],
           styleConfirmed: false,
+          deAiDone: false,
+          deAiDue: false,
+          deAiUnreviewed: [],
           styleDue: false,
+          styleGaps: [],
+          thinCast: [],
           confirmationGaps: [],
           lastNumber: 0,
           lastTitle: '',
@@ -294,10 +333,15 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'TWO CHECKPOINTS BELONG TO THE AUTHOR, and neither may be closed on their behalf. First the settings: an '
     + 'inspiration is a starting point, so put the setup in front of the user, revise it over recorded rounds '
     + '(novel_confirm operation="discuss" kind="settings", each round carrying their own words) and let them confirm it '
-    + '(operation="confirm" kind="settings"); novel_write refuses prose until then, and a later change to the settings '
-    + 'means discussing and confirming them again. Second the voice: once chapter 1 has prose, hand it to the user, hear '
-    + 'what they think of the style, record that round and have them confirm it (kind="style") before writing chapter 2 — '
-    + 'the book is not written on a voice the author has never heard. '
+    + '(operation="confirm" kind="settings"); novel_write refuses prose until then. The settings are settled one layer at '
+    + 'a time — 立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲 — and the 全书大纲 layer carries the book\'s 写作风格 '
+    + '(基调/人称与视角/句式与节奏/遣词用句/对话与描写/情绪落点/负面清单): write all seven before any prose, because '
+    + 'novel_write refuses a chapter while one is missing, and do not write chapter 1 on a voice the author has not seen. '
+    + 'Second the voice: once the golden three chapters (第 1–3 章) have prose, hand them to the user, ask whether '
+    + '文风/表达方式/遣词用句 need adjusting, record that round and have them confirm it (kind="style") before chapter 4 — '
+    + 'if they want changes, write them back into the outline and revise the affected chapters first. '
+    + 'A character with a name and a goal but no 性格 or 说话方式 is not a character: novel_bible kind="character" takes '
+    + 'personality and voice for everyone, and the runtime context names the ones still thin. '
     + 'Phase three ends in a declared launch decision — novel_plan operation="launch" — not in a number: '
     + 'whether the opening package is worth a full skeleton is a judgement, and no platform data is needed to make it. '
     + 'The data check is novel_assess, and it is ON DEMAND: run it when the user asks whether the book is still worth '
@@ -320,7 +364,9 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'the pitch and the competitor study, novel_bible for the cast — and settle the setup WITH the user before any '
     + 'prose: the inspiration they gave you is the opening of that conversation, not a finished brief. Record each '
     + 'discussion round (novel_confirm operation="discuss" kind="settings"), have them confirm the setup, and only then '
-    + 'write chapter 1; after chapter 1, ask them to confirm the voice before chapter 2.',
+    + 'write chapter 1 — with the 写作风格 of the 全书大纲 written first (novel_plan operation="outline" styleTone=… …), '
+    + 'because novel_write refuses prose while it is missing; after the golden three chapters, ask them to review the '
+    + 'voice before chapter 4.',
   plain:
     'This workspace is not a novel project, so the composer tools are idle. Do not create a novel project here '
     + 'unless the user asks you to start one in this directory. When the user does ask — "write a novel here", '
@@ -463,10 +509,43 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
           + 'refused while an earlier one is still open.',
         )
       }
-      if (snapshot.settingsConfirmed && !snapshot.styleConfirmed && snapshot.styleDue) {
+      if (snapshot.deAiDue && !snapshot.deAiDone) {
         lines.push(
-          'The first chapter has prose and the voice is unsigned: hand it to the author, hear what they think of the '
-          + 'style, record the round, and have them confirm it (novel_confirm kind="style") before chapter 2.',
+          'The golden three chapters have prose and no 去 AI 化 diagnosis has ever been recorded on this project: run '
+          + 'novel_review operation="ai-flavor" for each of them (原文引用 + 为什么像 AI + 怎么改), fix what it finds, and '
+          + 'only then hand the chapters to the author for the voice review. This is SOP step 23 and it is ENFORCED: '
+          + 'novel_write refuses to write chapter 4 and beyond until one review is on the ledger, so an AI-flavoured '
+          + 'opening cannot quietly become a whole book written in the same voice.',
+        )
+      } else if (snapshot.deAiDone && snapshot.deAiUnreviewed.length > 0) {
+        lines.push(
+          `A 去 AI 化 diagnosis is on the ledger, but the golden chapters ${snapshot.deAiUnreviewed.join('、')} have `
+          + 'never been diagnosed: run novel_review operation="ai-flavor" for them too — one chapter is a sample, three '
+          + 'are the voice of the book.',
+        )
+      }
+      if (!snapshot.styleConfirmed && snapshot.styleDue) {
+        lines.push(
+          'The golden three chapters have prose and the voice has not been reviewed: hand 第 1–3 章 to the author, ask '
+          + 'whether 文风/表达方式/遣词用句 need adjusting, write any adjustment back into the outline and revise the '
+          + 'affected chapters, then record the round and have them confirm it (novel_confirm kind="style") before '
+          + 'chapter 4.',
+        )
+      }
+      if (snapshot.styleGaps.length > 0) {
+        lines.push(
+          `The 写作风格 of the 全书大纲 is not written out, and novel_write REFUSES prose until it is: missing `
+          + `${snapshot.styleGaps.join('、')}. Write it with novel_plan operation="outline" `
+          + '(styleTone=… stylePerspective=… styleRhythm=… styleDiction=… styleDialogue=… styleEmotion=… styleTaboos=…), '
+          + 'put it in front of the user with the rest of the outline layer, and settle it before chapter 1 — a voice '
+          + 'chosen while writing is a voice the author never got to steer.',
+        )
+      }
+      if (snapshot.thinCast.length > 0) {
+        lines.push(
+          `Characters that are still thin (a name and a goal, no 性格 or 说话方式): ${snapshot.thinCast.join('；')}. `
+          + 'Fill personality and voice with novel_bible kind="character" before they carry a scene — two of them in one '
+          + 'dialogue read as one person wearing two names.',
         )
       }
     }

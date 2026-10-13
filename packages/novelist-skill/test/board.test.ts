@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { emptyNovel } from '../src/core/novel.ts'
-import { CHAPTER_STATUSES } from '../src/core/types.ts'
-import type { Chapter, NovelState } from '../src/core/types.ts'
+import { CHAPTER_STATUSES, COMPETITOR_TARGET, NAMING_MIN_CANDIDATES } from '../src/core/types.ts'
+import type { Chapter, ConfirmationKind, NovelState } from '../src/core/types.ts'
 import { boardOf } from '../src/client/board.ts'
-import type { BoardCard } from '../src/client/board.ts'
+import type { BoardCard, DocumentCard } from '../src/client/board.ts'
+import { upsertCharacter, upsertWorld } from '../src/core/novel.ts'
 
 /**
  * Kanban board specs.
@@ -155,5 +156,262 @@ describe('boardOf', () => {
     const board = boardOf(stateOf())
     expect(board.progress.chapters).toBe(0)
     expect(board.columns.every((column) => column.cards.length === 0)).toBe(true)
+  })
+})
+
+/**
+ * Process-document specs.
+ *
+ * The board used to be four chapter columns, which is the whole story only for a
+ * project that has chapters. These specs pin the other half: the artefacts the
+ * SOP produces from 立意 to 复盘, each with its own standing, its own count and the
+ * names of the parts it still owes.
+ */
+
+/**
+ * A state built from a base and overrides.
+ *
+ * @param base - the project to start from.
+ * @param overrides - what to change.
+ * @returns the state.
+ */
+function over(base: NovelState, overrides: Partial<NovelState>): NovelState {
+  return { ...base, ...overrides }
+}
+
+/**
+ * One author sign-off.
+ *
+ * @param kind - the checkpoint closed.
+ * @returns the record.
+ */
+function signOff(kind: ConfirmationKind) {
+  return { id: `c-${kind}`, kind, at: '2026-01-01T00:00:00.000Z', summary: 'ok', note: '作者认可', rounds: 1 }
+}
+
+/**
+ * The card of one document.
+ *
+ * @param board - the board to search.
+ * @param id - the document id.
+ * @returns the card, or undefined when the document is not on the board.
+ */
+function doc(board: { readonly documents: readonly DocumentCard[] }, id: string): DocumentCard | undefined {
+  return board.documents.find((card) => card.id === id)
+}
+
+describe('boardOf documents', () => {
+  it('lists every SOP process document, in production order', () => {
+    const board = boardOf(stateOf())
+    expect(board.documents.map((card) => card.id)).toEqual([
+      'pitch',
+      'competitors',
+      'naming',
+      'world',
+      'cast',
+      'de-ai',
+      'outline',
+      'style',
+      'volumes',
+      'beats',
+      'opening',
+      'launch',
+      'serial',
+      'retro',
+    ])
+  })
+
+  it('reports a fresh project as having started nothing', () => {
+    const board = boardOf(stateOf(chapter({ number: 1 })))
+    expect(board.documents.every((card) => card.state === 'missing')).toBe(true)
+    expect(doc(board, 'pitch')?.done).toBe(0)
+    expect(doc(board, 'pitch')?.total).toBe(5)
+    expect(doc(board, 'competitors')?.total).toBe(COMPETITOR_TARGET)
+    expect(doc(board, 'naming')?.total).toBe(NAMING_MIN_CANDIDATES)
+    // Both gates a fresh project is held to are on the board, on the documents
+    // that carry them.
+    expect(doc(board, 'pitch')?.gates).toBe('prose')
+    expect(doc(board, 'style')?.gates).toBe('prose')
+  })
+
+  it('separates "written" from "signed off"', () => {
+    const named = over(emptyNovel(), {
+      naming: [1, 2, 3].map((index) => ({
+        id: `n-${String(index)}`,
+        title: `书名${String(index)}`,
+        blurb: '简介',
+        tags: [],
+        rationale: '',
+        active: false,
+      })),
+    })
+    // Three candidates is the SOP's floor and nothing asks the author to sign
+    // them off, so a complete set is a finished document — unlike the outline
+    // below it, which is finished only once the author has read it.
+    expect(doc(boardOf(named), 'naming')?.state).toBe('confirmed')
+
+    // A full pitch that the author has never been shown is the case the three
+    // states exist for: `done`, and not finished.
+    const pitched = over(emptyNovel(), {
+      pitch: {
+        memorablePoint: '少年上山',
+        coreEmotion: '不甘',
+        shuangPoints: ['打脸'],
+        differentiators: ['本土神话'],
+        kernel: '执念',
+      },
+    })
+    expect(doc(boardOf(pitched), 'pitch')?.state).toBe('draft')
+    expect(doc(boardOf(pitched), 'pitch')?.done).toBe(5)
+    // The premise layer answers to the SOP's umbrella `settings` sign-off as well
+    // as to its own name, so the project carries both — which is what
+    // `confirmationStanding` reads.
+    const signed = { ...pitched, confirmations: [signOff('settings'), signOff('premise')] }
+    expect(doc(boardOf(signed), 'pitch')?.state).toBe('confirmed')
+  })
+
+  it('keeps the 写作风格 block visible as the prose gate it is', () => {
+    const board = boardOf(stateOf(chapter({ number: 1 })))
+    expect(doc(board, 'style')?.done).toBe(0)
+    expect(doc(board, 'style')?.total).toBe(7)
+
+    const written = over(emptyNovel(), {
+      outline: {
+        ...emptyNovel().outline,
+        style: {
+          tone: '冷硬',
+          perspective: '第三人称限知',
+          rhythm: '短句为主',
+          diction: '书面语',
+          dialogue: '对话四成',
+          emotion: '落在他数钱的沉默上',
+          taboos: '禁翻译腔',
+        },
+      },
+    })
+    expect(doc(boardOf(written), 'style')?.state).toBe('confirmed')
+    expect(doc(boardOf(written), 'style')?.gaps).toEqual([])
+  })
+
+  it('names the parts the outline and the cast still owe', () => {
+    const board = boardOf(stateOf(chapter({ number: 1 })))
+    // The gap names are the domain's own labels, not keys: the card shows the
+    // same words `novel_status` prints.
+    expect(doc(board, 'outline')?.gaps).toContain('故事梗概')
+    expect(doc(board, 'outline')?.done).toBe(0)
+
+    const thin = upsertCharacter(
+      stateOf(),
+      { id: 'lin', name: '林砚', role: 'protagonist', goal: '上山' },
+      () => '2026-01-01T00:00:00.000Z',
+    )
+    // A name with a goal and no personality or voice is the finding `castGaps`
+    // exists to report, so the card says so by name.
+    expect(doc(boardOf(thin), 'cast')?.gaps).toEqual(['林砚'])
+    expect(doc(boardOf(thin), 'cast')?.done).toBe(1)
+    expect(doc(boardOf(thin), 'cast')?.total).toBe(0)
+  })
+
+  it('counts world rules that state no price', () => {
+    const priced = upsertWorld(
+      stateOf(),
+      { id: 'qingyun', name: '青云诀', detail: '吸纳月华', cost: '折寿', limits: '不可近火' },
+      () => '2026-01-01T00:00:00.000Z',
+    )
+    expect(doc(boardOf(priced), 'world')?.state).toBe('draft')
+    expect(doc(boardOf(priced), 'world')?.gaps).toEqual([])
+
+    const free = upsertWorld(
+      stateOf(),
+      { id: 'qingyun', name: '青云诀', detail: '吸纳月华' },
+      () => '2026-01-01T00:00:00.000Z',
+    )
+    expect(doc(boardOf(free), 'world')?.gaps).toEqual(['青云诀'])
+  })
+
+  it('holds the skeleton behind the launch decision', () => {
+    const board = boardOf(stateOf(chapter({ number: 1 })))
+    // The SOP postpones the volumes and the beat table until a human has said
+    // go, so both cards carry that gate while the decision is unrecorded.
+    expect(doc(board, 'volumes')?.gates).toBe('skeleton')
+    expect(doc(board, 'beats')?.gates).toBe('skeleton')
+    expect(doc(board, 'launch')?.state).toBe('missing')
+
+    const go = over(emptyNovel(), {
+      launchDecisions: [
+        { id: 'l-1', at: '2026-01-01T00:00:00.000Z', verdict: 'go', fallback: '', abandonIf: '', note: '编辑看过' },
+      ],
+    })
+    expect(doc(boardOf(go), 'volumes')?.gates).toBe('')
+    expect(doc(boardOf(go), 'launch')?.state).toBe('confirmed')
+
+    const revise = over(emptyNovel(), {
+      launchDecisions: [
+        { id: 'l-2', at: '2026-01-01T00:00:00.000Z', verdict: 'revise', fallback: '重写第 1 章', abandonIf: '三章读完 <20%', note: '' },
+      ],
+    })
+    // A decision that is not `go` is recorded and not passing: the card stays
+    // open, because the skeleton is still not authorised.
+    expect(doc(boardOf(revise), 'launch')?.state).toBe('draft')
+    expect(doc(boardOf(revise), 'volumes')?.gates).toBe('skeleton')
+  })
+
+  it('reports the 去 AI 化 receipt the prose gate now requires', () => {
+    // Fresh project: nothing to diagnose yet, so no gate and no standing.
+    const fresh = boardOf(stateOf(chapter({ number: 1 })))
+    expect(doc(fresh, 'de-ai')?.state).toBe('missing')
+    expect(doc(fresh, 'de-ai')?.gates).toBe('')
+
+    // The golden three have prose: the diagnosis is due and gates the prose
+    // that comes after them, which is what the card has to show.
+    const golden = boardOf(
+      stateOf(
+        chapter({ number: 1, body: '正文', wordCount: 2 }),
+        chapter({ number: 2, body: '正文', wordCount: 2 }),
+        chapter({ number: 3, body: '正文', wordCount: 2 }),
+      ),
+    )
+    expect(doc(golden, 'de-ai')?.state).toBe('missing')
+    expect(doc(golden, 'de-ai')?.gates).toBe('prose')
+    expect(doc(golden, 'de-ai')?.gaps).toEqual(['第 1 章', '第 2 章', '第 3 章'])
+
+    const reviewed = over(
+      stateOf(
+        chapter({ number: 1, body: '正文', wordCount: 2 }),
+        chapter({ number: 2, body: '正文', wordCount: 2 }),
+        chapter({ number: 3, body: '正文', wordCount: 2 }),
+      ),
+      {
+      reviews: [
+        {
+          id: 'review-1',
+          at: '2026-01-01T00:00:00.000Z',
+          kind: 'ai-flavor',
+          target: 'chapter-1',
+          provider: 'test',
+          model: 'test',
+          promptVersion: 'review-rubric-2',
+          summary: '对举句偏多',
+          findings: [],
+          artifact: '',
+        },
+      ],
+      },
+    )
+    // One recorded review finishes the document, and the card names the golden
+    // chapters nobody has looked at yet.
+    expect(doc(boardOf(reviewed), 'de-ai')?.state).toBe('confirmed')
+    expect(doc(boardOf(reviewed), 'de-ai')?.gaps).toEqual(['第 2 章', '第 3 章'])
+  })
+
+  it('counts the opening checklist the opening package is gated on', () => {
+    const board = boardOf(stateOf(chapter({ number: 1 })))
+    expect(doc(board, 'opening')?.done).toBe(0)
+    expect(doc(board, 'opening')?.total).toBe(7)
+    expect(doc(board, 'opening')?.gaps[0]).toBe('chapter-1-conflict-300')
+
+    const checks = emptyNovel().outline.opening.map((check) => ({ ...check, done: true }))
+    const done = over(emptyNovel(), { outline: { ...emptyNovel().outline, opening: checks } })
+    expect(doc(boardOf(done), 'opening')?.state).toBe('confirmed')
   })
 })

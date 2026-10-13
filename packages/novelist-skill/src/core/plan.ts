@@ -12,6 +12,7 @@
 
 import {
   CONTRACT_FIELDS,
+  NAMING_MIN_CANDIDATES,
   type Chapter,
   type ChapterStatus,
   type ContractField,
@@ -112,11 +113,17 @@ export interface CastGap {
 }
 
 /**
- * Cast members missing the traits the SOP requires of a protagonist.
+ * Cast members missing the traits the SOP requires.
+ *
+ * Every character owes a `role`, a `goal`, a `personality` and a `voice`; a cast
+ * entry with a name and a one-line goal is a name, not a character — two of them
+ * in one scene read as one person wearing two names, which is the failure this
+ * check exists to name ("有些角色不够丰满" is a finding about behaviour, and free
+ * prose about looks does not make it checkable).
  *
  * Only the protagonist is held to the full spine (欲望/恐惧/执念/软肋 + 成长线);
- * supporting cast are checked for a `goal` only, because demanding a full arc
- * from every walk-on role produces filler, not depth.
+ * supporting cast are not, because demanding a full arc from every walk-on role
+ * produces filler, not depth.
  *
  * @param state - the project.
  * @returns the gaps.
@@ -126,7 +133,10 @@ export function castGaps(state: NovelState): CastGap[] {
   for (const character of Object.values(state.characters)) {
     const isLead = /protagonist|主角|lead/iu.test(character.role)
     const missing: string[] = []
+    if (character.role.trim() === '') missing.push('role')
     if (character.goal.trim() === '') missing.push('goal')
+    if (character.personality.trim() === '') missing.push('personality')
+    if (character.voice.trim() === '') missing.push('voice')
     if (isLead) {
       if (character.fear.trim() === '') missing.push('fear')
       if (character.obsession.trim() === '') missing.push('obsession')
@@ -847,10 +857,10 @@ export function openingPackageGaps(state: NovelState): MissingField[] {
     })
   }
   const naming = state.naming.filter((candidate) => candidate.title !== '' || candidate.blurb !== '')
-  if (naming.length < 3) {
+  if (naming.length < NAMING_MIN_CANDIDATES) {
     gaps.push({
       key: 'naming-candidates',
-      requirement: `书名/简介/标签备选 ≥3 组（当前 ${String(naming.length)} 组）`,
+      requirement: `书名/简介/标签备选 ≥${String(NAMING_MIN_CANDIDATES)} 组（当前 ${String(naming.length)} 组）`,
       fill: 'novel_plan operation="naming"',
     })
   }

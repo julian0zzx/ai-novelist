@@ -153,17 +153,95 @@ export function complianceChecklist(chapter: Chapter): { readonly key: string; r
   ]
 }
 
+/** How far apart the two halves of a contrast frame may sit, in characters. */
+const CONTRAST_GAP = 24
+
+/**
+ * The contrastive sentence shapes that read as machine-written.
+ *
+ * 「不是 A，是 B」 and 「是 A，不是 B」 are the most recognisable AI tells in Chinese
+ * web-novel prose: the correction frame sounds like an argument being made rather
+ * than a scene being shown, and a model reaching for emphasis produces it several
+ * times a chapter with the same rhythm every time. They are *countable*, which is
+ * the point of listing them here rather than leaving them to a judge: the four
+ * statistical checks above cannot see them (they are neither long paragraphs nor
+ * repeated openings — the sentence heads differ), so a chapter can be full of the
+ * pattern and pass every other rule on this list.
+ *
+ * Two readings per entry: the label the report uses, and the pattern. The gap
+ * between the two halves is capped at {@link CONTRAST_GAP} characters so a "不是"
+ * in one sentence and a "是" three sentences later is not counted as one device —
+ * the frame only reads as a frame when the two halves sit in one breath. The list
+ * is ordered most specific first, and a match consumes its span (see
+ * {@link contrastFrames}), because 「不是钱，而是名单」 is one device, not one
+ * 「不是……而是……」 plus one 「不是……是……」.
+ */
+export const CONTRAST_PATTERNS: readonly { readonly label: string; readonly pattern: RegExp }[] = [
+  { label: '与其说……不如说……', pattern: new RegExp(`与其说[^。！？!?\\n]{0,${String(CONTRAST_GAP)}}?不如说`, 'gu') },
+  { label: '不是……而是……', pattern: new RegExp(`不是[^。！？!?\\n]{0,${String(CONTRAST_GAP)}}?而是`, 'gu') },
+  { label: '不是……是……', pattern: new RegExp(`不是[^。！？!?\\n]{0,${String(CONTRAST_GAP)}}?[，,][^。！？!?\\n]{0,12}?是`, 'gu') },
+  { label: '是……不是……', pattern: new RegExp(`是[^。！？!?\\n]{0,${String(CONTRAST_GAP)}}?[，,][^。！？!?\\n]{0,12}?不是`, 'gu') },
+]
+
+/**
+ * How many times the contrast frame has to repeat before the report names it.
+ *
+ * One is a sentence an author may have wanted; two is the same device twice, which
+ * is where a chapter starts sounding like it was written by one process rather than
+ * by a person. The floor is deliberately this low because this pattern is the
+ * symptom the SOP's 去 AI 化 step most often misses — the four statistical checks
+ * cannot see it at all.
+ */
+const CONTRAST_REPEAT_FLOOR = 2
+
+/** How many offending fragments the report quotes back, per report. */
+const CONTRAST_QUOTES = 2
+
+/**
+ * The contrast frames a body uses, by label, largest count first.
+ *
+ * A span already claimed by a more specific frame is not counted again, so one
+ * 「不是钱，而是名单」 reads as one device rather than two. The consumed ranges also
+ * keep a single long frame from being double-counted by the narrower patterns that
+ * sit inside it.
+ *
+ * @param body - the prose.
+ * @returns one entry per frame that fired, with its hits.
+ */
+export function contrastFrames(body: string): { readonly label: string; readonly hits: readonly string[] }[] {
+  let claimedUntil = -1
+  const found: { readonly label: string; readonly hits: string[] }[] = []
+  for (const entry of CONTRAST_PATTERNS) {
+    const hits: string[] = []
+    const scan = new RegExp(entry.pattern.source, entry.pattern.flags)
+    for (const match of body.matchAll(scan)) {
+      const start = match.index
+      // `matchAll` walks left to right, so a match starting before everything
+      // claimed so far is the only overlap there can be.
+      if (start < claimedUntil) continue
+      claimedUntil = start + match[0].length
+      hits.push(match[0].replace(/\s+/gu, ' ').trim())
+    }
+    if (hits.length > 0) found.push({ label: entry.label, hits })
+  }
+  return found.sort((left, right) => right.hits.length - left.hits.length)
+}
+
 /**
  * A short, mechanical style check for the SOP's 去 AI 化 step.
  *
  * Reports countable symptoms — paragraph length, dialogue density, repeated
- * sentence openings — rather than pretending to judge voice. The author decides
- * what to do with the numbers.
+ * sentence openings, the contrast frame, and the author's own forbidden phrases —
+ * rather than pretending to judge voice. The author decides what to do with the
+ * numbers. Everything reported here is a *number with a quote*, so a writer can
+ * act on it without a second call; nothing here calls prose good or bad.
  *
  * @param body - the chapter prose.
+ * @param taboos - the book's 负面清单, split into phrases; entries found in the
+ * body are reported by name. Empty when the outline has not written one.
  * @returns the observations, or an empty list for an empty body.
  */
-export function styleObservations(body: string): string[] {
+export function styleObservations(body: string, taboos: readonly string[] = []): string[] {
   if (body.trim() === '') return []
   const paragraphs = body.split(/\n\s*\n/u).filter((part) => part.trim() !== '')
   const sentences = body.split(/[。！？!?…]+/u).filter((part) => part.trim() !== '')
@@ -184,6 +262,35 @@ export function styleObservations(body: string): string[] {
   const worst = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
   if (worst !== undefined && worst[1] >= 4 && openings.length > 0) {
     observations.push(`以「${worst[0]}」开头的句子出现 ${String(worst[1])} 次，句式重复感明显`)
+  }
+  // The contrast frame and the author's own forbidden phrases are reported after
+  // the four thresholds, so the fixed order stays the order the SOP lists.
+  const frames = contrastFrames(body)
+  const repeated = frames.filter((frame) => frame.hits.length >= CONTRAST_REPEAT_FLOOR)
+  if (repeated.length > 0) {
+    const total = repeated.reduce((sum, frame) => sum + frame.hits.length, 0)
+    const quotes = repeated
+      .flatMap((frame) => frame.hits)
+      .slice(0, CONTRAST_QUOTES)
+      .map((hit) => `「${hit}」`)
+      .join('')
+    // The header names the device that fired, not a fixed one: a chapter whose only
+    // frames are 「不是……而是……」 must not be told it is full of 「不是……是……」.
+    const headline = repeated.length === 1
+      ? `「${repeated[0]?.label ?? ''}」对举句式共 ${String(total)} 处`
+      : `对举句式共 ${String(total)} 处`
+        + `（${repeated.map((frame) => `${frame.label} ${String(frame.hits.length)}`).join('，')}）`
+    observations.push(
+      `${headline}：${quotes}——这是最典型的 AI 味句式，改写成动作、画面或直接陈述`,
+    )
+  }
+  const banned = taboos.map((taboo) => taboo.trim()).filter((taboo) => taboo !== '')
+  const used = banned.filter((taboo) => body.includes(taboo))
+  if (used.length > 0) {
+    observations.push(
+      `命中本书《写作风格》负面清单 ${String(used.length)} 条：${used.map((taboo) => `「${taboo}」`).join('、')}`
+      + '——负面清单是这本书明令禁止的写法，逐条清掉',
+    )
   }
   return observations
 }

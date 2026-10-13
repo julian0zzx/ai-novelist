@@ -6,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Config, apply } from '../src/index.ts'
+import { STYLE_ARGS } from './style-fixture.ts'
 import { SOP_PHASES, addLaunchDecision, emptyNovel, nextStep, skeletonGate } from '../src/core/index.ts'
 
 /**
@@ -153,8 +154,9 @@ describe('the next step the state machine reports', () => {
   })
 
   it('reports the first SOP blocker when no hard gate is shut', async () => {
-    // The premise layer is signed off, so the checkpoint gate is open; what
-    // remains is the rest of phase one's own checklist.
+    // The premise layer is signed off, so the settings gate is open — but the
+    // 写作风格 block of the 全书大纲 is a second hard gate in front of the prose
+    // (SOP 3.6), and it is shut until the style is written.
     await call('novel_init', { title: '青云记' })
     await call('novel_confirm', {
       operation: 'discuss',
@@ -170,6 +172,13 @@ describe('the next step the state machine reports', () => {
     })
     await call('novel_confirm', { operation: 'confirm', kind: 'settings', summary: '立意定稿', note: '就这版' })
 
+    const styleShut = nextOf(await call('novel_status', {}))
+    expect(styleShut.blocked).toBe(true)
+    expect(styleShut.action).toMatch(/styleTone/u)
+
+    // With the style written too, no hard gate is shut and what remains is the
+    // rest of phase one's own checklist.
+    await call('novel_plan', { operation: 'outline', ...STYLE_ARGS })
     const status = await call('novel_status', {})
     const next = nextOf(status)
     expect(next.blocked).toBe(false)

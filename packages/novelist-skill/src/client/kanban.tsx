@@ -45,7 +45,7 @@ import { describe, readProject } from './project.ts'
 import type { ProjectRead, SessionId } from './project.ts'
 import { clientRemote, NO_REMOTE_MESSAGE } from './remote.ts'
 import { boardOf } from './board.ts'
-import type { BoardCard, KanbanBoard } from './board.ts'
+import type { BoardCard, DocumentCard, KanbanBoard } from './board.ts'
 
 /** Unique identity of this view among the conversation's views. */
 export const KANBAN_VIEW_ID = 'novel-kanban'
@@ -62,8 +62,9 @@ const VIEW_SLOT = 'conversation.view'
 /** Dictionaries. Simplified Chinese is the source of truth; English mirrors it key for key. */
 const zh = {
   'view.kanban': '看板',
-  'board.empty': '这个项目还没有章节。让 agent 用 novel_plan 写下章节细纲，卡片就会出现在这里。',
+  'board.empty': '这个项目还没有章节。让 agent 用 novel_plan 写下章节细纲，卡片就会出现在这里；上面的过程文档是它们的依据。',
   'board.columns': '章节看板',
+  'board.documents': '过程文档',
   'board.refresh': '重新读取',
   'board.reading': '正在读取小说项目…',
   'board.stale': '项目文档读取失败，下面是上一次读到的内容。',
@@ -80,14 +81,74 @@ const zh = {
   'board.written': '已写',
   'board.updated': '更新于',
   'board.settings': '设定确认',
-  'board.style': '文风确认',
+  'board.style': '文风复核',
   'board.confirmed': '已确认',
   'board.unconfirmed': '未确认',
-  'board.notDue': '第 1 章后',
+  'board.notDue': '黄金三章后',
+  'board.docMissing': '未开始',
+  'board.docDraft': '待确认',
+  'board.docConfirmed': '已完成',
+  'board.docGaps': '还缺',
+  'board.docGateProse': '卡住正文',
+  'board.docGateSkeleton': 'go 之后才做',
+  'board.docNext': '下一步',
+  'board.docUnits': '条',
+  'board.docVolumes': '卷',
+  'board.docChapters': '章',
+  'board.docFields': '项',
+  'doc.pitch.label': '立意与核心设定',
+  'doc.pitch.detail': '一句话记忆点、核心情绪、爽点清单、差异点、精神内核、篇幅四问',
+  'doc.pitch.next': 'novel_plan operation="pitch" 写立意；再与用户讨论并确认（novel_confirm kind="settings"）',
+  'doc.competitors.label': '竞品拆解',
+  'doc.competitors.detail': '同榜 20–50 本的拆解，落盘在 .novel/竞品拆解.md',
+  'doc.competitors.next': 'novel_plan operation="competitor" 每本一次',
+  'doc.naming.label': '候选书名',
+  'doc.naming.detail': '书名/简介/标签备选，验证阶段逐个测',
+  'doc.naming.next': 'novel_plan operation="naming"（至少 3 组）',
+  'doc.world.label': '世界观设定',
+  'doc.world.detail': '地点、势力、力量体系、物件、历史：每条都要写清代价与限制',
+  'doc.world.next': 'novel_bible kind="world"，写完与用户确认（novel_confirm kind="world"）',
+  'doc.cast.label': '人物设定',
+  'doc.cast.detail': '每位角色的身份、欲望、性格底色与说话方式；主角另需恐惧、执念、软肋与成长线',
+  'doc.cast.next': 'novel_bible kind="character"，写完与用户确认（novel_confirm kind="cast"）',
+  'doc.de-ai.label': '去 AI 化诊断',
+  'doc.de-ai.detail': '黄金三章成稿后逐章做模型评审：对照本书《写作风格》七要素与负面清单，给出原文引用、为什么像 AI、具体怎么改',
+  'doc.de-ai.next': 'novel_review operation="ai-flavor" chapterId=<章> 逐章诊断；只查了一部分时看板会点名还差哪几章。加 rewrite=true 另给一份改写提案，改完把整章重新 novel_write 覆盖',
+  'doc.outline.label': '全书大纲',
+  'doc.outline.detail': '故事梗概、主角/伙伴/反派成长线、阵营演变、对抗副本、得失，以及三幕与完整骨架',
+  'doc.outline.next': 'novel_plan operation="outline" 先把故事讲完整，再与用户确认这一层',
+  'doc.style.label': '写作风格',
+  'doc.style.detail': '文风基调、人称与视角、句式与节奏、遣词用句、对话与描写、情绪落点、负面清单',
+  'doc.style.next': 'novel_plan operation="outline" 的七个 style* 参数：写全之前 novel_write 拒绝写正文',
+  'doc.volumes.label': '分卷大纲',
+  'doc.volumes.detail': '每卷的独立目标、矛盾、阶段性高潮、卷末钩子、卷内节奏与叙事骨架',
+  'doc.volumes.next': 'novel_plan operation="volume" 每卷一次，再与用户确认（novel_confirm kind="volume"）',
+  'doc.beats.label': '爽点节拍表',
+  'doc.beats.detail': '每 3 章小爽点、每 10 章大爽点、每卷卷末爆点的落点',
+  'doc.beats.next': 'novel_plan operation="beat"',
+  'doc.opening.label': '开篇工程清单',
+  'doc.opening.detail': '前 300 字冲突、章末钩子、金手指亮相、前 10 章小高潮等逐项确认',
+  'doc.opening.next': 'novel_plan operation="opening"（不带 key 可以列出清单）',
+  'doc.launch.label': '上线决策',
+  'doc.launch.detail': '开篇包够不够格投入完整骨架：由人给 go / 改后再说 / 放弃',
+  'doc.launch.next': 'novel_plan operation="launch"（非 go 必须写 fallback 与 abandonIf）',
+  'doc.serial.label': '连载数据',
+  'doc.serial.detail': '平台读数、迭代记录与投入评估；按需抄录，不阻断连载',
+  'doc.serial.next': 'novel_assess operation="record" 抄读数，再 operation="evaluate" 拿裁决',
+  'doc.retro.label': '完本复盘',
+  'doc.retro.detail': '完本复盘、IP 素材与可复用模板',
+  'doc.retro.next': 'novel_repo operation="retro"',
 } as const
 
-/** The dictionary's key domain: what a `t` binding for this namespace accepts. */
-export type KanbanKey = keyof typeof zh
+/**
+ * The dictionary's key domain: what a `t` binding for this namespace accepts.
+ *
+ * Spelled as a union of the dictionary's own keys plus the document keys, which
+ * are generated from the documents' ids rather than listed: a new document in
+ * `./board.ts` brings three keys with it, and the type that says so is one line
+ * rather than a table that can fall out of step with the copy.
+ */
+export type KanbanKey = keyof typeof zh | `doc.${string}.${'label' | 'detail' | 'next'}`
 
 /**
  * The panel's translator, narrowed to this namespace's own keys.
@@ -109,8 +170,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** English dictionary, key for key with {@link zh}. */
 const en: Record<KanbanKey, string> = {
   'view.kanban': 'Kanban',
-  'board.empty': 'No chapters yet. Ask the agent to plan chapters with novel_plan and the cards appear here.',
+  'board.empty': 'No chapters yet. Ask the agent to plan chapters with novel_plan and the cards appear here; the process documents above are what they rest on.',
   'board.columns': 'Chapter board',
+  'board.documents': 'Process documents',
   'board.refresh': 'Refresh',
   'board.reading': 'Reading the novel project…',
   'board.stale': 'The project document could not be read; showing the last successful read.',
@@ -127,10 +189,63 @@ const en: Record<KanbanKey, string> = {
   'board.written': 'written',
   'board.updated': 'updated',
   'board.settings': 'Settings sign-off',
-  'board.style': 'Voice sign-off',
+  'board.style': 'Voice review',
   'board.confirmed': 'confirmed',
   'board.unconfirmed': 'not confirmed',
-  'board.notDue': 'after ch. 1',
+  'board.notDue': 'after the golden three',
+  'board.docMissing': 'not started',
+  'board.docDraft': 'awaiting sign-off',
+  'board.docConfirmed': 'complete',
+  'board.docGaps': 'still owes',
+  'board.docGateProse': 'blocks prose',
+  'board.docGateSkeleton': 'after the launch decision',
+  'board.docNext': 'Next',
+  'board.docUnits': 'entries',
+  'board.docVolumes': 'vols',
+  'board.docChapters': 'ch',
+  'board.docFields': 'fields',
+  'doc.pitch.label': 'Premise & core settings',
+  'doc.pitch.detail': 'The one-sentence memorable point, core emotion, payoff list, differentiators, kernel, and the four length questions',
+  'doc.pitch.next': 'novel_plan operation="pitch" for the premise, then discuss and confirm it with the author (novel_confirm kind="settings")',
+  'doc.competitors.label': 'Competitor study',
+  'doc.competitors.detail': '20–50 leaderboard titles dismantled, kept in .novel/竞品拆解.md',
+  'doc.competitors.next': 'novel_plan operation="competitor", once per title',
+  'doc.naming.label': 'Naming candidates',
+  'doc.naming.detail': 'Candidate title/blurb/tag sets, tested one by one at validation',
+  'doc.naming.next': 'novel_plan operation="naming" (at least 3 sets)',
+  'doc.world.label': 'World',
+  'doc.world.detail': 'Places, factions, power systems, items, history: every rule owes its cost and its limits',
+  'doc.world.next': 'novel_bible kind="world", then confirm the layer with the author (novel_confirm kind="world")',
+  'doc.cast.label': 'Cast',
+  'doc.cast.detail': 'Every character owes a role, a goal, a personality and a voice; the protagonist also fear, obsession, weakness and an arc',
+  'doc.cast.next': 'novel_bible kind="character", then confirm the layer with the author (novel_confirm kind="cast")',
+  'doc.de-ai.label': 'De-AI diagnosis',
+  'doc.de-ai.detail': 'Once the golden three chapters exist, one model review per chapter against the book’s 写作风格 and 负面清单, quoting the text, saying why it reads as machine-written, and how to fix it',
+  'doc.de-ai.next': 'novel_review operation="ai-flavor" chapterId=<chapter>, one per chapter; the board names the chapters still unreviewed. rewrite=true adds a rewritten draft; send the revision back through novel_write',
+  'doc.outline.label': 'Whole-book outline',
+  'doc.outline.detail': 'The story, the protagonist/companion/antagonist arcs, the factions, each confrontation and its cost, plus acts and the full skeleton',
+  'doc.outline.next': 'novel_plan operation="outline": tell the story whole, then confirm the layer',
+  'doc.style.label': 'Writing style',
+  'doc.style.detail': 'Tone, person and viewpoint, rhythm, diction, dialogue and description, emotional landing, negative list',
+  'doc.style.next': 'the seven style* parameters of novel_plan operation="outline"; novel_write refuses prose until all seven are written',
+  'doc.volumes.label': 'Volume outlines',
+  'doc.volumes.detail': 'Each volume: its own goal, conflict, stage climax, end hook, internal rhythm and narrative spine',
+  'doc.volumes.next': 'novel_plan operation="volume", once per volume, then confirm the layer (novel_confirm kind="volume")',
+  'doc.beats.label': 'Payoff schedule',
+  'doc.beats.detail': 'Where the small payoff every 3 chapters, the big one every 10 and the volume-end climax land',
+  'doc.beats.next': 'novel_plan operation="beat"',
+  'doc.opening.label': 'Opening checklist',
+  'doc.opening.detail': 'Conflict in the first 300 characters, chapter-end hooks, the golden finger on stage, the first small climax by chapter 10',
+  'doc.opening.next': 'novel_plan operation="opening" (omit key to list the checklist)',
+  'doc.launch.label': 'Launch decision',
+  'doc.launch.detail': 'Whether the opening package is worth building out: a human go / revise / abandon',
+  'doc.launch.next': 'novel_plan operation="launch" (a verdict that is not go must name fallback and abandonIf)',
+  'doc.serial.label': 'Serial data',
+  'doc.serial.detail': 'Platform readings, iterations and investment evaluations; transcribed on demand, blocking nothing',
+  'doc.serial.next': 'novel_assess operation="record" to transcribe a reading, then operation="evaluate" for the verdict',
+  'doc.retro.label': 'Retrospective',
+  'doc.retro.detail': 'The completion retrospective, IP assets and reusable templates',
+  'doc.retro.next': 'novel_repo operation="retro"',
 }
 
 /** Human labels for the lifecycle columns, in the panel's own language. */
@@ -190,6 +305,50 @@ const STYLE = {
   stat: { display: 'flex', flexDirection: 'column' as const, gap: '1px', minWidth: '54px' },
   statValue: { fontSize: '13px', fontWeight: 600 },
   blockers: { flexBasis: '100%', opacity: 0.7, lineHeight: 1.5 },
+  docs: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '6px',
+    // The process documents are what a project has *before* it has chapters, so
+    // the section is capped and scrolls rather than pushing the chapter columns
+    // off the pane — an author who wants the whole document row can scroll it,
+    // and the chapters stay where they were.
+    flex: '0 0 auto',
+    maxHeight: '46%',
+    minHeight: 0,
+  },
+  docRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '6px',
+    alignContent: 'flex-start' as const,
+    overflowY: 'auto' as const,
+    minHeight: 0,
+    paddingBottom: '2px',
+  },
+  doc: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '2px',
+    flex: '1 1 150px',
+    minWidth: '140px',
+    maxWidth: '240px',
+    padding: '5px 7px',
+    borderRadius: '5px',
+    background: 'color-mix(in srgb, currentColor 5%, transparent)',
+    border: '1px solid color-mix(in srgb, currentColor 12%, transparent)',
+  },
+  docOpen: { opacity: 0.62 },
+  docFoot: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '6px' },
+  docLabel: { fontWeight: 600, fontSize: '11px', whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis' },
+  docState: {
+    fontSize: '9px',
+    padding: '0 5px',
+    borderRadius: '999px',
+    border: '1px solid currentColor',
+    opacity: 0.8,
+    whiteSpace: 'nowrap' as const,
+  },
   boardHead: { display: 'flex', alignItems: 'center', gap: '8px' },
   board: {
     display: 'flex',
@@ -288,6 +447,112 @@ function useProject(sessionId: SessionId, workspaceRoot: string | undefined, att
 }
 
 /**
+ * One process document.
+ *
+ * The card is deliberately the *same size and shape* as a chapter card, because
+ * the two are the two halves of one pipeline and an author reads them together:
+ * the top row says what the document is and where it stands, the bottom row says
+ * how much of it exists, what it still owes, and — when it gates something — that
+ * it does.
+ *
+ * `next` is the card's tooltip rather than a line on the face of it: four lines of
+ * Chinese action text per card would turn a twelve-card row into a wall, and the
+ * tool is named for whoever goes looking.
+ *
+ * @param props - the document and the panel's translator.
+ * @returns the document card.
+ */
+function DocCard({ document, t }: { document: DocumentCard; t: Translator }): React.ReactNode {
+  const id = String(document.id)
+  const state =
+    document.state === 'confirmed'
+      ? t('board.docConfirmed')
+      : document.state === 'draft'
+        ? t('board.docDraft')
+        : t('board.docMissing')
+  const counts = countLabel(document, t)
+  const gate =
+    document.gates === 'prose'
+      ? t('board.docGateProse')
+      : document.gates === 'skeleton'
+        ? t('board.docGateSkeleton')
+        : undefined
+  const title = [t(`doc.${id}.detail`), `${t('board.docNext')}: ${t(`doc.${id}.next`)}`].join('\n')
+  return (
+    <div style={{ ...STYLE.doc, ...(document.state === 'confirmed' ? {} : STYLE.docOpen) }} title={title}>
+      <div style={STYLE.docFoot}>
+        <span style={STYLE.docLabel} title={t(`doc.${id}.label`)}>
+          {t(`doc.${id}.label`)}
+        </span>
+        <span style={STYLE.docState}>{state}</span>
+      </div>
+      {(counts !== undefined || gate !== undefined) && (
+        <div style={STYLE.docFoot}>
+          {counts !== undefined && <span style={STYLE.meta}>{counts}</span>}
+          {gate !== undefined && <span style={STYLE.warn}>{gate}</span>}
+        </div>
+      )}
+      {document.gaps.length > 0 && (
+        <span style={STYLE.meta} title={document.gaps.join('、')}>
+          {t('board.docGaps')} {document.gaps.slice(0, 3).join('、')}
+          {document.gaps.length > 3 ? ` +${String(document.gaps.length - 3)}` : ''}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * How much of one document exists, as the card's one number.
+ *
+ * `done / total` when the document has a complete size, the bare count when it
+ * does not (world facts and beats have no ceiling — "12 条" is the whole fact), and
+ * nothing where the document counts nothing at all: 立意 counts its fields, 大纲 its
+ * narrative elements, 分卷 its volumes, 竞品 its dismantled titles. The unit is chosen
+ * per document because the documents genuinely count different things.
+ *
+ * @param document - the document to describe.
+ * @param t - the panel's translator.
+ * @returns the label, or undefined when there is no number to show.
+ */
+function countLabel(document: DocumentCard, t: Translator): string | undefined {
+  const unit =
+    document.id === 'volumes'
+      ? t('board.docVolumes')
+      : document.id === 'outline' || document.id === 'style' || document.id === 'pitch'
+        ? t('board.docFields')
+        : t('board.docUnits')
+  if (document.total > 0) {
+    return `${String(document.done)}/${String(document.total)} ${unit}`
+  }
+  return document.done > 0 ? `${String(document.done)} ${unit}` : undefined
+}
+
+/**
+ * The process documents, as one row.
+ *
+ * This is the half of the board a project has before it has any chapters, which
+ * is why it renders unconditionally: four empty chapter columns say "nothing has
+ * been written", and the documents row says what *has* been decided.
+ *
+ * @param props - the documents and the panel's translator.
+ * @returns the section, or nothing when the project has no documents to show.
+ */
+function Documents({ documents, t }: { documents: readonly DocumentCard[]; t: Translator }): React.ReactNode {
+  if (documents.length === 0) return null
+  return (
+    <section style={STYLE.docs}>
+      <h2 style={STYLE.title}>{t('board.documents')}</h2>
+      <div style={STYLE.docRow}>
+        {documents.map((document) => (
+          <DocCard key={document.id} document={document} t={t} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+/**
  * One chapter card.
  *
  * @param props - the card and the panel's translator.
@@ -369,7 +634,7 @@ function Overview({ board, t }: { board: KanbanBoard; t: Translator }): React.Re
       label: t('board.style'),
       value: board.confirmations.styleConfirmed
         ? t('board.confirmed')
-        : board.confirmations.preProseConfirmed ? t('board.unconfirmed') : t('board.notDue'),
+        : board.styleDue ? t('board.unconfirmed') : t('board.notDue'),
     },
   ]
 
@@ -538,6 +803,7 @@ function Board({
         </button>
       </div>
       <Overview board={board} t={t} />
+      <Documents documents={board.documents} t={t} />
       {board.progress.chapters === 0 ? (
         <p style={STYLE.dim}>{t('board.empty')}</p>
       ) : (

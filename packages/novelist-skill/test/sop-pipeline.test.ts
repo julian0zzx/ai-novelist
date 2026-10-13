@@ -6,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Config, apply } from '../src/index.ts'
+import { STYLE_ARGS } from './style-fixture.ts'
 
 /**
  * The SOP pipeline, driven end to end through the eight tools.
@@ -135,16 +136,19 @@ async function confirmSettings(): Promise<void> {
   await confirmPremise()
   await confirmLayer('world', '世界观设定')
   await confirmLayer('cast', '人物设定')
+  // The 写作风格 block is part of the 全书大纲 layer and gates the prose, so a project
+  // that walks the pipeline far enough to write chapters has to write it first.
+  await call('novel_plan', { operation: 'outline', ...STYLE_ARGS })
   await confirmLayer('outline', '全书大纲')
   await confirmLayer('volume', '分卷大纲')
 }
 
-/** Close the voice checkpoint after chapter 1 exists. */
+/** Close the 文风复核 once the golden three chapters exist. */
 async function confirmStyle(): Promise<void> {
   await call('novel_confirm', {
     operation: 'discuss',
     kind: 'style',
-    proposal: '把第 1 章成稿交给你读：短句为主，对话推进，形容词少。',
+    proposal: '把黄金三章交给你读：短句为主，对话推进，形容词少。',
     feedback: '这个语感可以，别加解释性段落。',
     topics: ['文风'],
   })
@@ -232,6 +236,44 @@ describe('phase one: planning', () => {
     await call('novel_init', { title: '青云记' })
     const thin = await call('novel_bible', { kind: 'character', name: '林越', role: 'protagonist', goal: '上山' })
     expect((thin['warnings'] as string[]).join(' ')).toMatch(/恐惧|执念|软肋|成长线/)
+  })
+
+  it('reports the 写作风格 block when the outline is written, and warns while it is missing', async () => {
+    await call('novel_init', { title: '青云记' })
+    const bare = await callText('novel_plan', { operation: 'outline', logline: '少年上山' })
+    expect(bare).toContain('## 写作风格')
+    expect(bare).toContain('文风基调')
+    expect(bare).toMatch(/⬜.*文风基调/u)
+
+    const written = await callText('novel_plan', { operation: 'outline', ...STYLE_ARGS })
+    expect(written).toMatch(/✅.*文风基调/u)
+    expect(written).toMatch(/✅.*负面清单/u)
+  })
+
+  it('holds every character to 性格 and 说话方式, and names the thin ones on review', async () => {
+    await call('novel_init', { title: '青云记' })
+    // A name and a goal is all this one has: exactly the "不够丰满" case.
+    const thin = await call('novel_bible', { kind: 'character', name: '林越', role: 'protagonist', goal: '上山' })
+    expect((thin['warnings'] as string[]).join(' ')).toMatch(/性格|说话方式/)
+
+    // A walk-on with a role, a goal, a personality and a voice is complete.
+    const walkOn = await call('novel_bible', {
+      kind: 'character',
+      name: '守门弟子',
+      role: 'gatekeeper',
+      goal: '拦住上山的人',
+      personality: '死板，认规矩不认人',
+      voice: '一句话不问第二遍',
+    })
+    expect(((walkOn['warnings'] as string[] | undefined) ?? []).join(' ')).not.toMatch(/性格|说话方式/)
+
+    const review = await callText('novel_bible', { kind: 'review' })
+    expect(review).toMatch(/人物丰满度|缺要素/u)
+    expect(review).toMatch(/林越.*缺.*性格/u)
+
+    // …and the dashboard counts them, so it is a number rather than an impression.
+    const dashboard = await callText('novel_status', {})
+    expect(dashboard).toMatch(/人物不够丰满 1 位/u)
   })
 })
 
@@ -1011,11 +1053,12 @@ describe('phase six: promises, retrospective, and reuse', () => {
     await confirmSettings()
     await call('novel_write', { chapterId: 'chapter-1', body: '山门很高。' })
 
-    // The voice checkpoint is due the moment chapter 1 has prose, and the stage
+    // The 文风复核 is due once the golden three chapters have prose (here the book
+    // plans a single chapter, so that one chapter is the sample), and the stage
     // reports it rather than letting the book run on.
     const gated = await call('novel_status', {})
     expect(gated['stage']).toMatch(/serializing/)
-    expect((gated['blockers'] as string[]).join(' ')).toMatch(/确认文风/)
+    expect((gated['blockers'] as string[]).join(' ')).toMatch(/复核文风/)
     await confirmStyle()
 
     const before = await call('novel_status', {})

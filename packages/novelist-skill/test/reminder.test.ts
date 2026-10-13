@@ -6,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Config, apply } from '../src/index.ts'
+import { STYLE_ARGS } from './style-fixture.ts'
 import { evaluationReminder, emptyNovel, type NovelState } from '../src/core/index.ts'
 import { syncEvaluationReminder, REMINDER_TITLE } from '../src/host/reminder.ts'
 import { NovelStore } from '../src/host/store.ts'
@@ -154,7 +155,7 @@ async function closeLayer(kind: string, label: string): Promise<void> {
   await call('novel_confirm', { operation: 'confirm', kind, summary: `${label}定稿`, note: '可以' })
 }
 
-/** Close the voice checkpoint, which the stage machine holds open after chapter 1. */
+/** Close the 文风复核, which the stage machine holds open after the golden three. */
 async function closeStyle(): Promise<void> {
   await call('novel_confirm', { operation: 'discuss', kind: 'style', proposal: '第 1 章成稿', feedback: '语感可以' })
   await call('novel_confirm', { operation: 'confirm', kind: 'style', summary: '短句为主', note: '可以' })
@@ -179,7 +180,7 @@ async function serializingProject(): Promise<NovelState> {
     await call('novel_plan', { operation: 'competitor', title: `同榜书 ${String(index)}` })
   }
   await call('novel_plan', { operation: 'launch', verdict: 'go' })
-  await call('novel_plan', { operation: 'outline', logline: 'l', minimal: 'm', acts: ['a'], ...SPINE, full: true })
+  await call('novel_plan', { operation: 'outline', logline: 'l', minimal: 'm', acts: ['a'], ...SPINE, ...STYLE_ARGS, full: true })
   await call('novel_plan', {
     operation: 'volume',
     number: 1,
@@ -366,6 +367,9 @@ describe('the tool layer holds up its end', () => {
     await call('novel_init', { title: '青云记' })
     await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
     await closePremise()
+    // The 写作风格 block is what chapter 1 is written against, so the prose gate is
+    // only open once it exists (SOP 3.6).
+    await call('novel_plan', { operation: 'outline', ...STYLE_ARGS })
     fake.reset()
     fake.fail(true)
 

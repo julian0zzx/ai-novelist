@@ -7,6 +7,7 @@ import {
   addDiscussionRound,
   addEvaluation,
   addLaunchDecision,
+  addReview,
   assessStage,
   confirmationStanding,
   countWords,
@@ -29,6 +30,7 @@ import {
   upsertVolume,
   upsertWorld,
 } from '../src/core/index.ts'
+import { STYLE_BLOCK } from './style-fixture.ts'
 
 /** Fixed clock so every timestamp assertion is exact. */
 const at = (iso: string) => () => iso
@@ -446,7 +448,38 @@ function signLayerOff(
 function signSettingsOff(state: ReturnType<typeof emptyNovel>): ReturnType<typeof emptyNovel> {
   let next = signPremiseOff(state)
   for (const kind of ['world', 'cast', 'outline', 'volume'] as const) next = signLayerOff(next, kind)
-  return next
+  // The 写作风格 block belongs to the 全书大纲 layer and is a prose gate, so a
+  // fixture that walks past planning carries it (SOP 3.6).
+  return { ...next, outline: { ...next.outline, style: STYLE_BLOCK } }
+}
+
+/**
+ * Record one 去 AI 化 review, the way `novel_review` records its own.
+ *
+ * The receipt *is* the reviews ledger — the tool adds a `ReviewRecord` and nothing
+ * else — so a fixture that needs the gate open writes the same record rather than
+ * standing up a model route.
+ *
+ * @param state - the project.
+ * @returns the project with one review on the ledger.
+ */
+function deAiReviewed(state: ReturnType<typeof emptyNovel>): ReturnType<typeof emptyNovel> {
+  return addReview(
+    state,
+    {
+      id: 'review-1',
+      at: '2024-01-01T05:00:00.000Z',
+      kind: 'ai-flavor',
+      target: 'c1',
+      provider: 'test',
+      model: 'test',
+      promptVersion: 'review-rubric-2',
+      summary: '对举句偏多',
+      findings: [],
+      artifact: '',
+    },
+    at('2024-01-01T05:00:00.000Z'),
+  )
 }
 
 describe('assessStage', () => {
@@ -517,7 +550,7 @@ describe('assessStage', () => {
     expect(assessStage(signSettingsOff(pitchedWithCompetitors())).stage).toBe('opening-package')
   })
 
-  it('holds serialization at the voice checkpoint once chapter 1 has prose', () => {
+  it('holds serialization at the 文风复核 once the golden three have prose', () => {
     let state = withPitchAndCompetitors()
     // A complete skeleton answers the narrative spine as well as the structural
     // boxes: stage four is not finished while the outline cannot tell its story.
@@ -579,7 +612,7 @@ describe('assessStage', () => {
     }
     const gated = assessStage(state)
     expect(gated.stage).toBe('serializing')
-    expect(gated.blockers.join(' ')).toMatch(/确认文风/)
+    expect(gated.blockers.join(' ')).toMatch(/复核文风/)
 
     const signed = addConfirmation(
       state,
@@ -700,18 +733,42 @@ describe('proseGate', () => {
     expect(gate.next.join(' ')).toMatch(/kind="settings"/)
   })
 
-  it('lets chapter 1 through once the settings are signed, and holds chapter 2 at the voice', () => {
-    const signed = signSettingsOff(emptyNovel({ title: '青云记' }))
-    expect(proseGate(signed, 1).allowed).toBe(true)
-
-    const second = proseGate(signed, 2)
-    expect(second.allowed).toBe(false)
-    expect(second.reasons.join(' ')).toMatch(/确认文风/)
-    expect(second.next.join(' ')).toMatch(/kind="style"/)
+  it('refuses every chapter while the 写作风格 is unwritten, even with the settings signed', () => {
+    // The premise closes the setup; the style block is what chapter 1 is written
+    // against, so it is a second, independent gate in front of the prose.
+    const noStyle = signPremiseOff(emptyNovel({ title: '青云记' }))
+    const gate = proseGate(noStyle, 1)
+    expect(gate.allowed).toBe(false)
+    expect(gate.reasons.join(' ')).toMatch(/写作风格/u)
+    expect(gate.next.join(' ')).toMatch(/styleTone/u)
   })
 
-  it('opens the rest of the book once both checkpoints are closed', () => {
+  it('lets the golden three chapters through once the style is written, and holds chapter 4 at the review', () => {
+    const signed = signSettingsOff(emptyNovel({ title: '青云记' }))
+    expect(proseGate(signed, 1).allowed).toBe(true)
+    expect(proseGate(signed, 2).allowed).toBe(true)
+    expect(proseGate(signed, 3).allowed).toBe(true)
+
+    const fourth = proseGate(signed, 4)
+    expect(fourth.allowed).toBe(false)
+    expect(fourth.reasons.join(' ')).toMatch(/复核文风/)
+    expect(fourth.next.join(' ')).toMatch(/kind="style"/)
+  })
+
+  it('refuses past the golden three until a 去 AI 化 review is on the ledger', () => {
+    // The third hard gate, and the one the SOP's step 23 never used to leave a
+    // receipt for: the model could simply never call `novel_review`.
     let state = signSettingsOff(emptyNovel({ title: '青云记' }))
+    state = upsertChapter(state, { id: 'c1', number: 1, body: '山门很高。' }, at('2024-01-01T04:00:00.000Z'))
+    const gated = proseGate(state, 4)
+    expect(gated.allowed).toBe(false)
+    expect(gated.reasons.join(' ')).toMatch(/去 AI 化/u)
+    expect(gated.next.join(' ')).toMatch(/novel_review operation="ai-flavor"/u)
+    expect(proseGate(deAiReviewed(state), 4).reasons.join(' ')).not.toMatch(/去 AI 化/u)
+  })
+
+  it('opens the rest of the book once every checkpoint is closed', () => {
+    let state = deAiReviewed(signSettingsOff(emptyNovel({ title: '青云记' })))
     state = upsertChapter(state, { id: 'c1', number: 1, body: '山门很高。' }, at('2024-01-01T04:00:00.000Z'))
     state = addDiscussionRound(
       state,
@@ -724,6 +781,48 @@ describe('proseGate', () => {
       at('2024-01-01T06:00:00.000Z'),
     )
     expect(proseGate(state, 7)).toEqual({ allowed: true, reasons: [], next: [] })
+  })
+})
+
+describe('the 去 AI 化 receipt', () => {
+  /** A project whose golden three chapters have prose. */
+  function goldenWritten(): ReturnType<typeof emptyNovel> {
+    let state = signSettingsOff(emptyNovel({ title: '青云记' }))
+    for (const number of [1, 2, 3]) {
+      state = upsertChapter(state, { id: `c${String(number)}`, number, body: '山门很高。' }, at('2024-01-01T04:00:00.000Z'))
+    }
+    return state
+  }
+
+  it('is not due before the golden three have prose', () => {
+    const standing = confirmationStanding(signSettingsOff(emptyNovel({ title: '青云记' })))
+    expect(standing.deAi.due).toBe(false)
+    expect(standing.deAi.done).toBe(false)
+    expect(standing.deAi.unreviewed).toEqual([])
+    expect(standing.blockers.join(' ')).not.toMatch(/去 AI 化/u)
+  })
+
+  it('becomes due with the voice review, and is reported before it', () => {
+    const standing = confirmationStanding(goldenWritten())
+    expect(standing.deAi.due).toBe(true)
+    expect(standing.deAi.gatesProse).toBe(true)
+    expect(standing.deAi.unreviewed).toEqual([1, 2, 3])
+    // The diagnosis is what the author reads the three chapters against, so it is
+    // reported ahead of the voice review rather than after it.
+    const blockers = standing.blockers.join('\n')
+    expect(blockers.indexOf('去 AI 化')).toBeGreaterThanOrEqual(0)
+    expect(blockers.indexOf('去 AI 化')).toBeLessThan(blockers.indexOf('复核文风'))
+  })
+
+  it('is satisfied by one recorded review, and still names what it did not cover', () => {
+    const standing = confirmationStanding(deAiReviewed(goldenWritten()))
+    expect(standing.deAi.done).toBe(true)
+    expect(standing.deAi.target).toBe('c1')
+    // One review opens the gate; the other two golden chapters are reported as
+    // advisory, not as a refusal.
+    expect(standing.deAi.unreviewed).toEqual([2, 3])
+    expect(standing.blockers.join(' ')).toMatch(/部分黄金三章/u)
+    expect(proseGate(deAiReviewed(goldenWritten()), 4).reasons.join(' ')).not.toMatch(/去 AI 化/u)
   })
 })
 

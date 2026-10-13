@@ -27,7 +27,7 @@
  * `docs/sop.md` carries the long-form workflow and is checked against this value by
  * `test/sop-spec.test.ts`, so the prose revision and the code revision cannot part ways.
  */
-export const SOP_VERSION = '3.5'
+export const SOP_VERSION = '3.7'
 
 /** One phase of the SOP, bound to the derived {@link ProjectStage} it belongs to. */
 export interface SopPhase {
@@ -184,7 +184,7 @@ export const TOOL_SURFACE = {
     phase: "一/五",
     operations: ["status", "discuss", "confirm"],
     selector: "operation",
-    purpose: "the author checkpoints, with the settings settled one layer at a time in order (立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲 → 文风): a later layer is refused while an earlier one is open, `discuss` records one round carrying the user's own words (two rounds before the premise can be confirmed, one per later layer), and `confirm` needs both the approved summary and the author's own words in `note`",
+    purpose: "the author checkpoints, with the settings settled one layer at a time in order (立意 → 世界观 → 人物设定 → 全书大纲（含写作风格）→ 分卷大纲), and the 文风复核 after the golden three chapters: a later layer is refused while an earlier one is open, `discuss` records one round carrying the user's own words (two rounds before the premise can be confirmed, one per later layer), and `confirm` needs both the approved summary and the author's own words in `note`",
     summary:
         'The author checkpoints, and the record of the conversation that closes them. SETTINGS ARE SETTLED ONE LAYER AT '
         + 'A TIME, IN ORDER — 立意 (kind="settings" / "premise") → 世界观 (kind="world") → 人物设定 (kind="cast") → '
@@ -192,23 +192,29 @@ export const TOOL_SURFACE = {
         + 'said, have them confirm it, and only then start the next: a later layer is refused while an earlier one is '
         + 'still open, because handing the user the whole setup at once is the failure this ordering exists to prevent. '
         + 'kind="settings" is the pre-prose checkpoint (premise, memorable point, length plan, tone) and `novel_write` '
-        + 'refuses a chapter while it is missing; the layers after it are ordered but do not block chapter 1. '
-        + 'kind="style" is the sign-off on the prose voice, due after chapter 1 has prose and before chapter 2. '
+        + 'refuses a chapter while it is missing; the layers after it are ordered but do not block chapter 1 — with one '
+        + 'exception: the 写作风格 block belongs to the 全书大纲 layer, and `novel_write` refuses prose while any of its '
+        + 'seven elements is empty, because a voice chosen while writing chapter 1 is a voice the author never got to '
+        + 'steer. The 全书大纲 layer therefore cannot be confirmed either until that block is written. '
+        + 'kind="style" is the 文风复核 (review of the voice), due once the golden three chapters (第 1–3 章) have prose: '
+        + 'hand those chapters to the user and ask whether 文风/表达方式/遣词用句 need adjusting — if they do, write the '
+        + 'adjustment back into the outline and revise the affected chapters first — then record the round and confirm. '
+        + '`novel_write` refuses chapter 4 onward until that review is closed. '
         + 'operation="discuss" records ONE round: what you put in front of the user (`proposal`) and what the user actually '
         + 'answered (`feedback`). `feedback` is required and cannot be your own summary of the plan — a round without the '
         + 'user\'s words is refused, because that is exactly the failure this tool exists to prevent: the model deciding the '
         + 'setup alone and running on to chapters. The premise layer needs at least 2 such rounds before it can be '
-        + 'confirmed; every other layer, and the voice, needs 1. operation="confirm" records the author\'s sign-off with '
-        + 'the approved `summary` and the user\'s own words in `note` — both required, because only the author can close a '
-        + 'checkpoint: never confirm on their behalf, and never invent a round. operation="status" (default) reports where '
-        + 'every layer stands, and which one is next, without changing anything.',
+        + 'confirmed; every other layer, and the voice review, needs 1. operation="confirm" records the author\'s sign-off '
+        + 'with the approved `summary` and the user\'s own words in `note` — both required, because only the author can '
+        + 'close a checkpoint: never confirm on their behalf, and never invent a round. operation="status" (default) '
+        + 'reports where every layer stands, and which one is next, without changing anything.',
   },
   novel_plan: {
     name: "novel_plan",
     phase: "一/二/三/四",
     operations: ["competitor", "pitch", "world", "outline", "volume", "chapter", "beat", "opening", "naming", "launch"],
     selector: "operation",
-    purpose: "the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor dismantles land in `竞品拆解.md`; `fullOutline` and a volume's `detail` are measured against the layer's length budget (÷100 / ÷50 / ÷10) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition",
+    purpose: "the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor dismantles land in `竞品拆解.md`; the 写作风格 block of the 全书大纲 is written here and is the prose gate (七要素写全之前 novel_write 拒绝写正文); `fullOutline` and a volume's `detail` are measured against the layer's length budget (÷100 / ÷50 / ÷10) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition",
     summary:
         'The planning pipeline, in the SOP order. One operation per step; each feeds the next, and the tool reports what '
         + 'is still missing. '
@@ -218,9 +224,11 @@ export const TOOL_SURFACE = {
         + 'emotionCurve/paywallPoint/chapterHooks/commentKeywords/takeaway) · pitch=the one-sentence memorable point '
         + 'plus core emotion, payoff list, differentiators, kernel · world=one world rule (a rule without its cost and '
         + 'limit is flagged) · outline=logline, the narrative spine (synopsis=整本书的故事, 主角成长线, 伙伴成长线, 反派成长线, '
-        + '阵营演变, 对抗副本, 失去了什么, 获得了什么), the fullOutline skeleton, acts, the minimal viable outline, or the full '
-        + 'outline flag · volume=one volume, in the same order (本卷梗概, 主角成长, 反派成长, 阵营演变, 核心对抗, 代价与失去, '
-        + '收获与获得), then its goal, conflict, climax, end hook and 卷内节奏 detail · '
+        + '阵营演变, 对抗副本, 失去了什么, 获得了什么), the 写作风格 block (styleTone=文风基调, stylePerspective=人称与视角, '
+        + 'styleRhythm=句式与节奏, styleDiction=遣词用句, styleDialogue=对话与描写, styleEmotion=情绪与爽点落点, '
+        + 'styleTaboos=负面清单 — all seven are the prose gate), the fullOutline skeleton, acts, the minimal viable '
+        + 'outline, or the full outline flag · volume=one volume, in the same order (本卷梗概, 主角成长, 反派成长, 阵营演变, '
+        + '核心对抗, 代价与失去, 收获与获得), then its goal, conflict, climax, end hook and 卷内节奏 detail · '
         + 'chapter=one chapter contract (plot task, key turn, price paid, conflict, emotional payoff, '
         + 'information gap, beats, hook, target length) — the target is the finished length, and the chapter is drafted '
         + 'at 125% of it · beat=place a rhythm beat · '
@@ -233,9 +241,11 @@ export const TOOL_SURFACE = {
         + 'decision from becoming a formality. Platform numbers are never required here: the data check is '
         + '`novel_assess`, run on demand. '
         + 'AT EVERY OUTLINE LAYER THE ORDER OF BUSINESS IS FIXED: (1) tell the whole story — 梗概, 成长线, 阵营, 对抗副本, 得失; '
-        + '(2) say the 爽点/爆点 clearly and place them; (3) only then check the length. 体量是叙事完整性之上的要求，不是它的替代：'
+        + '(2) write the 写作风格 the story is told in; (3) say the 爽点/爆点 clearly and place them; (4) only then check '
+        + 'the length. 体量是叙事完整性之上的要求，不是它的替代：'
         + 'a layer whose narrative spine is incomplete is reported as incomplete before its word count is compared with the '
-        + 'ratio target, and a long outline does not pass by being long. Write the spine first, then the beats, then look at '
+        + 'ratio target, and a long outline does not pass by being long. Write the spine first, then the style, then the '
+        + 'beats, then look at '
         + 'the length line the tool prints for that layer (全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲 ≈ 单章字数/10). '
         + 'Soft gate: a call always succeeds, but when the SOP would not have you here yet the result carries warnings '
         + 'naming what is still missing. Read them before writing prose. '
@@ -243,23 +253,25 @@ export const TOOL_SURFACE = {
         + 'put it to the user, record their answer with novel_confirm operation="discuss", and have them confirm it '
         + '(operation="confirm") before starting the next layer — the tool warns when a layer is written before the one '
         + 'before it is confirmed, because a whole setup decided in one pass is the failure this ordering exists to '
-        + 'prevent. novel_write refuses prose until the premise layer is confirmed.',
+        + 'prevent. novel_write refuses prose until the premise layer is confirmed and the 写作风格 block is written.',
   },
   novel_bible: {
     name: "novel_bible",
     phase: "一/四/六",
     operations: ["character", "world", "link", "review"],
     selector: "kind",
-    purpose: "cast, world facts, reader promises, and their review",
+    purpose: "cast, world facts, reader promises, and their review. Every character owes 性格与说话方式 (a name with a goal and no voice is not a character); the review names the ones that are still thin",
     summary:
         'The story bible: cast, world facts, and reader promises. '
-        + 'kind="character" wants the SOP spine — goal, and for a protagonist also fear, obsession, weakness, growth arc. '
+        + 'kind="character" wants the SOP spine — role, goal, personality (性格底色与压力下的反应) and voice (说话方式: 句长、'
+        + '口头禅、称呼、情绪怎么外化) for EVERY character, and for a protagonist also fear, obsession, weakness and the '
+        + 'growth arc. 只有目标、没有性格与说话方式的人物在对话里等于没有人物，所以这两项是必填。 '
         + 'kind="world" states a rule with its cost and limits (a rule without them is flagged). '
         + 'kind="link" records a promise the reader is now waiting on: plant it, give it a due chapter, say how it pays '
         + 'off. Promises are what the SOP closes at volume end — an open promise whose due chapter is already written is '
         + 'reported as overdue. '
-        + 'kind="review" reports every gap across the bible: missing traits, rules without a price, and unrecovered or '
-        + 'overdue promises.',
+        + 'kind="review" reports every gap across the bible: missing traits (角色不够丰满 is reported character by '
+        + 'character), rules without a price, and unrecovered or overdue promises.',
   },
   novel_assess: {
     name: "novel_assess",
@@ -298,14 +310,18 @@ export const TOOL_SURFACE = {
     phase: "五 连载",
     operations: ["write", "read", "check"],
     selector: "operation",
-    purpose: "prose, the contract-delivery report, and the automatic 去 AI 化 statistics. The one hard gate in the pipeline: it refuses to write until the user has signed the premise layer off, and — after chapter 1 — the style",
+    purpose: "prose, the contract-delivery report, and the automatic 去 AI 化 statistics. The one hard gate in the pipeline: it refuses to write until the user has signed the premise layer off and the outline's 写作风格 is written, and — after the golden three chapters — until the user has reviewed the voice",
     summary:
         'Write or revise one chapter of prose against its outline contract. '
         + 'This is the ONE tool with a hard gate: it refuses to write while the user has not confirmed the settings '
-        + '(novel_confirm kind="settings"), and — after chapter 1 has prose — while the user has not confirmed the style '
-        + '(novel_confirm kind="style"). The user\'s inspiration is the starting point of a conversation, not a licence to '
-        + 'produce chapters: settle the setup with them first, show them chapter 1, hear the verdict on the voice, and only '
-        + 'then continue. The refusal message names the calls that open the gate. '
+        + '(novel_confirm kind="settings"), while the 写作风格 block of the 全书大纲 is not written out '
+        + '(novel_plan operation="outline" styleTone=… stylePerspective=… styleRhythm=… styleDiction=… styleDialogue=… '
+        + 'styleEmotion=… styleTaboos=…), and — once the golden three chapters (第 1–3 章) have prose — while the user has '
+        + 'not reviewed the voice (novel_confirm kind="style"): 黄金三章之后把正文交给用户读，'
+        + '问清表达方式与遣词用句要不要调整，要调就先改风格与已写章节，再确认，之后才写第 4 章。 '
+        + 'The user\'s inspiration is the starting point of a conversation, not a licence to '
+        + 'produce chapters: settle the setup with them first, and do not write chapter 1 with a voice nobody has seen. '
+        + 'The refusal message names the calls that open the gate. '
         + 'Send the COMPLETE chapter text — this replaces the body, it does not append. '
         + 'A first draft is written to 125% of the chapter\'s target length, because 去 AI 化 and hand-editing delete a '
         + 'large share of a draft; the finished chapter is then trimmed back to within -5%/+15% of the target the user '
@@ -332,8 +348,9 @@ export const TOOL_SURFACE = {
     purpose: "the derived SOP dashboard",
     summary:
         'The SOP dashboard, entirely derived from the project — nothing here is a second ledger you maintain by hand. '
-        + 'Reports the stage, what the next phase still needs, the two author checkpoints (设定确认 / 文风确认), chapter and '
-        + 'word counts, contract completeness, unpublished stock, promise recovery (including overdue), the latest reading '
+        + 'Reports the stage, what the next phase still needs, the two author checkpoints (设定确认 / 文风复核), chapter and '
+        + 'word counts, contract completeness, unpublished stock, promise recovery (including overdue), the 写作风格 block '
+        + 'of the outline and the characters that are still thin, the latest reading '
         + 'against its thresholds, and iterations still waiting for an outcome. '
         + 'detail="dashboard" (default) is the operating view; "bible" returns cast, world and promises; "plan" returns '
         + 'pitch, outline, volumes, beats, opening checklist and naming candidates; "chapter" with a chapterId returns one '

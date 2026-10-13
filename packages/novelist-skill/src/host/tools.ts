@@ -7,8 +7,8 @@
  * | tool | SOP phase | what it owns |
  * |---|---|---|
  * | `novel_init` | 一 策划 | project, platform, calibration medians, writing parameters |
- * | `novel_confirm` | 一/五 | the author checkpoints: the settings layers settled in order (立意 → 世界观 → 人物设定 → 全书大纲 → 分卷大纲), then the style sign-off after the first chapter |
- * | `novel_plan` | 一/二/三/四 | pitch, competitors, world, outline, volumes, beats, chapters, naming, the launch decision |
+ * | `novel_confirm` | 一/五 | the author checkpoints: the settings layers settled in order (立意 → 世界观 → 人物设定 → 全书大纲（含写作风格）→ 分卷大纲), then the 文风复核 after the golden three chapters |
+ * | `novel_plan` | 一/二/三/四 | pitch, competitors, world, outline (写作风格 included), volumes, beats, chapters, naming, the launch decision |
  * | `novel_bible` | 一/四/六 | cast, world facts, reader promises, and their review |
  * | `novel_write` | 五 连载 | prose plus the contract-delivery report |
  * | `novel_assess` | 五 按需 | the on-demand investment evaluation: readings in, verdict out |
@@ -44,17 +44,24 @@ import {
   CHAPTER_STATUSES,
   CONFIRMATION_KINDS,
   CONFIRMATION_MIN_ROUNDS,
+  COMPETITOR_TARGET,
   CONTRACT_FIELDS,
+  GOLDEN_CHAPTERS,
   LENGTH_BENCHMARKS,
   LINK_STATUSES,
   METRIC_KEYS,
+  NAMING_MIN_CANDIDATES,
   OUTLINE_SPINE_PARTS,
+  OUTLINE_STYLE_FIELDS,
+  OUTLINE_STYLE_PARTS,
   PLATFORM_AUDIENCES,
   PLATFORM_MODES,
   REVIEW_KINDS,
   REVIEW_PROMPT_VERSION,
   SETTINGS_LAYERS,
+  SPINE_LABELS,
   STYLE_GATE_CHAPTER,
+  styleParamName,
   TOOL_SURFACE,
   VOLUME_SPINE_PARTS,
   WRITING_PLAN_QUESTIONS,
@@ -110,6 +117,8 @@ import {
   outlinePayoffGaps,
   outlineSpineGaps,
   outlineSpineValues,
+  outlineStyleGaps,
+  outlineStyleValues,
   parseReviewOutput,
   progressOf,
   proseGate,
@@ -124,6 +133,7 @@ import {
   stageLabel,
   styleGateReached,
   styleObservations,
+  styleTabooPhrases,
   tallyAssessments,
   updateBaselines,
   updateMeta,
@@ -325,21 +335,45 @@ function layerForKind(
 function layerBrief(key: SettingsLayerKey): string {
   switch (key) {
     case 'premise':
-      return '书名、一句话立意与唯一记忆点、核心情绪、爽点清单、差异点、精神内核、篇幅四问（总字数/单章字数/分卷）、文风基调与书名简介标签备选。'
+      return '书名、一句话立意与唯一记忆点、核心情绪、爽点清单、差异点、精神内核、篇幅四问（总字数/单章字数/分卷）、书名简介标签备选。'
+        + '这里只定一句「读起来大概是什么味道」；详细的写作风格（基调、人称与视角、句式与节奏、遣词用句、对话与描写、情绪落点、负面清单）'
+        + '留到「全书大纲」那一层，与故事一起交给用户。'
     case 'world':
       return '只定影响冲突的规则：力量体系、代价、限制、阶层、核心矛盾、势力关系。每条规则都要能说出它花什么、禁什么——没有代价的规则生不出冲突。'
     case 'cast':
       return '主角的欲望/恐惧/执念/软肋/成长线，主要配角阵营，反派动机，人物关系与冲突体系，金手指的规则、限制与成长曲线。'
+        + '每位出场人物都要有 role（身份/阵营）、goal（要什么）、personality（性格底色与压力下的反应）、voice（说话方式：句长、口头禅、称呼、情绪怎么外化）——'
+        + '只有名字和目标的人物在对话里等于没有人物；主角另需 fear/obsession/weakness/growthArc。'
+        + '用 novel_bible kind="review" 可以点名谁还不够丰满。'
     case 'outline':
       return '先讲完整故事：故事梗概（从开头到结局）、主角成长线、伙伴成长线、反派成长线、阵营演变、对抗副本（每一场怎么打、奇遇在哪）、失去了什么、获得了什么。'
+        + '再定写作风格七要素：文风基调、人称与视角、句式与节奏、遣词用句、对话与描写、情绪与爽点落点、负面清单——这一版是第 1 章起笔的依据，'
+        + '正文只能按它写（没写全时 novel_write 会拒绝写正文）。'
         + '再讲爽点与爆点：每 3 章小爽点、每 10 章大爽点、每卷卷末爆点，落到章位上。最后才是体量：全书大纲 ≈ 总字数 ÷ 100。'
-        + '三样按这个顺序报，故事没讲完就先不核字数。'
+        + '四样按这个顺序报，故事没讲完就先不核字数。'
     case 'volume':
       return '先讲完整这一卷的故事：本卷梗概、主角成长、反派成长、阵营演变、核心对抗、代价与失去、收获与获得。'
         + '再讲这一卷的爽点与卷末爆点：独立目标、独立矛盾、阶段性高潮、卷末钩子、卷内节奏，以及它覆盖的章数区间。最后才是体量：分卷大纲 ≈ 本卷字数 ÷ 50。'
     default:
       return ''
   }
+}
+
+/**
+ * The Chinese names of the cast fields `castGaps` reports.
+ *
+ * The gap check speaks in field keys because that is what it tests; the author
+ * reads 性格 and 说话方式. One map keeps the two from drifting.
+ */
+const CAST_FIELD_LABELS: Readonly<Record<string, string>> = {
+  role: '身份/阵营',
+  goal: '欲望',
+  personality: '性格',
+  voice: '说话方式',
+  fear: '恐惧',
+  obsession: '执念',
+  weakness: '软肋',
+  growthArc: '成长线',
 }
 
 /**
@@ -507,11 +541,18 @@ function verdictLabelOf(verdict: VerdictLevel): string {
  * edits the prose, and a revised draft goes back through `novel_write`
  * `operation="write"`.
  *
+ * The book's own 写作风格 travels with the statistics, both as the standard the
+ * count is made against (the 负面清单 is searched phrase by phrase) and as a
+ * reminder printed under them: a chapter handed back with four numbers and no
+ * mention of the voice it was supposed to be written in is a chapter whose voice
+ * nobody is holding it to.
+ *
  * @param body - the accumulator the calling tool is building.
  * @param prose - the chapter text to scan.
+ * @param taboos - the outline's 负面清单 text.
  */
-function pushStyleHints(body: string[], prose: string): void {
-  const observations = styleObservations(prose)
+function pushStyleHints(body: string[], prose: string, taboos: string): void {
+  const observations = styleObservations(prose, styleTabooPhrases(taboos))
   if (observations.length === 0) return
   body.push('', '## 去 AI 化提示（机械统计，不是评价）')
   for (const observation of observations) body.push(`- ${observation}`)
@@ -863,7 +904,7 @@ export function registerTools(
         })
 
         if (next.naming.length > 0 && next.naming.length < 3) {
-          warnings.push(`书名/简介/标签备选 ${String(next.naming.length)}/3：SOP 要求至少 3 组，验证阶段要逐个测`)
+          warnings.push(`书名/简介/标签备选 ${String(next.naming.length)}/${String(NAMING_MIN_CANDIDATES)}：SOP 要求至少 ${String(NAMING_MIN_CANDIDATES)} 组，验证阶段要逐个测`)
         }
         // The length numbers are the author's, so an unanswered one is reported as
         // a question to put to them, not as a value to assume.
@@ -922,7 +963,8 @@ export function registerTools(
           enum: [...CONFIRMATION_KINDS],
           description:
             'Which layer is being settled. settings/premise = 立意与核心设定 (the pre-prose checkpoint) · world = 世界观设定 · '
-            + 'cast = 人物设定 · outline = 全书大纲 · volume = 分卷大纲 · style = 文风（第 1 章之后）.',
+            + 'cast = 人物设定 · outline = 全书大纲（含写作风格七要素）· volume = 分卷大纲 · '
+            + `style = 文风复核（黄金三章即成稿之后，问用户表达方式与遣词用句要不要调整）.`,
         },
         proposal: {
           type: 'string',
@@ -1002,15 +1044,35 @@ export function registerTools(
           const standing = confirmationStanding(state)
           if (layer === undefined) {
             const confirmed = standing.style
-            body.push(`## 文风确认（style）`)
+            body.push(`## 文风复核（style，黄金三章之后）`)
+            // The style now lives in the 全书大纲 layer, so the review can only
+            // happen once that block exists; the prose gate reports both of these
+            // as blockers between here and chapter 1.
+            const gate = proseGate(state, 1)
+            for (const reason of gate.reasons) body.push(`- ⛔ ${reason}`)
             if (!standing.preProseConfirmed) {
               body.push(
-                `- 设定尚未确认：正文要等「${standing.nextLayer?.label ?? '设定'}」这一层关掉之后才写`,
+                `- 立意这一层还没关：正文要等「${standing.nextLayer?.label ?? '立意与核心设定'}」关掉之后才写`,
                 `  下一步：novel_confirm operation="discuss" kind="${standing.nextLayer?.kind ?? 'settings'}"（写好用户的原话）`,
               )
             }
-            body.push(`- 已确认：${confirmed === undefined ? '否' : `是（${confirmed.at}）`}`)
+            const styleGaps = outlineStyleGaps(state.outline)
             body.push(
+              '',
+              `## 全书大纲里的《写作风格》（novel_plan operation="outline"）`,
+              ...narrativeReport(OUTLINE_STYLE_PARTS, outlineStyleValues(state.outline)),
+            )
+            if (styleGaps.length > 0) {
+              body.push(
+                '',
+                `还缺 ${String(styleGaps.length)} 项，` +
+                  `${styleGaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}——`
+                  + '这七项补齐之前 novel_write 不会写正文，第 1 章的语感就是模型自己挑的。',
+              )
+            }
+            body.push(
+              '',
+              `- 已复核：${confirmed === undefined ? '否' : `是（${confirmed.at}）`}`,
               `- 本次确认前需记录 ${String(CONFIRMATION_MIN_ROUNDS.style)} 轮讨论，当前 ${String(standing.styleRounds)} 轮`,
             )
             if (confirmed !== undefined) {
@@ -1028,15 +1090,24 @@ export function registerTools(
                 )
               })
             }
-            const gateWritten = Object.values(state.chapters).some(
-              (chapter) => chapter.number <= STYLE_GATE_CHAPTER && chapter.body.trim() !== '',
-            )
-            if (!gateWritten) {
+            if (!styleGateReached(state)) {
               body.push(
                 '',
                 `## 下一步`,
-                `文风确认在第 ${String(STYLE_GATE_CHAPTER)} 章成稿之后进行：先写第 ${String(STYLE_GATE_CHAPTER)} 章（设定已确认的前提下），`,
-                '再把正文交给用户读，听取对文风/语感的意见，记录一轮讨论后确认。',
+                `文风复核在黄金三章（第 1–${String(GOLDEN_CHAPTERS)} 章）成稿之后进行：先把这三章按全书大纲的《写作风格》写出来，`,
+                '再把正文交给用户读，问清语感、表达方式、遣词用句要不要调整——记录一轮讨论后确认。',
+              )
+            } else if (confirmed === undefined) {
+              body.push(
+                '',
+                '## 下一步（黄金三章已成稿）',
+                `1. 把第 1–${String(GOLDEN_CHAPTERS)} 章正文交给用户读，直接问：文风/表达方式/遣词用句要不要调整？`,
+                '2. 要调整：先把调整写回全书大纲的《写作风格》'
+                + `（novel_plan operation="outline" ${OUTLINE_STYLE_FIELDS.map((field) => `${styleParamName(field)}=…`).join(' ')}），`
+                + '再用 novel_write 把受影响的章节改一遍（status="revised"）。',
+                '3. 用 novel_confirm operation="discuss" kind="style" 记下用户的原话（不调整也要记，写下「不用改」的理由）。',
+                '4. 用户认可后 operation="confirm"：summary 写调整后的文风基准（后续章节按它写），note 写用户原话。',
+                `未复核之前 novel_write 会拒绝写第 ${String(STYLE_GATE_CHAPTER + 1)} 章。`,
               )
             }
             return
@@ -1084,6 +1155,22 @@ export function registerTools(
             layerBrief(layer.key),
             '每轮用 operation="discuss" 记下用户的原话；用户认可后再 operation="confirm"（summary = 他认可的版本）。',
           )
+          // A cast layer can be "confirmed" while half its entries are names with
+          // a goal attached. Naming them here is the whole point of the check:
+          // thin characters are only visible when something counts them.
+          if (layer.key === 'cast') {
+            const thin = castGaps(state)
+            if (thin.length > 0) {
+              body.push('', `## 人物丰满度（${String(thin.length)} 位还欠要素）`)
+              for (const gap of thin) {
+                body.push(`- ${gap.name}（${gap.id}）缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`)
+              }
+              body.push(
+                '缺 personality / voice 的人物在对话里等于没有人物：先把性格底色与说话方式写进《人物设定》，'
+                + '再谈这一层的确认（novel_bible kind="character"）。',
+              )
+            }
+          }
         }
 
         if (operation === 'status') {
@@ -1095,7 +1182,7 @@ export function registerTools(
           return {
             ok: false,
             operation: 'status',
-            detail: `${layer === undefined ? '文风' : layer.label}确认：${confirmed ? '已确认' : '未确认'}`,
+            detail: `${layer === undefined ? '文风复核' : layer.label}确认：${confirmed ? '已确认' : '未确认'}`,
             ...envelope(current, warnings),
             body,
           }
@@ -1125,6 +1212,16 @@ export function registerTools(
           const rounds = layer === undefined ? standing.styleRounds : (entry?.rounds ?? 0)
           const need = CONFIRMATION_MIN_ROUNDS[layer?.kind ?? 'style']
           describeStanding(next)
+          if (layer === undefined) {
+            body.push(
+              '',
+              'style 这一轮记的是用户读过黄金三章之后对文风/表达方式/遣词用句的原话。'
+              + '如果用户要求调整：先把调整写回全书大纲的《写作风格》'
+              + `（novel_plan operation="outline" ${OUTLINE_STYLE_FIELDS.map((field) => `${styleParamName(field)}=…`).join(' ')}），`
+              + '再用 novel_write 把受影响的章节改一遍（status="revised"），然后才 confirm。'
+              + '用户说「不用改」也要把理由写进这轮 feedback——不然这条记录证明不了他读过。',
+            )
+          }
           if (rounds < need) {
             body.push('', `还差 ${String(need - rounds)} 轮讨论才能确认：把用户的意见消化进这一层，再问一轮。`)
           } else {
@@ -1134,7 +1231,7 @@ export function registerTools(
           return {
             ok: true,
             operation: 'discuss',
-            detail: `${layer === undefined ? '文风' : layer.label}讨论第 ${String(rounds)} 轮已记录`,
+            detail: `${layer === undefined ? '文风复核' : layer.label}讨论第 ${String(rounds)} 轮已记录`,
             ...envelope(next, warnings),
             body,
           }
@@ -1151,19 +1248,31 @@ export function registerTools(
         const need = CONFIRMATION_MIN_ROUNDS[layer?.kind ?? 'style']
         if (rounds < need) {
           throw new NovelInputError(
-            `${layer === undefined ? '文风' : layer.label}确认还差 ${String(need - rounds)} 轮与用户的讨论：`
+            `${layer === undefined ? '文风复核' : layer.label}确认还差 ${String(need - rounds)} 轮与用户的讨论：`
             + `先用 novel_confirm operation="discuss" kind="${entry?.kind ?? 'style'}" 记录每一轮（要写用户的原话），`
             + '确认要建立在这些轮次上，而不是直接宣布。',
           )
         }
         if (recordKind === 'style') {
-          const gateWritten = Object.values(current.chapters).some(
-            (chapter) => chapter.number <= STYLE_GATE_CHAPTER && chapter.body.trim() !== '',
-          )
-          if (!gateWritten) {
+          if (!styleGateReached(current)) {
             throw new NovelInputError(
-              `文风确认要等第 ${String(STYLE_GATE_CHAPTER)} 章成稿：先把第 ${String(STYLE_GATE_CHAPTER)} 章写出来交给用户读，`
-              + '再确认文风。',
+              `文风复核要等黄金三章（第 1–${String(GOLDEN_CHAPTERS)} 章）成稿：先把这三章按全书大纲的《写作风格》写出来，`
+              + '交给用户读过、问清表达方式与遣词用句要不要调整，再确认。',
+            )
+          }
+        }
+        if (recordKind === 'outline') {
+          // The style block is part of this layer, and `novel_write` refuses prose
+          // until all of it is written. Confirming the layer without it would
+          // record "the outline is settled" over a book that has no voice.
+          const styleGaps = outlineStyleGaps(current.outline)
+          if (styleGaps.length > 0) {
+            throw new NovelInputError(
+              `全书大纲还缺《写作风格》${String(styleGaps.length)} 项：`
+              + `${styleGaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}。`
+              + '写作风格是这一层的一部分，也是正文的语感基准：'
+              + `先用 novel_plan operation="outline" ${OUTLINE_STYLE_FIELDS.map((field) => `${styleParamName(field)}=…`).join(' ')} `
+              + '补齐，与用户谈过之后再确认「全书大纲」。',
             )
           }
         }
@@ -1199,12 +1308,25 @@ export function registerTools(
           rounds: total,
         }
         const next = await store.update((state) => addConfirmation(state, confirmation, now))
+        // Confirming a cast that still has thin entries is allowed — the author may
+        // have a reason — but it is said out loud, because "有些角色不够丰满" is
+        // exactly the finding a silent sign-off would bury.
+        if (recordKind === 'cast') {
+          const thin = castGaps(next)
+          if (thin.length > 0) {
+            warnings.push(
+              `人物设定里还有 ${String(thin.length)} 位角色不够丰满：`
+              + thin.map((gap) => `${gap.name}（缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}）`).join('；')
+              + '——先补 personality 与 voice，再往下写正文，否则人物在对话里会串味。',
+            )
+          }
+        }
         describeStanding(next)
         const remaining = confirmationStanding(next).nextLayer
         body.push('', '## 已关闭的关卡')
         body.push(
           layer === undefined
-            ? '文风已经用户确认：可以继续写下一章了。文风再调要重新讨论并确认。'
+            ? `文风复核已经用户确认：第 ${String(STYLE_GATE_CHAPTER + 1)} 章起按这一版文风基准写（再调就重新讨论并确认）。`
             : layer.kind === 'premise'
               ? '立意已经用户确认：正文可以开写了，但设定还没谈完。'
               : `「${layer.label}」已经用户确认。`,
@@ -1226,7 +1348,7 @@ export function registerTools(
         return {
           ok: true,
           operation: 'confirm',
-          detail: `${layer === undefined ? '文风' : layer.label}已确认（${String(total)} 轮讨论）`,
+          detail: `${layer === undefined ? '文风复核' : layer.label}已确认（${String(total)} 轮讨论）`,
           ...envelope(next, warnings),
           body,
         }
@@ -1328,6 +1450,39 @@ export function registerTools(
         mainConflict: {
           type: 'string',
           description: 'volume: 核心对抗 — this volume\'s central confrontation as a story: how it ignites and how it is settled.',
+        },
+        styleTone: {
+          type: 'string',
+          description:
+            'outline: 文风基调 — one line on what the book *reads like*, with two or three 「像这样写」 sample sentences. Part of '
+            + 'the `## 写作风格` block of 全书大纲.md.',
+        },
+        stylePerspective: {
+          type: 'string',
+          description:
+            'outline: 人称与视角 — 第几人称、镜头贴谁、能不能切视角、镜头远近。Must agree with the `pov` settled at novel_init.',
+        },
+        styleRhythm: {
+          type: 'string',
+          description: 'outline: 句式与节奏 — 长短句比例、段落长度、断句与单句成段用在哪。',
+        },
+        styleDiction: {
+          type: 'string',
+          description: 'outline: 遣词用句 — 用词层级（书面/口语/方言/网络语）、称呼习惯、比喻与意象密度、禁用的词。',
+        },
+        styleDialogue: {
+          type: 'string',
+          description: 'outline: 对话与描写 — 对话占比、内心戏怎么落地、动作与环境描写的密度与顺序。',
+        },
+        styleEmotion: {
+          type: 'string',
+          description: 'outline: 情绪与爽点落点 — 情绪落在哪些可观察的细节上、爽点怎么给、每章收尾时读者该有什么感受。',
+        },
+        styleTaboos: {
+          type: 'string',
+          description:
+            'outline: 负面清单 — 本书明令禁止的写法：AI 味句式、翻译腔、滥用副词与形容词、章末总结、把情绪直接说出来…… '
+            + 'These seven style fields are the prose gate: novel_write refuses to write while any of them is empty.',
         },
         keyBeat: {
           type: 'string',
@@ -1441,7 +1596,7 @@ export function registerTools(
             }))
             detail = `已拆解竞品「${title}」（第 ${String(next.competitors.length)} 本）`
             if (next.competitors.length < 20) {
-              warnings.push(`竞品拆解 ${String(next.competitors.length)}/20：SOP 要求 20–50 本才看得清赛道`)
+              warnings.push(`竞品拆解 ${String(next.competitors.length)}/${String(COMPETITOR_TARGET)}：SOP 要求 ${String(COMPETITOR_TARGET)}–50 本才看得清赛道`)
             }
             break
           }
@@ -1506,6 +1661,26 @@ export function registerTools(
                   ...(args.conflictArcs !== undefined && { conflictArcs: args.conflictArcs }),
                   ...(args.costs !== undefined && { costs: args.costs }),
                   ...(args.gains !== undefined && { gains: args.gains }),
+                  ...(args.styleTone !== undefined
+                    || args.stylePerspective !== undefined
+                    || args.styleRhythm !== undefined
+                    || args.styleDiction !== undefined
+                    || args.styleDialogue !== undefined
+                    || args.styleEmotion !== undefined
+                    || args.styleTaboos !== undefined
+                    ? {
+                        style: {
+                          ...state.outline.style,
+                          ...(args.styleTone !== undefined && { tone: args.styleTone }),
+                          ...(args.stylePerspective !== undefined && { perspective: args.stylePerspective }),
+                          ...(args.styleRhythm !== undefined && { rhythm: args.styleRhythm }),
+                          ...(args.styleDiction !== undefined && { diction: args.styleDiction }),
+                          ...(args.styleDialogue !== undefined && { dialogue: args.styleDialogue }),
+                          ...(args.styleEmotion !== undefined && { emotion: args.styleEmotion }),
+                          ...(args.styleTaboos !== undefined && { taboos: args.styleTaboos }),
+                        },
+                      }
+                    : {}),
                   ...(args.fullOutline !== undefined && { fullOutline: args.fullOutline }),
                   ...(args.acts !== undefined && { acts: args.acts }),
                   ...(args.minimal !== undefined && { minimal: args.minimal }),
@@ -1527,10 +1702,22 @@ export function registerTools(
                 + `${spine.map((gap) => gap.key).join('、')}——先讲完故事，再看爽点与字数`,
               )
             }
-            // 2. Then the payoff schedule, checked against the story above.
+            // 2. Then the style the story is told in. It is the prose gate, so it is
+            // reported before the payoff schedule: no 爽点 lands if the voice is not
+            // decided, and `novel_write` will refuse until these seven are written.
+            const styleGaps = outlineStyleGaps(next.outline)
+            body.push('## 写作风格', ...narrativeReport(OUTLINE_STYLE_PARTS, outlineStyleValues(next.outline)))
+            if (styleGaps.length > 0) {
+              warnings.push(
+                `全书大纲的《写作风格》还缺 ${String(styleGaps.length)} 项：`
+                + `${styleGaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}——`
+                + '这七项是正文的语感基准，补齐之前 novel_write 会拒绝写正文',
+              )
+            }
+            // 3. Then the payoff schedule, checked against the story above.
             const payoff = outlinePayoffGaps(next.outline)
             if (payoff.length > 0) warnings.push(`爽点与爆点还没讲清：${payoff.join('、')}`)
-            // 3. Length last. The SOP budgets 全书大纲 at ~1/100 of the whole book.
+            // 4. Length last. The SOP budgets 全书大纲 at ~1/100 of the whole book.
             // Reported, not enforced: a thin outline is a soft disagreement, and
             // the author may have a reason for it.
             const fullLength = layerLengthCheck(
@@ -1803,7 +1990,7 @@ export function registerTools(
             }))
             detail = `候选物料「${candidate.title || id}」已记录`
             if (next.naming.length < 3) {
-              warnings.push(`书名/简介/标签备选 ${String(next.naming.length)}/3：SOP 要求至少 3 组，验证阶段要逐个测`)
+              warnings.push(`书名/简介/标签备选 ${String(next.naming.length)}/${String(NAMING_MIN_CANDIDATES)}：SOP 要求至少 ${String(NAMING_MIN_CANDIDATES)} 组，验证阶段要逐个测`)
             }
             break
           }
@@ -1889,7 +2076,19 @@ export function registerTools(
         id: { type: 'string', description: 'Slug of the entry; derived from name/note when omitted.' },
         name: { type: 'string', description: 'character/world: display name; required when creating.' },
         role: { type: 'string', description: 'character: protagonist | antagonist | foil | …' },
-        description: { type: 'string', description: 'character: appearance, voice, habits.' },
+        description: { type: 'string', description: 'character: appearance and habits — how they are recognised on the page.' },
+        personality: {
+          type: 'string',
+          description:
+            'character: 性格 — their 底色, their contradictions, and what they do under pressure. Required of every character: a '
+            + 'cast entry with a name and a goal and no personality is a name, not a character.',
+        },
+        voice: {
+          type: 'string',
+          description:
+            'character: 说话方式 — sentence length, catchphrases, how they address people, how feelings reach the surface. Required '
+            + 'of every character: it is what keeps two people in one dialogue distinguishable with no attributions.',
+        },
         goal: { type: 'string', description: 'character: what they want.' },
         fear: { type: 'string', description: 'character: what they are afraid of.' },
         obsession: { type: 'string', description: 'character: the obsession that makes them act against interest.' },
@@ -1930,7 +2129,14 @@ export function registerTools(
           body.push(`- 世界设定 ${String(Object.keys(current.world).length)} 条，缺代价/限制 ${String(world.length)} 条`)
           for (const gap of world) body.push(`  - ${gap.name}（${gap.id}）缺 ${gap.missing.join('、')}`)
           body.push(`- 人物 ${String(Object.keys(current.characters).length)} 位，缺要素 ${String(cast.length)} 位`)
-          for (const gap of cast) body.push(`  - ${gap.name}（${gap.id}）缺 ${gap.missing.join('、')}`)
+          for (const gap of cast) {
+            body.push(`  - ${gap.name}（${gap.id}）缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`)
+          }
+          if (cast.length > 0) {
+            body.push(
+              '  - 补法：novel_bible kind="character" id=… personality=… voice=…（性格底色与说话方式是「不够丰满」最常缺的两项）',
+            )
+          }
           body.push(
             `- 承诺未回收 ${String(progress.openLinks.length)} 条，逾期 ${String(progress.overdueLinks.length)} 条`,
           )
@@ -1948,6 +2154,8 @@ export function registerTools(
                 ...(args.name !== undefined && { name: args.name }),
                 ...(args.role !== undefined && { role: args.role }),
                 ...(args.description !== undefined && { description: args.description }),
+                ...(args.personality !== undefined && { personality: args.personality }),
+                ...(args.voice !== undefined && { voice: args.voice }),
                 ...(args.goal !== undefined && { goal: args.goal }),
                 ...(args.fear !== undefined && { fear: args.fear }),
                 ...(args.obsession !== undefined && { obsession: args.obsession }),
@@ -1963,7 +2171,13 @@ export function registerTools(
           const id = normalizeId(args.id) || normalizeId(args.name) || ''
           detail = `人物「${next.characters[id]?.name ?? id}」已写入（共 ${String(Object.keys(next.characters).length)} 位）`
           const gap = castGaps(next).find((entry) => entry.id === id)
-          if (gap !== undefined) warnings.push(`该人物缺 ${gap.missing.join('、')}：SOP 要求主角有欲望、恐惧、执念、软肋与成长线`)
+          if (gap !== undefined) {
+            warnings.push(
+              `该人物缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}：`
+              + 'SOP 要求每位人物都有身份/阵营、欲望、性格与说话方式，主角另需恐惧、执念、软肋与成长线——'
+              + '只有目标的人物在对话里等于没有人物',
+            )
+          }
         } else if (args.kind === 'world') {
           const next = await store.update((state) =>
             upsertWorld(
@@ -2573,7 +2787,7 @@ export function registerTools(
           }
           body.push('', report.summary)
           pushLengthReport(body, chapter)
-          pushStyleHints(body, chapter.body)
+          pushStyleHints(body, chapter.body, current.outline.style.taboos)
           return {
             ok: report.missed.length === 0,
             operation: 'check',
@@ -2627,7 +2841,7 @@ export function registerTools(
         }
         if (report.unplanned.length > 0) body.push('', `细纲本身没写：${report.unplanned.join('、')}`)
         pushLengthReport(body, written)
-        pushStyleHints(body, written.body)
+        pushStyleHints(body, written.body, next.outline.style.taboos)
         if (args.status === 'final') {
           const blockers = blockersToFinal(written)
           if (blockers.length > 0) {
@@ -2696,6 +2910,8 @@ export function registerTools(
           body.push('## 人物')
           for (const character of Object.values(state.characters)) {
             body.push(`- ${character.name}（${character.id}，${character.role || '角色'}）：${character.goal || '（无目标）'}`)
+            body.push(`  性格：${character.personality || '（未写——人物不够丰满的常见原因）'}`)
+            body.push(`  说话方式：${character.voice || '（未写）'}`)
             if (character.obsession !== '') body.push(`  执念：${character.obsession}`)
             if (character.weakness !== '') body.push(`  软肋：${character.weakness}`)
           }
@@ -2721,9 +2937,14 @@ export function registerTools(
                 : `未确认，${String(layer.rounds)}/${String(layer.roundsRequired)} 轮`)
               + (layer.gatesProse ? '｜关掉它才能写正文' : ''),
             ),
-            `- 文风（novel_confirm kind="style"）：${standing.styleConfirmed
+            `- 文风复核（novel_confirm kind="style"）：${standing.styleConfirmed
               ? `已确认：${standing.style?.summary ?? ''}`
-              : `未确认（第 ${String(STYLE_GATE_CHAPTER)} 章成稿后确认）`}`,
+              : `未复核（黄金三章即第 1–${String(GOLDEN_CHAPTERS)} 章成稿后复核）`}`,
+            `- 写作风格（全书大纲七要素）：${
+              outlineStyleGaps(state.outline).length === 0
+                ? '已写全'
+                : `缺 ${outlineStyleGaps(state.outline).map((gap) => SPINE_LABELS[gap.key]).join('、')}（novel_plan operation="outline"）——未写全时 novel_write 拒绝写正文`
+            }`,
             '',
             '## 内容文件',
             ...contentFileLines(state),
@@ -2782,7 +3003,7 @@ export function registerTools(
           for (const row of contractRows(chapter)) body.push(`- ${row.field}：${row.text || '（未写）'}`)
           body.push('', analyzeDelivery(chapter).summary)
           pushLengthReport(body, chapter)
-          pushStyleHints(body, chapter.body)
+          pushStyleHints(body, chapter.body, state.outline.style.taboos)
           body.push('', chapter.body.trim() === '' ? '（尚无正文）' : chapter.body)
         } else {
           const progress = progressOf(state)
@@ -2796,16 +3017,27 @@ export function registerTools(
                 ? `已确认（${String(layer.rounds)} 轮，novel_confirm kind="${layer.kind}"）`
                 : `未确认（已讨论 ${String(layer.rounds)}/${String(layer.roundsRequired)} 轮，novel_confirm kind="${layer.kind}"）`),
             ),
-            `- 文风：${standing.styleConfirmed
+            `- 去 AI 化诊断：${standing.deAi.done
+              ? `已做过（最近一次 ${standing.deAi.at.slice(0, 10)}，审 ${standing.deAi.target}）`
+                + (standing.deAi.unreviewed.length === 0
+                  ? '，黄金三章逐章覆盖'
+                  : `；黄金三章里第 ${standing.deAi.unreviewed.map((number) => String(number)).join('、')} 章还没查过`)
+              : standing.deAi.due
+                ? '未做过——黄金三章已成稿，先 novel_review operation="ai-flavor" 逐章诊断，未做过前 novel_write 拒绝写第 '
+                  + `${String(GOLDEN_CHAPTERS + 1)} 章`
+                : `未到期（第 1–${String(GOLDEN_CHAPTERS)} 章成稿后逐章诊断）`}`,
+            `- 文风复核：${standing.styleConfirmed
               ? `已确认（${standing.style?.at.slice(0, 10) ?? ''}）`
               : styleGateReached(state)
-                ? `待确认（第 ${String(STYLE_GATE_CHAPTER)} 章已成稿）`
-                : `未到期（第 ${String(STYLE_GATE_CHAPTER)} 章成稿后确认）`}`,
+                ? `待复核（黄金三章已成稿，novel_confirm kind="style"）`
+                : `未到期（第 1–${String(GOLDEN_CHAPTERS)} 章成稿后复核）`}`,
             '',
           )
           // The story's own debts, before the chapter stats: if the outline
           // cannot say what happens, no chapter count makes the project ready.
           const spineGaps = outlineSpineGaps(state.outline)
+          const styleGaps = outlineStyleGaps(state.outline)
+          const thinCast = castGaps(state)
           const volumeGaps = state.outline.volumes.map((volume) => ({ volume, gaps: volumeSpineGaps(volume) }))
           const volumeDebt = volumeGaps.reduce((total, entry) => total + entry.gaps.length, 0)
           body.push(
@@ -2816,6 +3048,15 @@ export function registerTools(
                 + `${spineGaps.length > 0 ? `：${spineGaps.map((gap) => gap.key).join('、')}` : ''}`
                 + `；分卷大纲共缺 ${String(volumeDebt)} 项`
                 + `（明细：novel_status detail="plan"）`,
+            styleGaps.length === 0
+              ? '- 写作风格（全书大纲七要素）：已写全'
+              : `- 写作风格缺 ${String(styleGaps.length)}/7 项：${styleGaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}`
+                + '（novel_plan operation="outline"）——未写全时 novel_write 拒绝写正文',
+            thinCast.length === 0
+              ? '- 人物丰满度：每位角色都有性格与说话方式'
+              : `- 人物不够丰满 ${String(thinCast.length)} 位：`
+                + thinCast.map((gap) => `${gap.name}（缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}）`).join('；')
+                + '（novel_bible kind="review"）',
             '',
           )
           body.push(
@@ -3380,7 +3621,15 @@ function buildRequest(
     if (chapter.body.trim() === '') {
       throw new NovelInputError(`第 ${String(chapter.number)} 章还没有正文，无法做去 AI 化诊断`)
     }
-    return buildAiFlavorRequest({ state, chapter, focus: args.focus })
+    // The mechanical pass runs first and its findings travel into the prompt: the
+    // counter is cheap, exact, and cannot be argued with, so the model is told what
+    // it already found and asked to judge those plus what a counter cannot see.
+    return buildAiFlavorRequest({
+      state,
+      chapter,
+      focus: args.focus,
+      counted: styleObservations(chapter.body, styleTabooPhrases(state.outline.style.taboos)),
+    })
   }
   if (operation === 'opening') {
     const gates = state.writing.openingGateChapters
