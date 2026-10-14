@@ -27,6 +27,7 @@ import {
   OUTLINE_SPINE_PARTS,
   OUTLINE_STYLE_PARTS,
   VOLUME_SPINE_PARTS,
+  type BeatSlot,
   type Chapter,
   type ChapterStatus,
   type Character,
@@ -71,8 +72,15 @@ import {
   type YamlScalar,
   type YamlValue,
 } from './markdown.ts'
-import { characterScope, countWords, emptyIndex, emptyOutline, normalizeId, slugify } from './novel.ts'
-import { chapterPaths, numberFromFileName, volumeNumberFromFileName } from './paths.ts'
+import { characterScope, countWords, emptyIndex, emptyOutline, normalizeId, planVolumesOf, slugify } from './novel.ts'
+import {
+  DEFAULT_STORAGE_LAYOUT,
+  UNASSIGNED_VOLUME_FILE,
+  chapterPaths,
+  chapterPlanPath,
+  numberFromFileName,
+  volumeNumberFromFileName,
+} from './paths.ts'
 
 /** Raised when content files cannot be assembled into a state. */
 export class NovelContentError extends Error {
@@ -110,11 +118,18 @@ export const CONTRACT_SECTION_ORDER: readonly string[] = [
   '章末钩子',
 ]
 
-/** The five top-level `##` sections of `章节大纲.md`. */
+/**
+ * The `##` sections the chapter plan writes.
+ *
+ * The chapter and rhythm tables are per volume now (`章节大纲/第N卷.md`); the
+ * whole-book file keeps {@link CHAPTER_PLAN_SECTIONS.opening} and the derived
+ * {@link CHAPTER_PLAN_SECTIONS.index} that says where each volume's tables are.
+ */
 export const CHAPTER_PLAN_SECTIONS = {
   table: '章节表',
   beats: '情绪节拍表',
   opening: '开篇工程清单',
+  index: '分卷章节表',
 } as const
 
 // ── names ─────────────────────────────────────────────────────────────────────
@@ -711,22 +726,84 @@ export interface ChapterPlanRow {
   readonly synopsis: string
 }
 
-/** Everything `章节大纲.md` owns. */
-export interface ChapterPlanFileContent {
+/** One volume's chapter tables, as its own file holds them. */
+export interface ChapterPlanVolumeContent {
   /** The chapter table, in reading order. */
   readonly rows: readonly ChapterPlanRow[]
   /** The rhythm table: one beat per chapter position. */
-  readonly beats: readonly { readonly chapter: number; readonly kind: BeatKind; readonly note: string }[]
+  readonly beats: readonly BeatSlot[]
+}
+
+/**
+ * What the whole-book chapter plan file holds.
+ *
+ * The chapter and rhythm tables moved to one file per volume (see
+ * {@link parseChapterPlanVolumeFile}); what is left here is the part that is
+ * genuinely whole-book — the opening-engineering checklist, whose `done` flags
+ * gate phase two — plus the index of where the per-volume tables went.
+ */
+export interface ChapterPlanFileContent {
   /** The opening-engineering checklist, whose `done` flags gate phase two. */
   readonly opening: Outline['opening']
 }
 
 /**
- * Parse `章节大纲.md`.
+ * One line of `## 分卷章节表`: where a volume's chapter table lives.
  *
- * The chapter table is the **only** home of a chapter's number, title, volume,
- * target length, and one-line summary; the contract file deliberately does not
- * repeat them, so a title edited here is a title changed everywhere.
+ * Derived, never authored: it is what makes the whole-book file answer "这一卷从
+ * 第几章开始" and tells the author where the tables moved to.
+ */
+export interface ChapterPlanGroup {
+  /** The volume covered; 0 for the chapters filed under no volume. */
+  readonly volume: number
+  /** The file that holds it, workspace-relative. */
+  readonly file: string
+  /** Its lowest chapter number; 0 when the file holds no chapter rows yet. */
+  readonly first: number
+  /** Its highest chapter number; 0 when the file holds no chapter rows yet. */
+  readonly last: number
+  /** How many chapters it holds; 0 when it holds only beats. */
+  readonly count: number
+}
+
+/**
+ * Parse the whole-book chapter plan file (`章节大纲.md`).
+ *
+ * A chapter or rhythm table in this file is an **error**, not something to
+ * ignore: the tables live per volume now, and a table that nothing reads is a
+ * plan that silently stops being true. The message names the file the rows
+ * belong in.
+ *
+ * @param raw - the file text.
+ * @param where - the file path, for error messages.
+ * @param openingFallback - checklist to keep when the section is absent.
+ * @returns the opening-engineering checklist.
+ * @throws {NovelContentError} when the file still carries a chapter or rhythm table.
+ */
+export function parseChapterPlanFile(
+  raw: string,
+  where: string,
+  openingFallback: Outline['opening'],
+): ChapterPlanFileContent {
+  const sections = sectionsOf(raw, where)
+  for (const name of [CHAPTER_PLAN_SECTIONS.table, CHAPTER_PLAN_SECTIONS.beats] as const) {
+    const table = parseTable(sections, name, where)
+    if (table !== undefined && table.rows.length > 0) {
+      throw new NovelContentError(
+        `${where}: \`## ${name}\` 里还有 ${String(table.rows.length)} 行：章节表与情绪节拍表已经按卷拆开，`
+        + `请把它们放进 \`${DEFAULT_STORAGE_LAYOUT.chapterPlanDir}/第N卷.md\`（未排卷的放 ${UNASSIGNED_VOLUME_FILE}）`,
+      )
+    }
+  }
+  return { opening: parseOpening(sections, openingFallback) }
+}
+
+/**
+ * Parse the single chapter-plan file that held every volume before version 5.
+ *
+ * Kept for the migration and for nothing else: it is the only reader that
+ * understands a `章节大纲.md` carrying the chapter table and the rhythm table
+ * beside the checklist. New projects never write one.
  *
  * @param raw - the file text.
  * @param where - the file path, for error messages.
@@ -734,11 +811,33 @@ export interface ChapterPlanFileContent {
  * @returns the plan rows, beats, and checklist.
  * @throws {NovelContentError} on a malformed number or a repeated chapter.
  */
-export function parseChapterPlanFile(
+export function parseChapterPlanCollectionFile(
   raw: string,
   where: string,
   openingFallback: Outline['opening'],
-): ChapterPlanFileContent {
+): ChapterPlanVolumeContent & ChapterPlanFileContent {
+  return parseChapterPlanTables(raw, where, openingFallback)
+}
+
+/**
+ * Read the chapter table and the rhythm table out of one file.
+ *
+ * The two tables share one reader because they share one format and one set of
+ * rules — a number that must parse, a chapter that may not repeat — and because
+ * the version-4 whole-book file and the version-5 per-volume files differ only
+ * in what else they carry.
+ *
+ * @param raw - the file text.
+ * @param where - the file path, for error messages.
+ * @param openingFallback - checklist to keep when the section is absent.
+ * @returns the rows, beats, and checklist the file holds.
+ * @throws {NovelContentError} on a malformed number or a repeated chapter.
+ */
+function parseChapterPlanTables(
+  raw: string,
+  where: string,
+  openingFallback: Outline['opening'],
+): ChapterPlanVolumeContent & ChapterPlanFileContent {
   const sections = sectionsOf(raw, where)
   const rows: ChapterPlanRow[] = []
   const seen = new Set<number>()
@@ -841,14 +940,83 @@ function parseOpening(sections: readonly MdSection[], fallback: Outline['opening
  * @param content - the plan rows, beats, and checklist.
  * @returns the file text.
  */
-export function renderChapterPlanFile(content: ChapterPlanFileContent): string {
+export function renderChapterPlanFile(content: ChapterPlanFileContent & {
+  readonly groups?: readonly ChapterPlanGroup[]
+}): string {
+  const opening = content.opening.map(
+    (check) =>
+      `- [${check.done ? 'x' : ' '}] ${check.key}${check.note === '' ? '' : ` — ${check.note}`}${check.requirement === '' ? '' : `（${check.requirement}）`}`,
+  )
+  const groups = content.groups ?? []
+  const index = groups.length === 0
+    ? `章节表与情绪节拍表按卷分开存放，一卷一个文件。现在还没有章节：\`novel_plan operation="chapter"\` 写入后，`
+      + `这里会列出每卷的文件与章号区间。`
+    : groups.map((group) => {
+        const label = group.volume > 0 ? `第 ${String(group.volume)} 卷` : '未分卷'
+        // A file can hold beats before it holds any chapter row — a beat placed on
+        // a chapter nobody has planned yet — and saying so beats listing a range
+        // that does not exist.
+        if (group.count === 0) return `- ${label}：只有节拍（尚无章节行）→ ${group.file}`
+        const range = group.first === group.last
+          ? `第 ${String(group.first)} 章`
+          : `第 ${String(group.first)}–${String(group.last)} 章`
+        return `- ${label}：${range}（共 ${String(group.count)} 章）→ ${group.file}`
+      }).join('\n')
+  const sections = [
+    `章节表（章号、标题、所属卷、目标字数、一句话、梗概）与情绪节拍表按卷分开存放，一卷一个文件，`
+      + `文件名即卷号；本文件只保留全书共用的开篇工程清单与这份索引。\n`,
+    `## ${CHAPTER_PLAN_SECTIONS.index}\n\n${index}\n`,
+    opening.length === 0
+      ? `## ${CHAPTER_PLAN_SECTIONS.opening}\n`
+      : `## ${CHAPTER_PLAN_SECTIONS.opening}\n\n${opening.join('\n')}\n`,
+  ]
+  return renderDocument({}, '章节大纲', sections)
+}
+
+/**
+ * Parse one volume's chapter-plan file (`章节大纲/第1卷.md`).
+ *
+ * @param raw - the file text.
+ * @param where - the file path, for error messages.
+ * @returns the rows and beats it holds.
+ * @throws {NovelContentError} on a malformed number or a repeated chapter.
+ */
+export function parseChapterPlanVolumeFile(raw: string, where: string): ChapterPlanVolumeContent {
+  const parsed = parseChapterPlanTables(raw, where, [])
+  return { rows: parsed.rows, beats: parsed.beats }
+}
+
+/**
+ * Render one volume's chapter-plan file.
+ *
+ * @param content - the rows and beats for this volume.
+ * @param volume - the volume it covers, for the title line.
+ * @param title - the volume's title, when it has one.
+ * @returns the file text.
+ */
+export function renderChapterPlanVolumeFile(
+  content: ChapterPlanVolumeContent,
+  volume: number,
+  title: string,
+): string {
+  const heading = volume > 0
+    ? `第 ${String(volume)} 卷${title === '' ? '' : ` ${title}`}`
+    : '未分卷'
+  return renderDocument({}, `${heading} · 章节大纲`, [
+    `## ${CHAPTER_PLAN_SECTIONS.table}\n\n${renderChapterTable(content.rows)}\n`,
+    `## ${CHAPTER_PLAN_SECTIONS.beats}\n\n${renderBeatTable(content.beats)}\n`,
+  ])
+}
+
+/** Render the chapter table, in reading order. */
+function renderChapterTable(rows: readonly ChapterPlanRow[]): string {
   // `synopsis` has a column of its own rather than sharing the one-line summary:
   // the summary describes the scene, the synopsis describes the contract, and the
   // plan's §4 gives both a home here. A sixth column is still one more than the
   // plan sketched, which is why the codec also reads the five-column spelling.
-  const table = renderTable(
+  return renderTable(
     ['章', '标题', '卷', '目标字数', '一句话', '梗概'],
-    [...content.rows]
+    [...rows]
       .sort((a, b) => a.number - b.number)
       .map((row) => [
         String(row.number),
@@ -859,24 +1027,16 @@ export function renderChapterPlanFile(content: ChapterPlanFileContent): string {
         row.synopsis,
       ]),
   )
-  const beatTable = renderTable(
+}
+
+/** Render the rhythm table, in chapter order. */
+function renderBeatTable(beats: readonly BeatSlot[]): string {
+  return renderTable(
     ['章', '类型', '一句话'],
-    [...content.beats]
+    [...beats]
       .sort((a, b) => a.chapter - b.chapter)
       .map((beat) => [String(beat.chapter), beat.kind, beat.note]),
   )
-  const opening = content.opening.map(
-    (check) =>
-      `- [${check.done ? 'x' : ' '}] ${check.key}${check.note === '' ? '' : ` — ${check.note}`}${check.requirement === '' ? '' : `（${check.requirement}）`}`,
-  )
-  const sections = [
-    `## ${CHAPTER_PLAN_SECTIONS.table}\n\n${table}\n`,
-    `## ${CHAPTER_PLAN_SECTIONS.beats}\n\n${beatTable}\n`,
-    opening.length === 0
-      ? `## ${CHAPTER_PLAN_SECTIONS.opening}\n`
-      : `## ${CHAPTER_PLAN_SECTIONS.opening}\n\n${opening.join('\n')}\n`,
-  ]
-  return renderDocument({}, '章节大纲', sections)
 }
 
 // ── chapter files ─────────────────────────────────────────────────────────────
@@ -1121,11 +1281,12 @@ function waivedMap(chapter: Chapter): Record<string, YamlScalar> {
 /**
  * The content-bearing slice of a state, as the files that own it.
  *
- * `volumes` is one text per volume, keyed by the volume number as a string: the
- * caller decides where each one lands, exactly as it does for chapters, because
- * the index is what records the path a file actually has.
+ * `volumes` and `chapterPlan` are one text per unit, keyed by the volume number
+ * as a string: the caller decides where each one lands, exactly as it does for
+ * chapters, because the index is what records the path a file actually has.
  *
  * @param state - the state to slice.
+ * @param updatedAt - the timestamp the state was written at.
  * @returns one rendered text per kind, keyed by the index's own field names.
  */
 export function decomposeContent(state: NovelState, updatedAt: string): {
@@ -1133,7 +1294,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   readonly cast: string
   readonly world: string
   readonly volumes: Readonly<Record<string, string>>
-  readonly chapterPlan: string
+  readonly chapterPlan: ChapterPlanTexts
   readonly competitors: string
   readonly chapters: Readonly<Record<string, { readonly body: string; readonly outline: string }>>
 } {
@@ -1146,6 +1307,9 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   }
   const competitorMap: Record<string, Competitor> = {}
   for (const competitor of state.competitors) competitorMap[competitor.id] = competitor
+  // The index decides where each volume's files are written; the state does not
+  // carry its own index here, so the caller's is the one to read paths from.
+  const index = state.index ?? emptyIndex()
   const volumes: Record<string, string> = {}
   for (const volume of [...state.outline.volumes].sort((a, b) => a.number - b.number)) {
     volumes[String(volume.number)] = renderVolumeFile(volume)
@@ -1172,11 +1336,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
     cast: renderCastFile(state.characters),
     world: renderWorldFile(state.world),
     volumes,
-    chapterPlan: renderChapterPlanFile({
-      rows: planRowsOf(state),
-      beats: state.outline.beats,
-      opening: state.outline.opening,
-    }),
+    chapterPlan: decomposeChapterPlan(state, index),
     competitors: renderCompetitorFile(competitorMap),
     chapters,
   }
@@ -1253,11 +1413,7 @@ export function composeContent(
         }
       : parseOutlineFile(outlineFile, index.outlineFile)
 
-  const planFile = read(index.chapterPlanFile)
-  const plan =
-    planFile === undefined
-      ? { rows: [], beats: [], opening: openingFallback }
-      : parseChapterPlanFile(planFile, index.chapterPlanFile, openingFallback)
+  const plan = composeChapterPlan(files, index, openingFallback)
 
   const outline: Outline = {
     ...emptyOutline(),
@@ -1286,6 +1442,123 @@ export function composeContent(
 
   const chapters = composeChapters(files, index, plan.rows)
   return { outline, characters, world, competitors: parsed ?? competitorFallback, chapters }
+}
+
+/**
+ * Every chapter-plan file a state implies, as text plus the path each belongs at.
+ *
+ * `paths` is the reason `volumes` is not keyed by path directly: the pair is what
+ * lets the store write each file where the *index* says it lives (an author may
+ * have renamed one) while the whole-book file's index block can print the same
+ * paths the files were actually written to.
+ */
+export interface ChapterPlanTexts {
+  /** The whole-book file: the checklist and the per-volume index block. */
+  readonly wholeBook: string
+  /** One text per volume, keyed by the volume number as a string; `0` is 未分卷. */
+  readonly volumes: Readonly<Record<string, string>>
+  /** Where each of those texts belongs, keyed the same way. */
+  readonly paths: Readonly<Record<string, string>>
+}
+
+/**
+ * Split a state's chapter plan into the file that owns each volume.
+ *
+ * Which volume a row belongs to is the row's own `卷` column, and which volume a
+ * beat belongs to is the volume of the chapter it lands on — so a beat placed for
+ * a chapter that is not planned yet sits in 未分卷 until that chapter is filed,
+ * and then moves itself. Nothing here is authored: the split is derived from the
+ * state, which is why a plan change rewrites one volume's file and no other.
+ *
+ * @param state - the state to split.
+ * @param index - the index naming the files; honored for paths an author renamed.
+ * @returns the whole-book text, one text per volume, and their paths.
+ */
+function decomposeChapterPlan(state: NovelState, index: StorageIndex): ChapterPlanTexts {
+  const rowsByVolume = new Map<number, ChapterPlanRow[]>()
+  for (const row of planRowsOf(state)) {
+    const volume = row.volume > 0 ? row.volume : 0
+    rowsByVolume.set(volume, [...(rowsByVolume.get(volume) ?? []), row])
+  }
+  const volumeOfChapter = new Map<number, number>()
+  for (const chapter of Object.values(state.chapters)) volumeOfChapter.set(chapter.number, chapter.volume)
+  const beatsByVolume = new Map<number, BeatSlot[]>()
+  for (const beat of state.outline.beats) {
+    const volume = volumeOfChapter.get(beat.chapter) ?? 0
+    beatsByVolume.set(volume, [...(beatsByVolume.get(volume) ?? []), beat])
+  }
+  const titles = new Map(state.outline.volumes.map((volume) => [volume.number, volume.title]))
+  const volumes: Record<string, string> = {}
+  const paths: Record<string, string> = {}
+  const groups: ChapterPlanGroup[] = []
+  for (const volume of planVolumesOf(state.chapters, state.outline.beats)) {
+    const key = String(volume)
+    const rows = rowsByVolume.get(volume) ?? []
+    const beats = beatsByVolume.get(volume) ?? []
+    const path = index.chapterPlans[key]?.file ?? chapterPlanPath(volume, index)
+    volumes[key] = renderChapterPlanVolumeFile({ rows, beats }, volume, titles.get(volume) ?? '')
+    paths[key] = path
+    const numbers = rows.map((row) => row.number)
+    groups.push({
+      volume,
+      file: path,
+      first: numbers.length === 0 ? 0 : Math.min(...numbers),
+      last: numbers.length === 0 ? 0 : Math.max(...numbers),
+      count: rows.length,
+    })
+  }
+  return {
+    wholeBook: renderChapterPlanFile({ opening: state.outline.opening, groups }),
+    volumes,
+    paths,
+  }
+}
+
+/**
+ * Read every chapter-plan file the index points at, in reading order.
+ *
+ * The whole-book file owns the checklist; the volume files own the chapter and
+ * rhythm tables. A chapter planned in two volumes' files is an **error** rather
+ * than a silent first-wins: it means the plan says two different things about one
+ * chapter, and the reader is the last place to guess which.
+ *
+ * @param files - the raw text of every content file.
+ * @param index - the index naming each file.
+ * @param openingFallback - checklist to keep when the whole-book section is absent.
+ * @returns the rows, beats, and checklist.
+ * @throws {NovelContentError} on a malformed table or a chapter claimed twice.
+ */
+function composeChapterPlan(
+  files: ContentFiles,
+  index: StorageIndex,
+  openingFallback: Outline['opening'],
+): ChapterPlanVolumeContent & ChapterPlanFileContent {
+  const wholeBook = files[index.chapterPlanFile]
+  const opening = wholeBook === undefined
+    ? openingFallback
+    : parseChapterPlanFile(wholeBook, index.chapterPlanFile, openingFallback).opening
+  const rows: ChapterPlanRow[] = []
+  const beats: BeatSlot[] = []
+  const claimed = new Map<number, string>()
+  for (const ref of Object.values(index.chapterPlans)) {
+    const raw = files[ref.file]
+    if (raw === undefined) continue
+    const part = parseChapterPlanVolumeFile(raw, ref.file)
+    for (const row of part.rows) {
+      const clash = claimed.get(row.number)
+      if (clash !== undefined) {
+        throw new NovelContentError(
+          `chapter ${String(row.number)} is planned twice: ${clash} and ${ref.file}; move it to one volume's file`,
+        )
+      }
+      claimed.set(row.number, ref.file)
+      rows.push(row)
+    }
+    beats.push(...part.beats)
+  }
+  rows.sort((a, b) => a.number - b.number)
+  beats.sort((a, b) => a.chapter - b.chapter)
+  return { rows, beats, opening }
 }
 
 /**

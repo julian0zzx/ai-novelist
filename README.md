@@ -195,7 +195,10 @@ novel-workspace/
   世界观设定.md          # one section per world fact
   人物设定.md            # one section per character, by tier: 主要角色 full spine, 配角 role/goal/personality/voice,
                         # walk-on 路人 just who they are and their first chapter (never counted as debt)
-  章节大纲.md            # the chapter table + the rhythm table (each contract ≈ chapter/10)
+  章节大纲.md            # the whole-book part: the opening checklist + an index of the per-volume files
+  章节大纲/
+    第1卷.md             # this volume's chapter table + its rhythm table (each contract ≈ chapter/10)
+    未分卷.md            # chapters filed under no volume yet
   竞品拆解.md            # one section per comparable title, twelve editable fields (20–50 of them)
   分卷大纲/
     第1卷.md             # ONE FILE PER VOLUME: its own rhythm (≈ volume/50) and the volume's seven
@@ -205,16 +208,18 @@ novel-workspace/
     第001章-山门.md      # prose
     第001章-山门.细纲.md # the contract: plot task, key turn, price paid, conflict, payoff, gap, beats, hook
   .novel/
-    novel.json            # metadata + index (schemaVersion: 4)
+    novel.json            # metadata + index (schemaVersion: 5)
     novel.v2.backup.json  # only after a migration; never overwritten
     manuscript.md         # written by novel_repo operation="export"
     templates/            # written by novel_repo operation="template"
     reviews/              # model transcripts and rewritten drafts
 ```
 
-**Each volume keeps its outline in its own file.** A volume gets rewritten while the volumes before
-it are already being serialized, so the file is named by number alone (`分卷大纲/第1卷.md`): a retitle
-never moves it, and revising volume 7 never rewrites volumes 1–6.
+**Each volume keeps its outline, its chapter table and its rhythm table in its own files.** A volume
+gets rewritten while the volumes before it are already being serialized, so the files are named by
+number alone (`分卷大纲/第1卷.md`, `章节大纲/第1卷.md`): a retitle never moves them, and planning
+chapter 341 of a 1000-chapter book touches one file instead of a 1000-row table. The whole-book part
+that is left — the opening checklist and an index of the per-volume files — stays in `章节大纲.md`.
 
 **Every outline layer is checked story first, payoffs second, length last** (SOP 3.5 §1.5). Each
 layer names its narrative elements as fields, every empty one is reported, and the word-count line

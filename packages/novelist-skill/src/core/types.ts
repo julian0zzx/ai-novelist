@@ -38,8 +38,15 @@
  * (`分卷大纲.md`) and into one file per volume (`分卷大纲/第1卷.md`), so a later
  * volume can be revised while the ones before it are being written. Version 3
  * documents are read by the store's migration, which splits the collection.
+ *
+ * Version 5 did the same for the chapter plan: the chapter table and the rhythm
+ * table are one file per volume (`章节大纲/第1卷.md`), because a 1000-chapter
+ * book is a 1000-row table and every plan change rewrote all of it. The
+ * whole-book part that is left — the opening-engineering checklist and an index
+ * of the per-volume files — stays in `章节大纲.md`. Version 4 documents are
+ * split by the store's migration.
  */
-export const NOVEL_SCHEMA_VERSION = 4 as const
+export const NOVEL_SCHEMA_VERSION = 5 as const
 
 /** Lifecycle of one chapter from plan to frozen prose. */
 export const CHAPTER_STATUSES = ['planned', 'drafting', 'revised', 'final'] as const
@@ -887,8 +894,26 @@ export interface StorageLayout {
    * without its file moving.
    */
   readonly volumeDir: string
-  /** Chapter plan and rhythm table. */
+  /**
+   * The chapter plan's whole-book file: the opening-engineering checklist and an
+   * index of the per-volume chapter tables.
+   *
+   * The plan's chapter and rhythm tables are per volume (see
+   * {@link chapterPlanDir}); what is genuinely whole-book stays here, and so does
+   * the checklist whose `done` flags gate phase two.
+   */
   readonly chapterPlanFile: string
+  /**
+   * Directory holding the chapter table and rhythm table, one file per volume
+   * (`章节大纲/第1卷.md`).
+   *
+   * The chapter table grows one row per chapter — 1000 rows for a 1000-chapter
+   * book — and every plan change used to rewrite the whole thing. Splitting it by
+   * volume is what makes "write chapter 341" touch one file, and it puts a
+   * volume's cadence next to the volume it paces. A chapter filed under no volume
+   * goes to `未分卷.md` in the same directory.
+   */
+  readonly chapterPlanDir: string
   /**
    * The dismantled comparable titles.
    *
@@ -1590,6 +1615,22 @@ export interface VolumeFileRef {
 }
 
 /**
+ * Where one volume's chapter table and rhythm table live, and what they held.
+ *
+ * Keyed by the volume the file covers, exactly as the filename spells it — `0`
+ * is the file holding the chapters that are not filed under any volume, which
+ * for a deliberately 不分卷 book is the whole book.
+ */
+export interface ChapterPlanFileRef {
+  /** Volume this file covers; 0 for the chapters filed under no volume. */
+  readonly volume: number
+  /** Workspace-relative path of that volume's chapter-plan file. */
+  readonly file: string
+  /** `sha256:…` of that file's text at the last read or write. */
+  readonly hash: string
+}
+
+/**
  * The index: the one place that records where content actually lives.
  *
  * The top-level names are fixed Chinese filenames by default and configurable
@@ -1612,14 +1653,18 @@ export interface StorageIndex {
   readonly worldFile: string
   /** Workspace-relative path of the directory holding one file per volume. */
   readonly volumeDir: string
-  /** Workspace-relative path of the chapter-plan file. */
+  /** Workspace-relative path of the chapter plan's whole-book file. */
   readonly chapterPlanFile: string
+  /** Workspace-relative path of the directory holding one chapter plan per volume. */
+  readonly chapterPlanDir: string
   /** Workspace-relative path of the competitor-dismantle file. */
   readonly competitorFile: string
   /** One entry per chapter, keyed by {@link Chapter.id}. */
   readonly chapters: Readonly<Record<string, ChapterFileRef>>
   /** One entry per volume, keyed by the volume number as a string. */
   readonly volumes: Readonly<Record<string, VolumeFileRef>>
+  /** One entry per volume's chapter plan, keyed by the volume number as a string. */
+  readonly chapterPlans: Readonly<Record<string, ChapterPlanFileRef>>
   /** `sha256:…` of every indexed content file, keyed by workspace-relative path. */
   readonly files: Readonly<Record<string, string>>
 }

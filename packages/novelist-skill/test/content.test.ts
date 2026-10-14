@@ -4,6 +4,7 @@ import {
   NovelContentError,
   VOLUME_SPINE_PARTS,
   chapterPaths,
+  chapterPlanPath,
   chapterStem,
   composeContent,
   decomposeContent,
@@ -13,9 +14,12 @@ import {
   isVolumePath,
   numberFromFileName,
   parseCastFile,
+  parseChapterPlanCollectionFile,
   parseChapterPlanFile,
+  parseChapterPlanVolumeFile,
   parseVolumeCollectionFile,
   parseVolumeFile,
+  planVolumesOf,
   renderVolumeFile,
   sanitizeTitle,
   upsertChapter,
@@ -196,10 +200,13 @@ function roundTrip(state: NovelState): { readonly back: ReturnType<typeof compos
     [index.outlineFile]: parts.outline,
     [index.castFile]: parts.cast,
     [index.worldFile]: parts.world,
-    [index.chapterPlanFile]: parts.chapterPlan,
+    [index.chapterPlanFile]: parts.chapterPlan.wholeBook,
   }
   for (const [key, text] of Object.entries(parts.volumes)) {
     files[index.volumes[key]?.file ?? volumePath(Number.parseInt(key, 10))] = text
+  }
+  for (const [key, text] of Object.entries(parts.chapterPlan.volumes)) {
+    files[parts.chapterPlan.paths[key] ?? chapterPlanPath(Number.parseInt(key, 10))] = text
   }
   for (const [id, ref] of Object.entries(index.chapters)) {
     files[ref.bodyFile] = parts.chapters[id]?.body ?? ''
@@ -227,7 +234,11 @@ function indexOf(state: NovelState): StorageIndex {
   for (const volume of state.outline.volumes) {
     volumes[String(volume.number)] = { number: volume.number, file: volumePath(volume.number), hash: '' }
   }
-  return { ...base, chapters, volumes }
+  const chapterPlans: Record<string, StorageIndex['chapterPlans'][string]> = {}
+  for (const volume of planVolumesOf(state.chapters, state.outline.beats)) {
+    chapterPlans[String(volume)] = { volume, file: chapterPlanPath(volume), hash: '' }
+  }
+  return { ...base, chapters, volumes, chapterPlans }
 }
 
 describe('content codec round trip', () => {
@@ -360,7 +371,13 @@ describe('content codec round trip', () => {
       '1': files[volumePath(1)],
       '2': files[volumePath(2)],
     })
-    expect(again.chapterPlan).toBe(files[index.chapterPlanFile])
+    expect(again.chapterPlan.wholeBook).toBe(files[index.chapterPlanFile])
+    // Volume 1 holds both chapters; 未分卷 holds the beat placed on chapter 3,
+    // which no chapter row claims yet.
+    expect(again.chapterPlan.volumes).toEqual({
+      '0': files[chapterPlanPath(0)],
+      '1': files[chapterPlanPath(1)],
+    })
   })
 
   it('recomputes wordCount from the prose rather than trusting the file', () => {
@@ -370,7 +387,7 @@ describe('content codec round trip', () => {
     const withLie = parts.chapters['chapter-1']!.body.replace(/wordCount: \d+/u, 'wordCount: 99999')
     const back = composeContent(
       {
-        [index.chapterPlanFile]: parts.chapterPlan,
+        [index.chapterPlanFile]: parts.chapterPlan.wholeBook,
         [index.chapters['chapter-1']!.bodyFile]: withLie,
         [index.chapters['chapter-1']!.outlineFile]: parts.chapters['chapter-1']!.outline,
       },
@@ -399,7 +416,7 @@ describe('content codec round trip', () => {
     const stripped = parts.chapters['chapter-1']!.outline.replace(/## 章末钩子\n\n[\s\S]*$/u, '')
     const back = composeContent(
       {
-        [index.chapterPlanFile]: parts.chapterPlan,
+        [index.chapterPlanFile]: parts.chapterPlan.wholeBook,
         [index.chapters['chapter-1']!.bodyFile]: parts.chapters['chapter-1']!.body,
         [index.chapters['chapter-1']!.outlineFile]: stripped,
       },
@@ -622,7 +639,7 @@ describe('content codec errors', () => {
       '| 1 | 后山 | 1 | 3000 | 乙 |',
       '',
     ].join('\n')
-    expect(() => parseChapterPlanFile(raw, '章节大纲.md', [])).toThrow(/chapter 1 appears twice/u)
+    expect(() => parseChapterPlanVolumeFile(raw, '章节大纲/第1卷.md')).toThrow(/chapter 1 appears twice/u)
   })
 
   it('reports a volume with no number in its frontmatter and none in its filename', () => {
@@ -636,7 +653,7 @@ describe('content codec errors', () => {
 
   it('reports an unknown beat kind rather than storing it', () => {
     const raw = ['## 情绪节拍表', '', '| 章 | 类型 | 一句话 |', '|---|---|---|', '| 3 | 乱写 | 甲 |', ''].join('\n')
-    expect(() => parseChapterPlanFile(raw, '章节大纲.md', [])).toThrow(/unknown kind "乱写"/u)
+    expect(() => parseChapterPlanVolumeFile(raw, '章节大纲/第1卷.md')).toThrow(/unknown kind "乱写"/u)
   })
 
   it('reports two chapters claiming the same number across files', () => {
@@ -681,6 +698,7 @@ describe('chapter plan table ownership', () => {
     ].join('\n')
     const index: StorageIndex = {
       ...emptyIndex(),
+      chapterPlans: { '2': { volume: 2, file: '章节大纲/第2卷.md', hash: '' } },
       chapters: {
         'chapter-1': {
           number: 1,
@@ -694,7 +712,7 @@ describe('chapter plan table ownership', () => {
     }
     const back = composeContent(
       {
-        [DEFAULT_STORAGE_LAYOUT.chapterPlanFile]: plan,
+        '章节大纲/第2卷.md': plan,
         '章节/第001章-表里的标题.md': '---\nid: "chapter-1"\nnumber: 1\nstatus: drafting\n---\n\n# 第 1 章 表里的标题\n\n正文。\n',
       },
       index,
@@ -706,6 +724,25 @@ describe('chapter plan table ownership', () => {
     expect(chapter.targetWords).toBe(2500)
     expect(chapter.synopsis).toBe('表里的一句话')
     expect(chapter.body).toBe('正文。')
+  })
+
+  it('refuses one chapter planned in two volumes\' files, naming both', () => {
+    const index: StorageIndex = {
+      ...emptyIndex(),
+      chapterPlans: {
+        '1': { volume: 1, file: '章节大纲/第1卷.md', hash: '' },
+        '2': { volume: 2, file: '章节大纲/第2卷.md', hash: '' },
+      },
+    }
+    const row = (volume: number): string =>
+      ['## 章节表', '', '| 章 | 标题 | 卷 | 目标字数 | 一句话 |', '|---|---|---|---|---|', `| 1 | 山门 | ${String(volume)} | | |`, ''].join('\n')
+    expect(() =>
+      composeContent(
+        { '章节大纲/第1卷.md': row(1), '章节大纲/第2卷.md': row(2) },
+        index,
+        [],
+      ),
+    ).toThrow(/chapter 1 is planned twice: 章节大纲\/第1卷\.md and 章节大纲\/第2卷\.md/u)
   })
 
   it('falls back to the index title when the plan row was deleted by hand', () => {
@@ -730,21 +767,92 @@ describe('chapter plan table ownership', () => {
     expect(back.chapters['chapter-1']?.title).toBe('索引里的标题')
   })
 
-  it('renders the plan rows the state implies', () => {
+  it('renders each volume its own plan file, with the rows that belong to it', () => {
     const state = fixture()
     const parts = decomposeContent(state, STAMP)
-    const rows: readonly ChapterPlanRow[] = parseChapterPlanFile(parts.chapterPlan, '章节大纲.md', []).rows
+    // Both fixture chapters are in volume 1; 未分卷 exists because the fixture
+    // also places a beat on chapter 3, which no chapter row claims yet.
+    expect(Object.keys(parts.chapterPlan.volumes)).toEqual(['0', '1'])
+    expect(parts.chapterPlan.paths['1']).toBe('章节大纲/第1卷.md')
+    const rows: readonly ChapterPlanRow[] = parseChapterPlanVolumeFile(
+      parts.chapterPlan.volumes['1'] ?? '',
+      '章节大纲/第1卷.md',
+    ).rows
     expect(rows).toEqual([
       { number: 1, title: '山门', volume: 1, targetWords: 3000, oneLine: '林越抵达山门', synopsis: '林越抵达山门' },
       { number: 2, title: '石阶', volume: 1, targetWords: 0, oneLine: '一夜', synopsis: '一夜' },
     ])
+    // …and the whole-book file carries the checklist plus the index of where it went.
+    expect(parts.chapterPlan.wholeBook).toContain('## 分卷章节表')
+    expect(parts.chapterPlan.wholeBook).toContain('第 1 卷：第 1–2 章（共 2 章）→ 章节大纲/第1卷.md')
+    expect(parts.chapterPlan.wholeBook).not.toContain('| 章 |')
+  })
+
+  it('puts a chapter filed under no volume in 未分卷.md, and moves it when it is filed', () => {
+    // Beats are pinned to their chapter's volume, so this one watches the rows.
+    const bare = { ...fixture(), outline: { ...fixture().outline, beats: [] } }
+    const loose = upsertChapter(bare, { id: 'chapter-9', number: 9, title: '路上', synopsis: '赶路' }, () => STAMP)
+    const parts = decomposeContent(loose, STAMP)
+    expect(Object.keys(parts.chapterPlan.volumes).sort()).toEqual(['0', '1'])
+    expect(parts.chapterPlan.paths['0']).toBe('章节大纲/未分卷.md')
+    expect(parts.chapterPlan.wholeBook).toContain('未分卷：第 9 章（共 1 章）→ 章节大纲/未分卷.md')
+
+    // Filing it under volume 2 moves the row: the 未分卷 file goes away and the
+    // volume's file is the only other thing that changes.
+    const filed = { ...loose, chapters: { ...loose.chapters, 'chapter-9': { ...loose.chapters['chapter-9']!, volume: 2 } } }
+    const moved = decomposeContent(filed, STAMP)
+    expect(Object.keys(moved.chapterPlan.volumes).sort()).toEqual(['1', '2'])
+    expect(moved.chapterPlan.volumes['1']).toBe(parts.chapterPlan.volumes['1'])
+  })
+
+  it('refuses a chapter or rhythm table left in the whole-book file', () => {
+    const state = fixture()
+    const parts = decomposeContent(state, STAMP)
+    // The tables live per volume; a table in the whole-book file is a plan that
+    // nothing would read, so it is named rather than ignored.
+    const withTable = `${parts.chapterPlan.wholeBook}\n## 章节表\n\n| 章 | 标题 | 卷 | 目标字数 | 一句话 | 梗概 |\n|---|---|---|---|---|---|\n| 9 | 路上 | 1 | | 赶路 | 赶路 |\n`
+    expect(() => parseChapterPlanFile(withTable, '章节大纲.md', [])).toThrow(/已经按卷拆开/u)
+    // An *empty* table is tolerated: it is what a just-split file looks like.
+    expect(() =>
+      parseChapterPlanFile(`${parts.chapterPlan.wholeBook}\n## 章节表\n\n| 章 | 标题 | 卷 | 目标字数 | 一句话 | 梗概 |\n|---|---|---|---|---|---|\n`, '章节大纲.md', []),
+    ).not.toThrow()
+  })
+
+  it('reads the pre-version-5 whole-book plan file for the migration', () => {
+    const raw = [
+      '# 章节大纲',
+      '',
+      '## 章节表',
+      '',
+      '| 章 | 标题 | 卷 | 目标字数 | 一句话 | 梗概 |',
+      '|---|---|---|---|---|---|',
+      '| 1 | 山门 | 1 | 3000 | 抵达山门 | 抵达山门 |',
+      '| 41 | 后山 | 2 | 3000 | 进后山 | 进后山 |',
+      '',
+      '## 情绪节拍表',
+      '',
+      '| 章 | 类型 | 一句话 |',
+      '|---|---|---|',
+      '| 1 | tension | 拦路 |',
+      '| 41 | turn | 翻案 |',
+      '',
+      '## 开篇工程清单',
+      '',
+      '- [x] chapter-1-hook — 开篇已写（章末留钩子）',
+      '',
+    ].join('\n')
+    const parsed = parseChapterPlanCollectionFile(raw, '章节大纲.md', [])
+    expect(parsed.rows.map((row) => [row.number, row.volume])).toEqual([[1, 1], [41, 2]])
+    expect(parsed.beats.map((beat) => beat.chapter)).toEqual([1, 41])
+    expect(parsed.opening).toHaveLength(1)
+    expect(parsed.opening[0]?.done).toBe(true)
   })
 
   it('keeps the opening checklist, whose done flags gate phase two', () => {
     const state = { ...fixture(), outline: { ...fixture().outline, opening: defaultOpeningChecks() } }
     const parts = decomposeContent(state, STAMP)
     const back = composeContent(
-      { [DEFAULT_STORAGE_LAYOUT.chapterPlanFile]: parts.chapterPlan },
+      { [DEFAULT_STORAGE_LAYOUT.chapterPlanFile]: parts.chapterPlan.wholeBook },
       indexOf(state),
       defaultOpeningChecks(),
     )
@@ -761,7 +869,7 @@ describe('chapter plan table ownership', () => {
     const state = { ...fixture(), outline: { ...fixture().outline, opening } }
     const parts = decomposeContent(state, STAMP)
     const back = composeContent(
-      { [DEFAULT_STORAGE_LAYOUT.chapterPlanFile]: parts.chapterPlan },
+      { [DEFAULT_STORAGE_LAYOUT.chapterPlanFile]: parts.chapterPlan.wholeBook },
       indexOf(state),
       defaultOpeningChecks(),
     )

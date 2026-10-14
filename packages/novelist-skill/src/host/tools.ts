@@ -273,12 +273,17 @@ function contentFileLines(state: NovelState): string[] {
     ? `- 分卷大纲：${index.volumeDir}/（一卷一个文件，尚无文件）`
     : `- 分卷大纲：${index.volumeDir}/（一卷一个文件，现有 ${String(volumes.length)} 个：`
       + `${volumes.map((ref) => ref.file).join('、')}）`
+  const plans = Object.values(index.chapterPlans).sort((a, b) => a.volume - b.volume)
+  const planLine = plans.length === 0
+    ? `- 章节大纲：${index.chapterPlanFile}（开篇工程清单与索引）+ ${index.chapterPlanDir}/（一卷一个文件，尚无文件）`
+    : `- 章节大纲：${index.chapterPlanFile}（开篇工程清单与索引）+ ${index.chapterPlanDir}/（一卷一个文件，现有 `
+      + `${String(plans.length)} 个：${plans.map((ref) => ref.file).join('、')}）`
   return [
     `- 全书大纲：${index.outlineFile}`,
     `- 世界观设定：${index.worldFile}`,
     `- 人物设定：${index.castFile}`,
     volumeLine,
-    `- 章节大纲：${index.chapterPlanFile}`,
+    planLine,
     `- 竞品拆解：${index.competitorFile}`,
   ]
 }

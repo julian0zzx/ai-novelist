@@ -22,6 +22,7 @@ export const DEFAULT_STORAGE_LAYOUT: StorageLayout = {
   worldFile: '世界观设定.md',
   volumeDir: '分卷大纲',
   chapterPlanFile: '章节大纲.md',
+  chapterPlanDir: '章节大纲',
   competitorFile: '竞品拆解.md',
   chapterDir: '章节',
 }
@@ -189,6 +190,57 @@ export function volumeNumberFromFileName(fileName: string): number | undefined {
   if (match === null) return undefined
   const value = Number.parseInt(match[1] ?? '', 10)
   return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+// ── chapter plans ─────────────────────────────────────────────────────────────
+
+/**
+ * The name of the chapter-plan file holding the chapters filed under no volume.
+ *
+ * A chapter can be planned before it is assigned to a volume — and a 不分卷 book
+ * never assigns one — so the directory needs a bucket that is not a volume.
+ * `未分卷.md` says what it is in both cases, which `第0卷.md` would not.
+ */
+export const UNASSIGNED_VOLUME_FILE = '未分卷.md'
+
+/**
+ * The filename of one volume's chapter table and rhythm table.
+ *
+ * The volume number is the whole name, for the same reason the volume outlines
+ * are named that way: a file that never moves is a file nobody has to re-find.
+ *
+ * @param volume - the volume the file covers; 0 for the unassigned bucket.
+ * @returns the basename, e.g. `第1卷.md` or `未分卷.md`.
+ */
+export function chapterPlanFileName(volume: number): string {
+  const number = Math.trunc(volume)
+  return number > 0 ? volumeFileName(number) : UNASSIGNED_VOLUME_FILE
+}
+
+/**
+ * The workspace-relative path of one volume's chapter-plan file.
+ *
+ * @param volume - the volume the file covers; 0 for the unassigned bucket.
+ * @param home - the layout, or anything carrying the chapter-plan directory.
+ * @returns the path, e.g. `章节大纲/第1卷.md`.
+ */
+export function chapterPlanPath(
+  volume: number,
+  home: { readonly chapterPlanDir: string } = DEFAULT_STORAGE_LAYOUT,
+): string {
+  return `${home.chapterPlanDir}/${chapterPlanFileName(volume)}`
+}
+
+/**
+ * Recover the volume a chapter-plan file covers from its filename.
+ *
+ * @param fileName - a path or basename such as `章节大纲/第1卷.md`.
+ * @returns the volume, `0` for `未分卷.md`, or `undefined` when the name carries neither.
+ */
+export function chapterPlanVolumeFromFileName(fileName: string): number | undefined {
+  const base = fileName.split('/').pop() ?? fileName
+  if (base === UNASSIGNED_VOLUME_FILE) return 0
+  return volumeNumberFromFileName(base)
 }
 
 /**

@@ -137,8 +137,8 @@ export function underRoot(root: string, path: string): string {
  *
  * Only two reads are unavoidable per chapter — the prose file, which carries
  * `status` and the word count, and the contract file, which carries the beats and
- * the hook. The five whole-book files are read once each, and so is each
- * volume's own outline file, since there is one of those per volume.
+ * the hook. The whole-book files are read once each, and so are the per-volume
+ * ones: one outline and one chapter plan per volume.
  *
  * @param remote - the client Remote face.
  * @param sessionId - the session whose workspace to read.
@@ -174,6 +174,7 @@ export async function readProject(
       index.chapterPlanFile,
       index.competitorFile,
       ...Object.values(index.volumes).map((ref) => ref.file),
+      ...Object.values(index.chapterPlans).map((ref) => ref.file),
       ...channels.flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
     ]
 

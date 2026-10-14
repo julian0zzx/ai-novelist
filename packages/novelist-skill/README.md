@@ -192,7 +192,8 @@ content lives in the Markdown files that index names, so an author can read and 
 | `人物设定.md` | One `##` section per character, sorted by tier (leads first, walk-ons last): `id`, `role`, `scope`, `volume`, `firstAppearance`, `exit`, `goal`, `personality`, `voice`, `fear`, `obsession`, `weakness`, `camp`, `growthArc`, `notes`, and the prose `description`. `scope` decides what the entry owes — `main` the full spine, `volume` role/goal/personality/voice, `cameo` only 「他是谁 + 首次出场章」 — and an absent `scope` falls back to `role`, so a pre-tier file is held to exactly what it was |
 | `世界观设定.md` | One `##` section per fact: `id`, `kind`, `name`, `cost`, `limits`, and the prose `detail` |
 | `分卷大纲/第N卷.md` | **One file per volume.** Frontmatter: `number`, `title`, `goal`, `conflict`, `climax`, `endHook`, `chapters`. Body: `## 卷内节奏` (the volume's own 分卷剧情大纲) plus the volume's seven narrative elements as `##` sections. Any further `##` section the author writes is folded back into the pacing detail, in file order. The file is named by number alone, so a retitle never moves it; a version-3 project's single `分卷大纲.md` is split into these by the store's migration |
-| `章节大纲.md` | The chapter table (number, title, volume, target words, one-line summary) and the rhythm table — the plan layer's only home for those |
+| `章节大纲.md` | The whole-book part: the `## 开篇工程清单` checklist (whose `done` flags gate phase two) and a derived `## 分卷章节表` index saying which file holds which volume's chapters, and over which chapter numbers |
+| `章节大纲/第N卷.md` | **One file per volume.** The chapter table (number, title, volume, target words, one-line summary, synopsis) and the rhythm table for the chapters filed under that volume. `未分卷.md` holds the chapters filed under no volume — for a deliberately 不分卷 book, the whole book. A volume with neither rows nor beats gets no file at all, and a chapter moving between volumes moves its row between files |
 | `竞品拆解.md` | One `##` section per comparable title: `id`, `title`, `tags`, `blurb`, `openingEvent`, `goldenFinger`, `protagonistDesire`, `antagonistMotive`, `shuangFrequency`, `emotionCurve`, `paywallPoint`, `chapterHooks`, `commentKeywords`, `takeaway` |
 | `章节/第NNN章-*.md` | `status` and the prose (`wordCount` is derived: recomputed on read, back-filled on write) |
 | `章节/第NNN章-*.细纲.md` | `beats`, `waived`, `delivered`, and the seven contract sections (剧情任务、关键转折、代价与收获、冲突、情绪回报、信息差、章末钩子) |
@@ -263,12 +264,21 @@ Two conventions hold everywhere:
 
 ### Versioning and migration
 
-`parseNovel` accepts `schemaVersion` 1, 2 and 3 and refuses anything else with a
-`NovelStoreError` naming the supported versions. Version 3 is the layout whose
-content already lived in files but whose volumes still shared one collection
-file: the store reads that file and splits it into `分卷大纲/第N卷.md`, then
-deletes the collection — new files first, collection last, so an interrupted run
-reruns on the next read. Version 4 is what this build writes.
+`parseNovel` accepts `schemaVersion` 1 through 4 and refuses anything else with a
+`NovelStoreError` naming the supported versions, and `migrateDocument` upgrades
+each in turn:
+
+- **Version 3** kept its content in files but every volume outline in one
+  collection file: the store splits it into `分卷大纲/第N卷.md` and deletes the
+  collection — new files first, collection last, so an interrupted run reruns on
+  the next read.
+- **Version 4** had per-volume outlines but the whole chapter plan in one file:
+  the store splits the chapter and rhythm tables into `章节大纲/第N卷.md` by each
+  row's `卷` column, rewrites `章节大纲.md` with the opening checklist and the
+  index of where they went, and reruns idempotently if interrupted. A version-3
+  document gets both splits in one pass.
+
+Version 5 is what this build writes.
 
 `migrateV1` keeps the whole draft: the v1 chapter `synopsis` becomes `plotTask` (an existing
 plan must not be silently emptied by an upgrade), premise, cast, world entries and chapters

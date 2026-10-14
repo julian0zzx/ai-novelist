@@ -14,7 +14,7 @@
  * @module @ai-novelist/novelist-skill/core/novel
  */
 
-import { DEFAULT_STORAGE_LAYOUT, LEGACY_VOLUME_FILE, chapterPaths, volumePath } from './paths.ts'
+import { DEFAULT_STORAGE_LAYOUT, LEGACY_VOLUME_FILE, chapterPaths, chapterPlanPath, volumePath } from './paths.ts'
 import {
   CHAPTER_STATUSES,
   CHARACTER_SCOPES,
@@ -31,6 +31,7 @@ import {
   styleParamName,
   STYLE_GATE_CHAPTER,
   chapterNumberOf,
+  type BeatSlot,
   type Chapter,
   type ChapterStatus,
   type Character,
@@ -522,9 +523,11 @@ export function emptyIndex(layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): Stor
     worldFile: layout.worldFile,
     volumeDir: layout.volumeDir,
     chapterPlanFile: layout.chapterPlanFile,
+    chapterPlanDir: layout.chapterPlanDir,
     competitorFile: layout.competitorFile,
     chapters: {},
     volumes: {},
+    chapterPlans: {},
     files: {},
   }
 }
@@ -1251,6 +1254,19 @@ function readIndex(value: unknown, meta: NovelMeta): StorageIndex {
       volumes[key] = { number, file, hash: readString(raw, 'hash', '') }
     }
   }
+  const chapterPlans: Record<string, StorageIndex['chapterPlans'][string]> = {}
+  if (isRecord(value['chapterPlans'])) {
+    for (const [key, raw] of Object.entries(value['chapterPlans'])) {
+      if (!isRecord(raw)) continue
+      const file = readString(raw, 'file', '')
+      if (file === '') continue
+      // 0 is a legal key here — the chapters filed under no volume — which is
+      // why this reads a volume rather than a positive number.
+      const volume = readNumber(raw, 'volume', Number.parseInt(key, 10))
+      if (!Number.isInteger(volume) || volume < 0) continue
+      chapterPlans[key] = { volume, file, hash: readString(raw, 'hash', '') }
+    }
+  }
   return {
     outlineFile: readString(value, 'outlineFile', base.outlineFile),
     castFile: readString(value, 'castFile', base.castFile),
@@ -1261,9 +1277,11 @@ function readIndex(value: unknown, meta: NovelMeta): StorageIndex {
     // directory: it would make the workspace root the volume directory.
     volumeDir: readString(value, 'volumeDir', base.volumeDir) || base.volumeDir,
     chapterPlanFile: readString(value, 'chapterPlanFile', base.chapterPlanFile),
+    chapterPlanDir: readString(value, 'chapterPlanDir', base.chapterPlanDir) || base.chapterPlanDir,
     competitorFile: readString(value, 'competitorFile', base.competitorFile),
     chapters,
     volumes,
+    chapterPlans,
     files,
   }
 }
@@ -1414,7 +1432,43 @@ function indexFor(state: NovelState, base: StorageIndex): StorageIndex {
       hash: '',
     }
   }
-  return { ...base, chapters, volumes }
+  const chapterPlans: Record<string, StorageIndex['chapterPlans'][string]> = {}
+  for (const volume of planVolumesOf(state.chapters, state.outline.beats)) {
+    chapterPlans[String(volume)] = {
+      volume,
+      file: base.chapterPlans[String(volume)]?.file ?? chapterPlanPath(volume, base),
+      hash: '',
+    }
+  }
+  return { ...base, chapters, volumes, chapterPlans }
+}
+
+/**
+ * The volume buckets a chapter plan needs a file for.
+ *
+ * Taken from the chapters and the beats rather than from the volume list: a
+ * chapter planned before it is assigned to a volume has to go somewhere, a
+ * volume with no chapters yet has an outline but no chapter table, and a beat
+ * placed on a chapter that has not been planned at all still has to be written
+ * down — it lands in 未分卷 and moves itself the first time that chapter is filed.
+ *
+ * @param chapters - the project's chapters.
+ * @param beats - the rhythm table, whose rows follow their chapter's volume.
+ * @returns the distinct volume numbers, ascending, `0` for unassigned.
+ */
+export function planVolumesOf(
+  chapters: Readonly<Record<string, Chapter>>,
+  beats: readonly BeatSlot[] = [],
+): number[] {
+  const volumeOfChapter = new Map<number, number>()
+  const volumes = new Set<number>()
+  for (const chapter of Object.values(chapters)) {
+    const volume = chapter.volume > 0 ? chapter.volume : 0
+    volumeOfChapter.set(chapter.number, volume)
+    volumes.add(volume)
+  }
+  for (const beat of beats) volumes.add(volumeOfChapter.get(beat.chapter) ?? 0)
+  return [...volumes].sort((a, b) => a - b)
 }
 
 /**
@@ -1523,14 +1577,14 @@ export function migrateV1(parsed: Record<string, unknown>): NovelState {
  * for the same reason, and lands in the same "content still in the document"
  * shape as version 2 so one migration path serves both.
  *
- * Version 3 is the version whose content already lives in files, but whose
- * volumes still share one collection file. Its metadata reads back unchanged;
- * what the caller has to be told is where that collection file is, because only
- * a caller with a filesystem can split it — see {@link ParsedMetadata.legacyVolumeFile}.
+ * Versions 3 and 4 are the versions whose content already lives in files but
+ * whose outlines or chapter plan still share one collection file each. Their
+ * metadata reads back unchanged; what the caller has to be told is where those
+ * collection files are, because only a caller with a filesystem can split them.
  *
  * @param raw - the JSON text read from disk.
  * @returns the version found, the metadata, the state when the document still
- *   held its content, and the version-3 volume collection path when there is one.
+ *   held its content, and the collection paths a migration has to split.
  * @throws {NovelStoreError} when the payload is not this plugin's document.
  */
 export function parseMetadata(raw: string): {
@@ -1538,6 +1592,7 @@ export function parseMetadata(raw: string): {
   readonly metadata: NovelMetadata
   readonly legacy?: NovelState
   readonly legacyVolumeFile?: string
+  readonly legacyChapterPlanFile?: string
 } {
   let parsed: unknown
   try {
@@ -1555,19 +1610,24 @@ export function parseMetadata(raw: string): {
     const migrated = migrateV2(parsed)
     return { version: 2, metadata: migrated.metadata, legacy: migrated.state }
   }
-  if (version === 3) {
-    // The index is where the collection file was recorded, and it is the only
-    // place that knows: the filename is configurable, so it cannot be assumed.
+  if (version === 3 || version === 4) {
+    // The index is where the collection files were recorded, and it is the only
+    // place that knows: the filenames are configurable, so they cannot be assumed.
     const index = isRecord(parsed['index']) ? parsed['index'] : {}
     return {
-      version: 3,
+      version,
       metadata: readMetadata(parsed),
-      legacyVolumeFile: readString(index, 'volumeFile', LEGACY_VOLUME_FILE),
+      // A version-3 document also has its volumes in one collection file; a
+      // version-4 one has per-volume outlines already and only the chapter plan
+      // still to split. Both name the chapter plan the same way, because
+      // `chapterPlanFile` kept its meaning across both versions.
+      ...(version === 3 ? { legacyVolumeFile: readString(index, 'volumeFile', LEGACY_VOLUME_FILE) } : {}),
+      legacyChapterPlanFile: readString(index, 'chapterPlanFile', DEFAULT_STORAGE_LAYOUT.chapterPlanFile),
     }
   }
   if (version !== NOVEL_SCHEMA_VERSION) {
     throw new NovelStoreError(
-      `novel store schemaVersion ${String(version)} is not supported (expected ${String(NOVEL_SCHEMA_VERSION)}, 3, 2, or 1)`,
+      `novel store schemaVersion ${String(version)} is not supported (expected ${String(NOVEL_SCHEMA_VERSION)}, 4, 3, 2, or 1)`,
     )
   }
   return { version: NOVEL_SCHEMA_VERSION, metadata: readMetadata(parsed) }

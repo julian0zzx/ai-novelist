@@ -1214,7 +1214,8 @@ describe('the file is the source of truth', () => {
 
     // A human edits the chapter-end hook in their own editor. Nothing tells the
     // plugin; the next read simply finds it.
-    const planPath = join(root, '章节大纲.md')
+    // A chapter with no volume yet keeps its row in the 未分卷 file.
+    const planPath = join(root, '章节大纲', '未分卷.md')
     const contractPath = join(root, '章节/第001章-山门.细纲.md')
     const contract = await readFile(contractPath, 'utf8')
 
@@ -1241,6 +1242,35 @@ describe('the file is the source of truth', () => {
     expect(await readFile(contractPath, 'utf8')).toContain('钟声之后，后山传来父亲的剑鸣。')
     // The chapter plan file itself is untouched: the edit was in the contract.
     expect(await readFile(planPath, 'utf8')).toContain('山门')
+  })
+
+  it('keeps each volume\'s chapter table in its own file, so later volumes stay cheap', async () => {
+    await call('novel_init', { title: '青云记', targetWords: 900000, chapterWords: 3000, volumes: 3 })
+    // A chapter's `volume` is the plan's own column, so filing one needs no
+    // skeleton authorisation — only the volume *outline* is go-gated.
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1, volume: 1, plotTask: '抵达' })
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-41', title: '后山', number: 41, volume: 2, plotTask: '进后山' })
+
+    const first = await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')
+    expect(first).toContain('山门')
+    expect(first).not.toContain('后山')
+    expect(await readFile(join(root, '章节大纲', '第2卷.md'), 'utf8')).toContain('后山')
+
+    // The whole-book file stays navigable: the checklist plus where each volume's
+    // table went, which is what answers "这一卷从第几章开始".
+    const whole = await readFile(join(root, '章节大纲.md'), 'utf8')
+    expect(whole).toContain('## 分卷章节表')
+    expect(whole).toMatch(/第 1 卷：第 1 章（共 1 章）→ 章节大纲\/第1卷\.md/u)
+    expect(whole).toMatch(/第 2 卷：第 41 章（共 1 章）→ 章节大纲\/第2卷\.md/u)
+    expect(whole).not.toContain('| 41 |')
+
+    // Writing volume 3 of a 300-chapter book must not rewrite volumes 1 and 2.
+    const untouched = await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')
+    await call('novel_plan', { operation: 'chapter', id: 'chapter-81', title: '北境', number: 81, volume: 3, plotTask: '出北门' })
+    expect(await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')).toBe(untouched)
+    expect(await readFile(join(root, '章节大纲', '第3卷.md'), 'utf8')).toContain('北境')
+    expect(await readFile(join(root, '章节大纲.md'), 'utf8'))
+      .toMatch(/第 3 卷：第 81 章（共 1 章）→ 章节大纲\/第3卷\.md/u)
   })
 
   it('reports a hand-broken file by name and refuses to write over it', async () => {
@@ -1270,7 +1300,7 @@ describe('the file is the source of truth', () => {
 
     expect(await readFile(join(root, '章节/第001章-山门之下.md'), 'utf8')).toContain('山门很高。')
     await expect(readFile(join(root, '章节/第001章-山门.md'), 'utf8')).rejects.toThrow()
-    expect(await readFile(join(root, '章节大纲.md'), 'utf8')).toContain('山门之下')
+    expect(await readFile(join(root, '章节大纲', '未分卷.md'), 'utf8')).toContain('山门之下')
     // The chapter is still addressable by its id, which is what did not change.
     const status = await callText('novel_status', { detail: 'chapter', chapterId: 'chapter-1' })
     expect(status).toContain('山门之下')

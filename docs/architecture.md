@@ -164,11 +164,14 @@ import the other to spell a filename.
   number in its name, and a file that carries neither is reported as an orphan and left where
   it is. The one refusal is syntax: a file that cannot be parsed raises a `NovelStoreError`
   naming the file and the parser's complaint, and nothing overwrites it.
-- **One file per unit, not one file per kind.** The volume outlines are already one file per
-  volume (`分卷大纲/第1卷.md`, named by number alone so a retitle cannot move it), because a
-  volume gets rewritten while the volumes before it are being serialized; the chapters are two
-  files each. `StorageIndex.volumes` is what records which file a volume actually lives in, and
-  an old single-collection `分卷大纲.md` is split by the store's migration.
+- **One file per unit, not one file per kind.** A volume's outline and its chapter table are
+  each their own file (`分卷大纲/第1卷.md`, `章节大纲/第1卷.md`, named by number alone so a
+  retitle cannot move them), because a volume gets rewritten while the volumes before it are
+  being serialized, and because a chapter table grows one row per chapter — 1000 rows for a
+  1000-chapter book, all of it rewritten by any plan change. Chapters are two files each.
+  `StorageIndex.volumes` and `StorageIndex.chapterPlans` record which file each unit actually
+  lives in; the two collection files older builds wrote (`分卷大纲.md`, and a `章节大纲.md` that
+  carried the tables) are split by the store's migration.
 - **Writes are a structural diff.** The store renders the state it read and the state it is
   about to write and writes only the files whose bytes differ, so a one-field change to a
   1000-chapter book touches one file rather than two thousand. Deletions come last, which is
@@ -674,6 +677,12 @@ returns both halves, and `NovelStore.migrateDocument` writes the original docume
 `.novel/novel.v2.backup.json` (with `createIfAbsent`, so an existing backup is never
 overwritten), generates every Markdown file, then writes back current-version metadata. A
 version-1 document takes the same path after `migrateV1`:
+
+Version 4 split the volume outlines but still kept the whole chapter plan in one file, so it
+takes the same route once more: split the chapter and rhythm tables per volume by each row's `卷`
+column, leave the opening checklist and an index of the resulting files in the whole-book file, and
+write the per-volume files before rewriting it. Version 3 takes both splits in one pass, because its
+two collection paths are keyed independently.
 
 Version 3 is a different kind of upgrade, and takes a different route. Its content already
 lives in files; only the volume outlines still share one collection file. `migrateDocument`

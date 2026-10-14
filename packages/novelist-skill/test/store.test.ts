@@ -86,6 +86,9 @@ describe('NovelStore', () => {
       '竞品拆解.md',
       '章节大纲.md',
     ])
+    // A project with no chapters yet has no per-volume plan file: nothing to put
+    // in one. The whole-book file is always there, checklist and index included.
+    expect(read?.index?.chapterPlans).toEqual({})
     const onDisk = JSON.parse(await readFile(docPath(), 'utf8')) as { meta: { title: string } }
     expect(onDisk.meta.title).toBe('青云记')
   })
@@ -288,7 +291,7 @@ describe('NovelStore content files', () => {
 
     // The index and the chapter plan follow the rename.
     expect(state?.index?.chapters['chapter-1']?.bodyFile).toBe('章节/第001章-山门之下.md')
-    expect(await readFile(join(root, '章节大纲.md'), 'utf8')).toContain('山门之下')
+    expect(await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')).toContain('山门之下')
   })
 
   it('moves a chapter\'s files when its number changes, and renumbers the plan', async () => {
@@ -299,7 +302,7 @@ describe('NovelStore content files', () => {
     expect(state?.chapters['chapter-1']?.number).toBe(4)
     expect(await readFile(join(root, '章节/第004章-山门.md'), 'utf8')).toContain('山门很高')
     await expect(readFile(join(root, '章节/第001章-山门.md'), 'utf8')).rejects.toThrow()
-    const plan = await readFile(join(root, '章节大纲.md'), 'utf8')
+    const plan = await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')
     // The plan table is the plan layer's home for the number, so it must show the
     // new one and no longer the old.
     const row = /^\|\s*(\d+)\s*\|\s*山门\s*\|/mu.exec(plan)
@@ -435,7 +438,7 @@ describe('NovelStore migration', () => {
     expect(migrated.chapters).toBeUndefined()
     expect(migrated.index.chapters['chapter-1']?.bodyFile).toBe('章节/第001章-山门.md')
     // 4. The read reports the migration and returns the migrated project whole.
-    expect(loaded?.migration).toMatch(/v2 → v4/u)
+    expect(loaded?.migration).toMatch(/v2 → v5/u)
     expect(loaded?.state.characters['lin-yue']?.growthArc).toBe('外门→执剑')
     expect(loaded?.state.chapters['chapter-1']?.body).toBe('山门很高。')
     expect(loaded?.state.chapters['chapter-1']?.plotTask).toBe('抵达山门')
@@ -566,6 +569,224 @@ describe('NovelStore volume migration', () => {
     const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as { schemaVersion: number; index: { volumeFile?: string } }
     expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
     expect(migrated.index.volumeFile).toBeUndefined()
+  })
+})
+
+describe('NovelStore chapter plan files', () => {
+  /** A project whose chapters are filed under two volumes plus one loose chapter. */
+  async function planned(): Promise<void> {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await store.update((state) =>
+      [1, 2, 3]
+        .reduce(
+          (carried, number) => upsertChapter(carried, { id: `chapter-${String(number)}`, number, title: `第${String(number)}章`, volume: number <= 2 ? 1 : 2 }, () => clock),
+          state,
+        ),
+    )
+    await store.update((state) => upsertChapter(state, { id: 'chapter-9', number: 9, title: '路上', volume: 0 }, () => clock))
+  }
+
+  it('writes one plan file per volume, and rewrites only the one that changed', async () => {
+    await planned()
+    const first = join(root, '章节大纲', '第1卷.md')
+    const second = join(root, '章节大纲', '第2卷.md')
+    const loose = join(root, '章节大纲', '未分卷.md')
+    expect(await readFile(first, 'utf8')).toContain('第1章')
+    expect(await readFile(second, 'utf8')).toContain('第3章')
+    expect(await readFile(loose, 'utf8')).toContain('路上')
+    // The whole-book file keeps the checklist and the index, not the rows.
+    const whole = await readFile(join(root, '章节大纲.md'), 'utf8')
+    expect(whole).toContain('## 开篇工程清单')
+    expect(whole).toContain('第 1 卷：第 1–2 章（共 2 章）→ 章节大纲/第1卷.md')
+    expect(whole).not.toContain('第1章')
+
+    const untouched = await readFile(first, 'utf8')
+    await store.update((state) => upsertChapter(state, { id: 'chapter-3', title: '后山' }, () => clock))
+    // Renaming a chapter in volume 2 leaves volume 1's file byte-identical — the
+    // reason the table was split in the first place.
+    expect(await readFile(second, 'utf8')).toContain('后山')
+    expect(await readFile(first, 'utf8')).toBe(untouched)
+  })
+
+  it('moves a row between files when its volume changes', async () => {
+    await planned()
+    await store.update((state) => upsertChapter(state, { id: 'chapter-3', volume: 1 }, () => clock))
+    expect(await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')).toContain('第3章')
+    await expect(readFile(join(root, '章节大纲', '第2卷.md'), 'utf8')).rejects.toThrow()
+    const whole = await readFile(join(root, '章节大纲.md'), 'utf8')
+    expect(whole).toContain('第 1 卷：第 1–3 章（共 3 章）→ 章节大纲/第1卷.md')
+    expect(whole).not.toContain('第2卷.md')
+  })
+
+  it('claims a plan file the index lost track of, and reads its rows back', async () => {
+    await planned()
+    // An older copy of the metadata, or a hand-edit, that never learned where the
+    // plan files live: they are still on disk, and the file wins.
+    const document = JSON.parse(await readFile(docPath(), 'utf8')) as { index: Record<string, unknown> }
+    document.index['chapterPlans'] = {}
+    await writeFile(docPath(), `${JSON.stringify(document, null, 2)}\n`, 'utf8')
+
+    const loaded = await store.readVersioned()
+    expect(loaded?.warnings.join(' ')).toMatch(/认领了未登记的章节大纲 章节大纲\/第1卷\.md/u)
+    expect(loaded?.state.index?.chapterPlans['1']?.file).toBe('章节大纲/第1卷.md')
+    expect(loaded?.state.chapters['chapter-1']?.title).toBe('第1章')
+    expect(loaded?.state.outline.beats).toEqual([])
+  })
+
+  it('reports a hand-written table whose chapters nobody has planned, and leaves it alone', async () => {
+    await planned()
+    await writeFile(
+      join(root, '章节大纲', '第5卷.md'),
+      ['## 章节表', '', '| 章 | 标题 | 卷 |', '|---|---|---|', '| 101 | 北境 | 5 |', ''].join('\n'),
+      'utf8',
+    )
+    const first = await store.readVersioned()
+    // A chapter exists once its contract does; a table of chapters nobody has
+    // planned is named rather than claimed and re-claimed on every read.
+    expect(first?.warnings.join(' ')).toMatch(/没有本项目已有的章节/u)
+    expect(first?.state.chapters['chapter-101']).toBeUndefined()
+    // Reading again changes nothing at all, which is what makes it stable.
+    const document = await readFile(docPath(), 'utf8')
+    expect(await readFile(join(root, '章节大纲', '第5卷.md'), 'utf8')).toContain('北境')
+    await store.read()
+    expect(await readFile(docPath(), 'utf8')).toBe(document)
+  })
+
+  it('refuses two plan files that list the same chapter, naming both', async () => {
+    await planned()
+    // A copy of volume 1's table under another volume's name: the project now says
+    // two different things about chapter 1, and the reader is the last place to guess.
+    await writeFile(
+      join(root, '章节大纲', '第9卷.md'),
+      [
+        '## 章节表',
+        '',
+        '| 章 | 标题 | 卷 | 目标字数 | 一句话 | 梗概 |',
+        '|---|---|---|---|---|---|',
+        '| 1 | 另一个标题 | 9 | | | |',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    await expect(store.read()).rejects.toThrow(/chapter 1 is planned twice/u)
+    await expect(store.read()).rejects.toThrow(/章节大纲\/第1卷\.md and 章节大纲\/第9卷\.md/u)
+  })
+})
+
+describe('NovelStore chapter plan migration', () => {
+  /** A version-4 document: volumes are per file, the chapter plan is still one. */
+  function v4Document(): string {
+    const state = emptyNovel({ title: '青云记', premise: '少年持断剑上山' }, () => clock)
+    const index = { ...state.index, volumes: { '1': { number: 1, file: '分卷大纲/第1卷.md', hash: '' } } } as Record<string, unknown>
+    delete index['chapterPlanDir']
+    delete index['chapterPlans']
+    const { index: _dropped, ...withoutIndex } = state
+    return `${JSON.stringify({ ...withoutIndex, schemaVersion: 4, index }, null, 2)}\n`
+  }
+
+  /** The pre-version-5 whole-book plan file, exactly as that build wrote it. */
+  const COLLECTION = [
+    '# 章节大纲',
+    '',
+    '## 章节表',
+    '',
+    '| 章 | 标题 | 卷 | 目标字数 | 一句话 | 梗概 |',
+    '|---|---|---|---|---|---|',
+    '| 1 | 山门 | 1 | 3000 | 抵达山门 | 抵达山门 |',
+    '| 41 | 后山 | 2 | 3000 | 进后山 | 进后山 |',
+    '| 50 | 路上 |  |  | 赶路 | 赶路 |',
+    '',
+    '## 情绪节拍表',
+    '',
+    '| 章 | 类型 | 一句话 |',
+    '|---|---|---|',
+    '| 1 | tension | 拦路 |',
+    '| 41 | turn | 翻案 |',
+    '',
+    '## 开篇工程清单',
+    '',
+    '- [x] chapter-1-hook — 开篇已写（章末留钩子）',
+    '',
+  ].join('\n')
+
+  beforeEach(async () => {
+    await mkdir(join(root, '.novel'), { recursive: true })
+    await mkdir(join(root, '章节'), { recursive: true })
+    await mkdir(join(root, '章节大纲'), { recursive: true })
+    await writeFile(docPath(), v4Document(), 'utf8')
+    await writeFile(join(root, '章节大纲.md'), COLLECTION, 'utf8')
+    // The chapters themselves exist as contracts; the table supplies their columns.
+    for (const number of [1, 41, 50]) {
+      await writeFile(
+        join(root, '章节', `第${String(number).padStart(3, '0')}章.细纲.md`),
+        `---\nid: "chapter-${String(number)}"\nnumber: ${String(number)}\n---\n\n## 剧情任务\n\n甲\n`,
+        'utf8',
+      )
+    }
+  })
+
+  it('splits the whole-book tables into one file per volume, keeping the checklist', async () => {
+    const loaded = await store.readVersioned()
+    expect(loaded?.migration).toMatch(/章节大纲已按卷拆分/u)
+
+    // 1. One plan file per volume, plus 未分卷 for the chapter filed under none.
+    const first = await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')
+    expect(first).toContain('# 第 1 卷 · 章节大纲')
+    expect(first).toMatch(/\|\s*1\s*\|\s*山门\s*\|\s*1\s*\|\s*3000\s*\|\s*抵达山门\s*\|\s*抵达山门\s*\|/u)
+    expect(first).toMatch(/\|\s*1\s*\|\s*tension\s*\|\s*拦路\s*\|/u)
+    const second = await readFile(join(root, '章节大纲', '第2卷.md'), 'utf8')
+    expect(second).toMatch(/\|\s*41\s*\|\s*后山\s*\|\s*2\s*\|\s*3000\s*\|\s*进后山\s*\|\s*进后山\s*\|/u)
+    expect(second).toMatch(/\|\s*41\s*\|\s*turn\s*\|\s*翻案\s*\|/u)
+    const loose = await readFile(join(root, '章节大纲', '未分卷.md'), 'utf8')
+    expect(loose).toMatch(/\|\s*50\s*\|\s*路上\s*\|/u)
+
+    // 2. The whole-book file keeps the checklist and gains the index of where the
+    //    tables went — and no longer holds a chapter table of its own.
+    const whole = await readFile(join(root, '章节大纲.md'), 'utf8')
+    expect(whole).toContain('## 开篇工程清单')
+    expect(whole).toContain('- [x] chapter-1-hook')
+    expect(whole).toContain('第 1 卷：第 1 章（共 1 章）→ 章节大纲/第1卷.md')
+    expect(whole).toContain('第 2 卷：第 41 章（共 1 章）→ 章节大纲/第2卷.md')
+    expect(whole).toContain('未分卷：第 50 章（共 1 章）→ 章节大纲/未分卷.md')
+    expect(whole).not.toContain('| 1 | 山门 |')
+
+    // 3. The rows and beats came back whole, and the document is current.
+    expect(loaded?.state.chapters['chapter-1']?.title).toBe('山门')
+    expect(loaded?.state.chapters['chapter-1']?.targetWords).toBe(3000)
+    expect(loaded?.state.chapters['chapter-41']?.volume).toBe(2)
+    expect(loaded?.state.chapters['chapter-50']?.volume).toBe(0)
+    expect(loaded?.state.outline.beats).toEqual([
+      { chapter: 1, kind: 'tension', note: '拦路' },
+      { chapter: 41, kind: 'turn', note: '翻案' },
+    ])
+    expect(loaded?.state.outline.opening[0]?.done).toBe(true)
+    const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as {
+      schemaVersion: number
+      index: { chapterPlanDir: string; chapterPlans: Record<string, { file: string }> }
+    }
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
+    expect(migrated.index.chapterPlanDir).toBe('章节大纲')
+    expect(migrated.index.chapterPlans['1']?.file).toBe('章节大纲/第1卷.md')
+  })
+
+  it('is idempotent, and a second read neither rewrites nor re-splits', async () => {
+    await store.read()
+    const whole = await readFile(join(root, '章节大纲.md'), 'utf8')
+    const first = await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')
+    const again = await store.readVersioned()
+    expect(again?.migration).toBeUndefined()
+    expect(await readFile(join(root, '章节大纲.md'), 'utf8')).toBe(whole)
+    expect(await readFile(join(root, '章节大纲', '第1卷.md'), 'utf8')).toBe(first)
+  })
+
+  it('upgrades a v4 document whose tables are already empty, without inventing files', async () => {
+    await writeFile(join(root, '章节大纲.md'), '# 章节大纲\n\n## 开篇工程清单\n\n- [ ] a\n', 'utf8')
+    await rm(join(root, '章节'), { recursive: true, force: true })
+    const loaded = await store.readVersioned()
+    expect(loaded?.migration).toBeUndefined()
+    expect(loaded?.state.chapters).toEqual({})
+    const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as { schemaVersion: number }
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
   })
 })
 
