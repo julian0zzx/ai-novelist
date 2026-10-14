@@ -26,6 +26,7 @@ import {
   lengthWindow,
   narrativeReport,
   normalizeWritingPlan,
+  castDebt,
   castGaps,
   outlinePayoffGaps,
   outlineRatioLabel,
@@ -522,6 +523,10 @@ describe('the cast checklist', () => {
         id: 'lin-yue',
         name: '林越',
         role: 'protagonist',
+        scope: '',
+        volume: 0,
+        firstAppearance: '',
+        exit: '',
         description: '',
         personality: '',
         voice: '',
@@ -543,17 +548,80 @@ describe('the cast checklist', () => {
     // A character with no role at all is unidentified rather than merely thin.
     expect(castGaps(withCharacter({ role: '' }))[0]?.missing).toContain('role')
 
-    // A walk-on with a role, a goal and a voice is complete: the protagonist's
+    // A 配角 with a role, a goal and a voice is complete: the protagonist's
     // additional spine (恐惧/执念/软肋/成长线) is not demanded of them.
-    const walkOn = castGaps(
+    const support = castGaps(
       withCharacter({ role: 'gatekeeper', goal: '拦住上山的人', personality: '死板', voice: '一句话不问第二遍' }),
     )
-    expect(walkOn).toEqual([])
+    expect(support).toEqual([])
   })
 
   it('names a character whose only trait is a goal — the "不够丰满" case', () => {
     const gaps = castGaps(withCharacter({ role: 'rival', goal: '压住林越' }))
     expect(gaps[0]?.missing).toEqual(['personality', 'voice'])
     expect(gaps[0]?.name).toBe('林越')
+    expect(gaps[0]?.scope).toBe('volume')
+  })
+
+  it('holds a 路人 to a name, one line, and the chapter they were seen in', () => {
+    // Nothing but "who he is" and "where he was seen": complete, not thin.
+    const walked = castGaps(
+      withCharacter({ scope: 'cameo', description: '挑担的老汉，在山门口问路。', firstAppearance: '第12章' }),
+    )
+    expect(walked).toEqual([])
+    // A cameo owes neither a personality nor a voice — the point of the tier.
+    expect(castGaps(withCharacter({ scope: 'cameo', description: '挑担的老汉。', firstAppearance: '第12章' }))).toEqual([])
+  })
+
+  it('reports an incomplete 路人 but never counts it as debt', () => {
+    const state = withCharacter({ scope: 'cameo' })
+    const gaps = castGaps(state)
+    expect(gaps[0]?.scope).toBe('cameo')
+    expect(gaps[0]?.missing).toEqual(['description', 'firstAppearance'])
+    // The register is incomplete; the cast layer is not unfinished.
+    expect(castDebt(state)).toEqual([])
+  })
+
+  it('falls back to the role when no scope is declared, so an older cast is unchanged', () => {
+    // A protagonist-shaped role: the full spine, exactly as before tiers existed.
+    expect(castGaps(withCharacter({}))[0]?.scope).toBe('main')
+    // Anything else: 配角, which is what the check demanded before tiers existed.
+    expect(castGaps(withCharacter({ role: 'gatekeeper' }))[0]?.scope).toBe('volume')
+    // An explicit tier beats the role both ways.
+    expect(castGaps(withCharacter({ role: 'protagonist', scope: 'cameo' }))[0]?.scope).toBe('cameo')
+    // An unrecognized tier is not guessed at: it falls back the same way.
+    expect(castGaps(withCharacter({ scope: 'minor' }))[0]?.scope).toBe('main')
+    expect(castGaps(withCharacter({ role: 'gatekeeper', scope: 'minor' }))[0]?.scope).toBe('volume')
+  })
+
+  it('counts only the tiers that owe a spine as cast debt', () => {
+    const state: ReturnType<typeof emptyNovel> = {
+      ...emptyNovel(),
+      characters: {
+        lead: { ...Object.values(withCharacter({}).characters)[0]!, id: 'lead', name: '林越', role: 'protagonist', scope: 'main' },
+        support: {
+          ...Object.values(withCharacter({}).characters)[0]!,
+          id: 'support',
+          name: '守门弟子',
+          role: 'gatekeeper',
+          scope: 'volume',
+          goal: '拦人',
+          personality: '死板',
+          voice: '不问第二遍',
+        },
+        cameo: {
+          ...Object.values(withCharacter({}).characters)[0]!,
+          id: 'cameo',
+          name: '挑担老汉',
+          role: '',
+          scope: 'cameo',
+          description: '在山门口问路。',
+          firstAppearance: '第12章',
+        },
+      },
+    }
+    // The lead is thin (no fear/obsession/weakness/growthArc); the cameo is fine.
+    expect(castDebt(state).map((gap) => gap.id)).toEqual(['lead'])
+    expect(castGaps(state).map((gap) => gap.id)).toEqual(['lead'])
   })
 })

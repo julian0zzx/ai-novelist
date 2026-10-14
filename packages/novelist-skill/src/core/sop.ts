@@ -27,7 +27,7 @@
  * `docs/sop.md` carries the long-form workflow and is checked against this value by
  * `test/sop-spec.test.ts`, so the prose revision and the code revision cannot part ways.
  */
-export const SOP_VERSION = '3.7'
+export const SOP_VERSION = '3.8'
 
 /** One phase of the SOP, bound to the derived {@link ProjectStage} it belongs to. */
 export interface SopPhase {
@@ -260,18 +260,24 @@ export const TOOL_SURFACE = {
     phase: "一/四/六",
     operations: ["character", "world", "link", "review"],
     selector: "kind",
-    purpose: "cast, world facts, reader promises, and their review. Every character owes 性格与说话方式 (a name with a goal and no voice is not a character); the review names the ones that are still thin",
+    purpose: "cast, world facts, reader promises, and their review. A cast entry's `scope` sets what it owes — main (主角/反派/核心伙伴) the full spine, volume (本卷/本地图反复出现或有台词) 身份+欲望+性格+说话方式, cameo (一次性路人) only 「他是谁 + 首次出场章」; the review names the thin ones by tier and keeps walk-ons out of the debt",
     summary:
         'The story bible: cast, world facts, and reader promises. '
-        + 'kind="character" wants the SOP spine — role, goal, personality (性格底色与压力下的反应) and voice (说话方式: 句长、'
-        + '口头禅、称呼、情绪怎么外化) for EVERY character, and for a protagonist also fear, obsession, weakness and the '
-        + 'growth arc. 只有目标、没有性格与说话方式的人物在对话里等于没有人物，所以这两项是必填。 '
+        + 'kind="character" takes a `scope` that decides what the entry owes. main（主角/反派/核心伙伴）要全 spine：role、'
+        + 'goal、personality（性格底色与压力下的反应）、voice（说话方式：句长、口头禅、称呼、情绪怎么外化），另加 fear、'
+        + 'obsession、weakness 与 growthArc。volume（一张地图/一卷内反复出现，或有台词的配角）只要 role、goal、personality、'
+        + 'voice——有台词的人没有说话方式，一场对话就是一个人换几个名字在说；不要求成长线，因为给每个配角编弧光只会写出填充。'
+        + 'cameo（一次性路人）只要一句「他是谁」与 firstAppearance 首次出场章：路人是**登记**，不是人物小传，'
+        + '所以不计入人物欠账。省略 scope 时按 role 判：主角型算 main，其余算 volume（即旧版行为）。'
+        + '可选 volume / exit 让「第 N 卷有哪些人」与「谁已经死了」查得到。 '
         + 'kind="world" states a rule with its cost and limits (a rule without them is flagged). '
         + 'kind="link" records a promise the reader is now waiting on: plant it, give it a due chapter, say how it pays '
         + 'off. Promises are what the SOP closes at volume end — an open promise whose due chapter is already written is '
         + 'reported as overdue. '
-        + 'kind="review" reports every gap across the bible: missing traits (角色不够丰满 is reported character by '
-        + 'character), rules without a price, and unrecovered or overdue promises.',
+        + 'kind="review" reports every gap across the bible: missing traits, tier by tier (角色不够丰满 is reported '
+        + 'character by character, and a walk-on register that is incomplete is reported separately, never as debt), '
+        + 'rules without a price, and unrecovered or overdue promises. It also names a `scope` that is not one of the '
+        + 'three values rather than guessing at it.',
   },
   novel_assess: {
     name: "novel_assess",

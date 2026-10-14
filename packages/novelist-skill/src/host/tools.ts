@@ -85,8 +85,10 @@ import {
   buildRewriteRequest,
   buildTemplate,
   calibrationAge,
+  castDebt,
   castGaps,
   chapterContractLength,
+  characterScope,
   chapterOutlineTarget,
   chaptersPerVolume,
   complianceChecklist,
@@ -147,6 +149,9 @@ import {
   upsertLink,
   upsertVolume,
   upsertWorld,
+  unknownScope,
+  CHARACTER_SCOPES,
+  SCOPE_LABELS,
   verdictFromAssessments,
   volumeLengthNote,
   volumeSpineGaps,
@@ -157,6 +162,7 @@ import {
   writingPlanGaps,
   type Clock,
   type Chapter,
+  type CharacterScope,
   type ConfirmationKind,
   type DiscussionRound,
   type Evaluation,
@@ -257,19 +263,47 @@ function assertSkeletonAuthorised(tool: string, state: NovelState, what: string)
  * a research file they cannot use.
  *
  * @param state - the project.
- * @returns one line per top-level file, empty when the state has no index yet.
+ * @returns one line per content location, empty when the state has no index yet.
  */
 function contentFileLines(state: NovelState): string[] {
   const index = state.index
   if (index === undefined) return []
+  const volumes = Object.values(index.volumes).sort((a, b) => a.number - b.number)
+  const volumeLine = volumes.length === 0
+    ? `- 分卷大纲：${index.volumeDir}/（一卷一个文件，尚无文件）`
+    : `- 分卷大纲：${index.volumeDir}/（一卷一个文件，现有 ${String(volumes.length)} 个：`
+      + `${volumes.map((ref) => ref.file).join('、')}）`
   return [
     `- 全书大纲：${index.outlineFile}`,
     `- 世界观设定：${index.worldFile}`,
     `- 人物设定：${index.castFile}`,
-    `- 分卷大纲：${index.volumeFile}`,
+    volumeLine,
     `- 章节大纲：${index.chapterPlanFile}`,
     `- 竞品拆解：${index.competitorFile}`,
   ]
+}
+
+/**
+ * The volume a character's first appearance falls in, when the character itself
+ * does not say.
+ *
+ * Derived rather than stored twice: the chapter plan already owns which volume a
+ * chapter belongs to, so a walk-on registered as "第37章" does not also have to
+ * be filed under a volume — and cannot disagree with the plan about it.
+ *
+ * @param state - the project.
+ * @param firstAppearance - the chapter id or number as the author wrote it.
+ * @returns the volume number, or 0 when it cannot be told.
+ */
+function volumeOfFirstAppearance(state: NovelState, firstAppearance: string): number {
+  const text = firstAppearance.trim()
+  if (text === '') return 0
+  const named = Object.values(state.chapters).find((chapter) => chapter.id === text)
+  if (named !== undefined) return named.volume
+  const number = Number.parseInt(/\d+/u.exec(text)?.[0] ?? '', 10)
+  if (!Number.isFinite(number)) return 0
+  const chapter = Object.values(state.chapters).find((entry) => entry.number === number)
+  return chapter?.volume ?? 0
 }
 
 /** The store type one execution resolves. */
@@ -374,6 +408,8 @@ const CAST_FIELD_LABELS: Readonly<Record<string, string>> = {
   obsession: '执念',
   weakness: '软肋',
   growthArc: '成长线',
+  description: '他是谁',
+  firstAppearance: '首次出场章',
 }
 
 /**
@@ -1157,17 +1193,28 @@ export function registerTools(
           )
           // A cast layer can be "confirmed" while half its entries are names with
           // a goal attached. Naming them here is the whole point of the check:
-          // thin characters are only visible when something counts them.
+          // thin characters are only visible when something counts them. Walk-ons
+          // are excluded, because a register entry is not a flat character.
           if (layer.key === 'cast') {
-            const thin = castGaps(state)
+            const thin = castDebt(state)
+            const cameos = Object.values(state.characters).filter((character) => characterScope(character) === 'cameo')
             if (thin.length > 0) {
               body.push('', `## 人物丰满度（${String(thin.length)} 位还欠要素）`)
               for (const gap of thin) {
-                body.push(`- ${gap.name}（${gap.id}）缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`)
+                body.push(
+                  `- [${SCOPE_LABELS[gap.scope]}] ${gap.name}（${gap.id}）缺 `
+                  + `${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`,
+                )
               }
               body.push(
                 '缺 personality / voice 的人物在对话里等于没有人物：先把性格底色与说话方式写进《人物设定》，'
                 + '再谈这一层的确认（novel_bible kind="character"）。',
+              )
+            }
+            if (cameos.length > 0) {
+              body.push(
+                `- 另有 ${String(cameos.length)} 位路人（scope="cameo"）已登记：`
+                + '他们只要「他是谁 + 首次出场章」，不计入这一层的欠账。',
               )
             }
           }
@@ -1310,14 +1357,16 @@ export function registerTools(
         const next = await store.update((state) => addConfirmation(state, confirmation, now))
         // Confirming a cast that still has thin entries is allowed — the author may
         // have a reason — but it is said out loud, because "有些角色不够丰满" is
-        // exactly the finding a silent sign-off would bury.
+        // exactly the finding a silent sign-off would bury. Walk-ons are not part
+        // of it: they are a register that keeps growing while the book is written.
         if (recordKind === 'cast') {
-          const thin = castGaps(next)
+          const thin = castDebt(next)
           if (thin.length > 0) {
             warnings.push(
               `人物设定里还有 ${String(thin.length)} 位角色不够丰满：`
               + thin.map((gap) => `${gap.name}（缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}）`).join('；')
-              + '——先补 personality 与 voice，再往下写正文，否则人物在对话里会串味。',
+              + '——先补 personality 与 voice，再往下写正文，否则人物在对话里会串味。'
+              + '（路人 scope="cameo" 不计入：他们只要「他是谁 + 首次出场章」。）',
             )
           }
         }
@@ -1395,8 +1444,8 @@ export function registerTools(
         detail: {
           type: 'string',
           description:
-            "world: the fact itself. volume: the volume's own 分卷剧情大纲 — 卷内节奏、阶段推进、本卷伏笔. It lands in "
-            + "分卷大纲.md as the entry's body and targets about 1/50 of that volume's length.",
+            "world: the fact itself. volume: the volume's own 分卷剧情大纲 — 卷内节奏、阶段推进、本卷伏笔. It lands in that "
+            + "volume's own file (分卷大纲/第N卷.md) under `## 卷内节奏` and targets about 1/50 of that volume's length.",
         },
         logline: { type: 'string', description: 'outline: the one-sentence story.' },
         synopsis: {
@@ -2076,18 +2125,30 @@ export function registerTools(
         id: { type: 'string', description: 'Slug of the entry; derived from name/note when omitted.' },
         name: { type: 'string', description: 'character/world: display name; required when creating.' },
         role: { type: 'string', description: 'character: protagonist | antagonist | foil | …' },
-        description: { type: 'string', description: 'character: appearance and habits — how they are recognised on the page.' },
+        scope: {
+          type: 'string',
+          enum: [...CHARACTER_SCOPES],
+          description:
+            'character: how much of the spine this character owes. main = 主角/反派/核心伙伴（全 spine）；'
+            + 'volume = 一张地图/一卷内反复出现或有台词的配角（身份、欲望、性格、说话方式）；'
+            + 'cameo = 一次性的路人（只要「他是谁」+ 首次出场章）。'
+            + 'Omitted, a protagonist-shaped role is main and everything else volume — the pre-tier behaviour.',
+        },
+        description: { type: 'string', description: 'character: appearance and habits — how they are recognised on the page; for a cameo, the one line saying who they are.' },
+        firstAppearance: { type: 'string', description: 'character: the chapter they were first seen in, e.g. 第37章. A cameo owes this.' },
+        exit: { type: 'string', description: 'character: how they left the story, e.g. 第52章 被灭口 — so a dead walk-on does not walk back in.' },
         personality: {
           type: 'string',
           description:
-            'character: 性格 — their 底色, their contradictions, and what they do under pressure. Required of every character: a '
-            + 'cast entry with a name and a goal and no personality is a name, not a character.',
+            'character: 性格 — their 底色, their contradictions, and what they do under pressure. Required of main and volume '
+            + 'characters: a cast entry with a name and a goal and no personality is a name, not a character. Not required of a cameo.',
         },
         voice: {
           type: 'string',
           description:
             'character: 说话方式 — sentence length, catchphrases, how they address people, how feelings reach the surface. Required '
-            + 'of every character: it is what keeps two people in one dialogue distinguishable with no attributions.',
+            + 'of main and volume characters: it is what keeps two people in one dialogue distinguishable with no attributions. '
+            + 'Not required of a cameo — but anyone who speaks should be promoted to volume rather than left silent.',
         },
         goal: { type: 'string', description: 'character: what they want.' },
         fear: { type: 'string', description: 'character: what they are afraid of.' },
@@ -2107,7 +2168,7 @@ export function registerTools(
         dueAt: { type: 'string', description: 'link: chapter id or number it must pay off by.' },
         payoff: { type: 'string', description: 'link: how it pays off.' },
         status: { type: 'string', enum: [...LINK_STATUSES], description: 'link: open | paid | abandoned.' },
-        volume: { type: 'integer', description: 'link: the volume the payoff belongs to.' },
+        volume: { type: 'integer', description: 'character: the volume/map they belong to (0 = unset), which makes 第 N 卷有哪些人 answerable. link: the volume the payoff belongs to.' },
         remove: { type: 'boolean', description: 'link: delete this promise instead of writing it.' },
       },
       output: { schema: ENVELOPE_SCHEMA, render: renderTool },
@@ -2124,18 +2185,46 @@ export function registerTools(
         if (args.kind === 'review') {
           const world = worldGaps(current)
           const cast = castGaps(current)
+          // Cameo gaps are a register that is incomplete, not a character that is
+          // flat: they are reported below, separately, and they never count as
+          // debt the way a speaking character without a voice does.
+          const debt = castDebt(current)
+          const registerGaps = cast.filter((gap) => gap.scope === 'cameo')
           const progress = progressOf(current)
+          const byScope = (scope: CharacterScope): number =>
+            Object.values(current.characters).filter((character) => characterScope(character) === scope).length
           body.push('## 设定复核')
           body.push(`- 世界设定 ${String(Object.keys(current.world).length)} 条，缺代价/限制 ${String(world.length)} 条`)
           for (const gap of world) body.push(`  - ${gap.name}（${gap.id}）缺 ${gap.missing.join('、')}`)
-          body.push(`- 人物 ${String(Object.keys(current.characters).length)} 位，缺要素 ${String(cast.length)} 位`)
-          for (const gap of cast) {
-            body.push(`  - ${gap.name}（${gap.id}）缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`)
+          body.push(
+            `- 人物 ${String(Object.keys(current.characters).length)} 位（主要角色 ${String(byScope('main'))}、`
+            + `配角 ${String(byScope('volume'))}、路人 ${String(byScope('cameo'))}），不够丰满 ${String(debt.length)} 位`,
+          )
+          for (const gap of debt) {
+            body.push(
+              `  - [${SCOPE_LABELS[gap.scope]}] ${gap.name}（${gap.id}）缺 `
+              + `${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`,
+            )
           }
-          if (cast.length > 0) {
+          if (debt.length > 0) {
             body.push(
               '  - 补法：novel_bible kind="character" id=… personality=… voice=…（性格底色与说话方式是「不够丰满」最常缺的两项）',
             )
+          }
+          for (const character of Object.values(current.characters)) {
+            if (!unknownScope(character)) continue
+            body.push(
+              `  - ${character.name}（${character.id}）的 scope="${character.scope}" 不是 `
+              + `${CHARACTER_SCOPES.join('/')} 之一，已按 ${SCOPE_LABELS[characterScope(character)]} 计；请改成三档之一`,
+            )
+          }
+          if (registerGaps.length > 0) {
+            body.push(`- 路人登记缺项 ${String(registerGaps.length)} 位（不算欠账，只影响「第 N 卷有哪些人」查得准不准）`)
+            for (const gap of registerGaps) {
+              body.push(
+                `  - ${gap.name}（${gap.id}）缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}`,
+              )
+            }
           }
           body.push(
             `- 承诺未回收 ${String(progress.openLinks.length)} 条，逾期 ${String(progress.overdueLinks.length)} 条`,
@@ -2144,7 +2233,9 @@ export function registerTools(
             const link = current.links[id]
             if (link !== undefined) body.push(`  - 逾期：${link.note}（应回收于 ${link.dueAt || '未定'}）`)
           }
-          detail = `复核完成：世界缺口 ${String(world.length)}，人物缺口 ${String(cast.length)}，未回收承诺 ${String(progress.openLinks.length)}`
+          detail = `复核完成：世界缺口 ${String(world.length)}，人物缺口 ${String(debt.length)}`
+            + `${registerGaps.length > 0 ? `（另有 ${String(registerGaps.length)} 位路人登记不全）` : ''}`
+            + `，未回收承诺 ${String(progress.openLinks.length)}`
         } else if (args.kind === 'character') {
           const next = await store.update((state) =>
             upsertCharacter(
@@ -2153,6 +2244,10 @@ export function registerTools(
                 ...(args.id !== undefined && { id: args.id }),
                 ...(args.name !== undefined && { name: args.name }),
                 ...(args.role !== undefined && { role: args.role }),
+                ...(args.scope !== undefined && { scope: args.scope }),
+                ...(args.volume !== undefined && { volume: args.volume }),
+                ...(args.firstAppearance !== undefined && { firstAppearance: args.firstAppearance }),
+                ...(args.exit !== undefined && { exit: args.exit }),
                 ...(args.description !== undefined && { description: args.description }),
                 ...(args.personality !== undefined && { personality: args.personality }),
                 ...(args.voice !== undefined && { voice: args.voice }),
@@ -2169,13 +2264,36 @@ export function registerTools(
             ),
           )
           const id = normalizeId(args.id) || normalizeId(args.name) || ''
-          detail = `人物「${next.characters[id]?.name ?? id}」已写入（共 ${String(Object.keys(next.characters).length)} 位）`
+          const written = next.characters[id]
+          const scope = written === undefined ? 'volume' : characterScope(written)
+          detail = `人物「${written?.name ?? id}」已写入（${SCOPE_LABELS[scope]}，共 ${String(Object.keys(next.characters).length)} 位）`
           const gap = castGaps(next).find((entry) => entry.id === id)
-          if (gap !== undefined) {
+          if (gap !== undefined && scope === 'cameo') {
             warnings.push(
-              `该人物缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}：`
-              + 'SOP 要求每位人物都有身份/阵营、欲望、性格与说话方式，主角另需恐惧、执念、软肋与成长线——'
-              + '只有目标的人物在对话里等于没有人物',
+              `这位路人还缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}：`
+              + '路人只要一句「他是谁」和首次出场章就算登记完了——但写清他在哪一章出现过，'
+              + '下次回到这张地图时才查得到。他若有台词、还会再出现，就把 scope 升成 volume，补上说话方式',
+            )
+          } else if (gap !== undefined) {
+            warnings.push(
+              `该人物（${SCOPE_LABELS[scope]}）缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}：`
+              + (scope === 'main'
+                ? 'SOP 要求主角/反派/核心伙伴写全 spine（身份/阵营、欲望、性格、说话方式，另加恐惧、执念、软肋与成长线）'
+                : 'SOP 要求配角有身份/阵营、欲望、性格与说话方式；只有目标的人物在对话里等于没有人物')
+              + '——若他只是这一张地图里的一次性路人，把 scope 写成 cameo 就只需「他是谁 + 首次出场章」',
+            )
+          }
+          // The collision that actually bites when a walk-on is minted without
+          // checking the register first: two entries carrying one display name.
+          // A derived id would have merged them, so this is someone passing an
+          // explicit `id` — which is exactly how the second 老王 gets born.
+          const name = written?.name.trim() ?? ''
+          const clashes = Object.values(next.characters).filter((other) => other.id !== id && other.name.trim() === name)
+          if (name !== '' && clashes.length > 0) {
+            warnings.push(
+              `「${name}」与已有的 ${clashes.map((other) => `${other.name}（${other.id}）`).join('、')} 重名：`
+              + '读者分不清两个同名的人，改个名字，或给他一个固定称呼（「西街的老王」）——'
+              + '不显式给 id 时同名会合并成同一位，所以这里通常是 id 写重了',
             )
           }
         } else if (args.kind === 'world') {
@@ -2907,13 +3025,49 @@ export function registerTools(
         const detail = args.detail ?? 'dashboard'
 
         if (detail === 'bible') {
+          // Tiered, because the answer to "who is in this book" is three
+          // different answers, and a flat list buries the protagonist among the
+          // walk-ons. Within a tier the cast reads in id order.
+          const cast = Object.values(state.characters).sort((a, b) => a.id.localeCompare(b.id, 'zh-Hans-CN'))
           body.push('## 人物')
-          for (const character of Object.values(state.characters)) {
-            body.push(`- ${character.name}（${character.id}，${character.role || '角色'}）：${character.goal || '（无目标）'}`)
-            body.push(`  性格：${character.personality || '（未写——人物不够丰满的常见原因）'}`)
-            body.push(`  说话方式：${character.voice || '（未写）'}`)
-            if (character.obsession !== '') body.push(`  执念：${character.obsession}`)
-            if (character.weakness !== '') body.push(`  软肋：${character.weakness}`)
+          for (const scope of CHARACTER_SCOPES) {
+            const group = cast.filter((character) => characterScope(character) === scope)
+            if (group.length === 0) continue
+            body.push(`### ${SCOPE_LABELS[scope]}（${String(group.length)}）`)
+            for (const character of group) {
+              if (scope === 'cameo') {
+                // A walk-on's whole record is: who they are and where they were seen.
+                const where = character.volume > 0 ? `第 ${String(character.volume)} 卷` : ''
+                const first = character.firstAppearance || '（未记首次出场章）'
+                body.push(
+                  `- ${character.name}（${character.id}）${[where, first].filter((part) => part !== '').join(' · ')}`
+                  + `${character.description === '' ? '' : `：${character.description}`}`
+                  + `${character.exit === '' ? '' : `［${character.exit}］`}`,
+                )
+                continue
+              }
+              body.push(`- ${character.name}（${character.id}，${character.role || '角色'}）：${character.goal || '（无目标）'}`)
+              body.push(`  性格：${character.personality || '（未写——人物不够丰满的常见原因）'}`)
+              body.push(`  说话方式：${character.voice || '（未写）'}`)
+              if (character.obsession !== '') body.push(`  执念：${character.obsession}`)
+              if (character.weakness !== '') body.push(`  软肋：${character.weakness}`)
+              if (character.exit !== '') body.push(`  退场：${character.exit}`)
+            }
+          }
+          // The lookup the walk-on register exists for: opening a chapter inside a
+          // map you have used before. The volume is taken from the character's own
+          // key, or derived from the chapter they first appeared in.
+          const byVolume = new Map<number, string[]>()
+          for (const character of cast) {
+            const volume = character.volume > 0 ? character.volume : volumeOfFirstAppearance(state, character.firstAppearance)
+            if (volume <= 0) continue
+            byVolume.set(volume, [...(byVolume.get(volume) ?? []), character.name])
+          }
+          if (byVolume.size > 0) {
+            body.push('', '## 按卷/地图查人')
+            for (const volume of [...byVolume.keys()].sort((a, b) => a - b)) {
+              body.push(`- 第 ${String(volume)} 卷：${(byVolume.get(volume) ?? []).join('、')}`)
+            }
           }
           body.push('', '## 世界设定')
           for (const entry of Object.values(state.world)) {
@@ -3037,7 +3191,8 @@ export function registerTools(
           // cannot say what happens, no chapter count makes the project ready.
           const spineGaps = outlineSpineGaps(state.outline)
           const styleGaps = outlineStyleGaps(state.outline)
-          const thinCast = castGaps(state)
+          const thinCast = castDebt(state)
+          const cameos = Object.values(state.characters).filter((character) => characterScope(character) === 'cameo')
           const volumeGaps = state.outline.volumes.map((volume) => ({ volume, gaps: volumeSpineGaps(volume) }))
           const volumeDebt = volumeGaps.reduce((total, entry) => total + entry.gaps.length, 0)
           body.push(
@@ -3052,11 +3207,12 @@ export function registerTools(
               ? '- 写作风格（全书大纲七要素）：已写全'
               : `- 写作风格缺 ${String(styleGaps.length)}/7 项：${styleGaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}`
                 + '（novel_plan operation="outline"）——未写全时 novel_write 拒绝写正文',
-            thinCast.length === 0
-              ? '- 人物丰满度：每位角色都有性格与说话方式'
+            (thinCast.length === 0
+              ? '- 人物丰满度：主要角色与配角都有性格与说话方式'
               : `- 人物不够丰满 ${String(thinCast.length)} 位：`
                 + thinCast.map((gap) => `${gap.name}（缺 ${gap.missing.map((field) => CAST_FIELD_LABELS[field] ?? field).join('、')}）`).join('；')
-                + '（novel_bible kind="review"）',
+                + '（novel_bible kind="review"）')
+              + (cameos.length > 0 ? `；另有 ${String(cameos.length)} 位路人已登记（不计欠账）` : ''),
             '',
           )
           body.push(

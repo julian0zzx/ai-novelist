@@ -85,7 +85,7 @@ src/core/          pure domain — no I/O, no clock, no Cordis
   markdown.ts        the restricted dialect: frontmatter, sections, tables, hashing
   content.ts         the §4 ownership table: state ⇄ Markdown files, per kind
   novel.ts           every state transition as a pure function, the metadata codec, derived views
-  plan.ts            what the plan still owes: pitch/world/cast/contract gaps and the length targets
+  plan.ts            what the plan still owes: pitch/world/cast(tiered)/contract gaps and the length targets
   spine.ts           what a planning layer owes the story, checked before it owes a word count
   metrics.ts         baselines → thresholds → verdicts → iteration rules → the evaluation hint
   write.ts           the delivery report: did the prose pay for the plan? (plus the 去 AI 化 statistics)
@@ -160,10 +160,15 @@ import the other to spell a filename.
   instead of reporting a clean failure over invisible half-state. A pure metadata conflict,
   with nothing committed, stays a plain `NovelConflictError`.
 - **The file wins.** Every read adopts whatever the files now say and refreshes the index;
-  a chapter file dropped in by hand is *claimed* by its frontmatter `id`, and a file with no
-  `id` is reported as an orphan and left where it is. The one refusal is syntax: a file that
-  cannot be parsed raises a `NovelStoreError` naming the file and the parser's complaint, and
-  nothing overwrites it.
+  a chapter file dropped in by hand is *claimed* by its frontmatter `id`, a volume file by the
+  number in its name, and a file that carries neither is reported as an orphan and left where
+  it is. The one refusal is syntax: a file that cannot be parsed raises a `NovelStoreError`
+  naming the file and the parser's complaint, and nothing overwrites it.
+- **One file per unit, not one file per kind.** The volume outlines are already one file per
+  volume (`分卷大纲/第1卷.md`, named by number alone so a retitle cannot move it), because a
+  volume gets rewritten while the volumes before it are being serialized; the chapters are two
+  files each. `StorageIndex.volumes` is what records which file a volume actually lives in, and
+  an old single-collection `分卷大纲.md` is split by the store's migration.
 - **Writes are a structural diff.** The store renders the state it read and the state it is
   about to write and writes only the files whose bytes differ, so a one-field change to a
   1000-chapter book touches one file rather than two thousand. Deletions come last, which is
@@ -409,7 +414,7 @@ planning artefact in the order the SOP produces them:
 | `competitors` | 竞品拆解 | ≥ 20 titles dismantled |
 | `naming` | 候选书名 | ≥ 3 candidate sets |
 | `world` | 世界观设定 | every entry has a detail, a cost and a limit, and the layer is signed off |
-| `cast` | 人物设定 | no `castGaps` remain, and the layer is signed off |
+| `cast` | 人物设定 | no `castDebt` remains (the people who owe a spine — a walk-on register is reported by `castGaps` but never counted), and the layer is signed off |
 | `outline` | 全书大纲 | the narrative spine reads whole, and the layer is signed off |
 | `style` | 写作风格 | all seven elements are written |
 | `volumes` | 分卷大纲 | every volume's spine is complete, and the layer is signed off |
@@ -429,7 +434,7 @@ Three properties of that table are the point:
   because no author "confirmed" it; with it, a full outline nobody has been shown reads as
   `draft` — which is the state the checkpoints exist to empty.
 * **The completeness checks are the core's own** (`missingPitchFields`, `worldGaps`,
-  `castGaps`, `outlineSpineGaps`, `outlineStyleGaps`, `volumeSpineGaps`, plus
+  `castDebt`, `outlineSpineGaps`, `outlineStyleGaps`, `volumeSpineGaps`, plus
   `COMPETITOR_TARGET` and `NAMING_MIN_CANDIDATES`, which the tools share), so the board and
   `novel_status` cannot report different findings and a threshold lives in one place. `gaps`
   carries the domain's own labels, which is what a card's tooltip shows.
@@ -646,7 +651,7 @@ observation: the SOP's failure modes are *forgotten* things — a memorable poin
 down, a threshold nobody can compare against, a promise nobody closes. The only way a tool
 prevents forgetting is to make each of them a field.
 
-That is why the document is at version 3. It holds, as data: the commercial frame and the
+That is why the document is at version 4. It holds, as data: the commercial frame and the
 calibration medians (`platform`, `baselines`), the commitments made to readers (`links`), the
 readings, the evaluation and iteration ledger (`readings`, `evaluations`, `iterations`), the
 launch decisions behind phase three (`launchDecisions`), the closing material (`retro`), the
@@ -665,10 +670,19 @@ describe.
 `parseMetadata` accepts version 1, version 2, and version 3, and refuses anything else with a
 `NovelStoreError` naming the versions it supports. Because content migration needs a
 filesystem, the *store* performs it, not the pure codec: `migrateV2` extracts the content and
-returns both halves, and `NovelStore.ensureMigrated` writes the original document to
+returns both halves, and `NovelStore.migrateDocument` writes the original document to
 `.novel/novel.v2.backup.json` (with `createIfAbsent`, so an existing backup is never
-overwritten), generates every Markdown file, then writes back version-3 metadata. A version-1
-document takes the same path after `migrateV1`:
+overwritten), generates every Markdown file, then writes back current-version metadata. A
+version-1 document takes the same path after `migrateV1`:
+
+Version 3 is a different kind of upgrade, and takes a different route. Its content already
+lives in files; only the volume outlines still share one collection file. `migrateDocument`
+reads that collection, writes one file per volume, and deletes the collection **last**, so an
+interrupted run leaves the only copy of the content in place and the next read simply repeats
+the split. No document backup is taken, because nothing is removed from the document — the
+volume content is re-rendered into the files that replace the collection before the collection
+goes away. A version-3 document with no collection file is upgraded in shape only, and invents
+no volumes. The version-1 path is:
 
 - the v1 chapter `synopsis` becomes `plotTask` — a draft must never be emptied by an upgrade;
 - premise, cast, world entries and chapters survive as they are, and `readChapter` fills the
@@ -681,8 +695,8 @@ document takes the same path after `migrateV1`:
   before the 3.2 revision is lost.
 
 **The backup is kept forever.** A human's draft does not disappear because the plugin changed
-its storage layout. Every migration is idempotent too: a second read of a version-3 document
-changes nothing, and the migration report is returned once, by the read that triggered it.
+its storage layout. Every migration is idempotent too: a second read changes nothing, and the
+migration report is returned once, by the read that triggered it.
 
 The project therefore lands in whatever stage its data supports — a migrated draft usually
 reports `planning`, with `blockers` naming exactly what the SOP now wants next. Each `read*`

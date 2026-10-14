@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
-import { Config, apply, inject, name } from '../src/index.ts'
+import { Config, NOVEL_SCHEMA_VERSION, apply, inject, name } from '../src/index.ts'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 
 /**
@@ -205,14 +205,14 @@ describe('apply', () => {
     // later than any constant would guess.
     const upgraded = await until(async () => {
       const version = await readVersion()
-      return version === 3
+      return version === NOVEL_SCHEMA_VERSION
     })
     expect(upgraded).toBe(true)
     expect(await readFile(join(root, '.novel', 'novel.v2.backup.json'), 'utf8')).toBe(first)
     const migrated = JSON.parse(await readFile(projectPath(), 'utf8')) as { schemaVersion: number; meta: { title: string } }
-    expect(migrated.schemaVersion).toBe(3)
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
     expect(migrated.meta.title).toBe('Draft')
-    // A third mount sees a version-3 document and leaves everything alone: the
+    // A third mount sees a current document and leaves everything alone: the
     // migration ran exactly once, and the backup was not overwritten.
     const third = new Context()
     third.plugin(LocalFileSystem, { cwd: root, diffBasisMaxBytes: 64 * 1024 })

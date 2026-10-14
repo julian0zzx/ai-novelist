@@ -45,6 +45,8 @@ import {
   metadataOf,
   parseDocument,
   parseMetadata,
+  parseVolumeCollectionFile,
+  renderVolumeFile,
   serializeMetadata,
   stateOf,
   type Clock,
@@ -59,6 +61,8 @@ import {
   isMarkdownFile,
   isOutlineFile,
   topLevelPaths,
+  volumeNumberFromFileName,
+  volumePath,
 } from '../core/paths.ts'
 import type { NovelMetadata, NovelState, StorageIndex, StorageLayout } from '../core/types.ts'
 import { NOVEL_DIR, classifyWorkspace, type WorkspaceVerdict } from '../core/workspace.ts'
@@ -154,7 +158,7 @@ export interface NovelStoreOptions {
   readonly workspaceRoot?: string
   /** Clock seam for deterministic tests. */
   readonly clock?: Clock
-  /** Filenames the five top-level content files use. */
+  /** Names of the top-level content files and the two content directories. */
   readonly layout?: StorageLayout
 }
 
@@ -209,7 +213,7 @@ export class NovelStore {
   /** Absolute root every content path resolves against. */
   readonly workspaceRoot: string
 
-  /** Filenames the five top-level content files use. */
+  /** Names of the top-level content files and the two content directories. */
   readonly layout: StorageLayout
 
   /** The context whose `fs` service every read and write goes through. */
@@ -480,6 +484,10 @@ export class NovelStore {
   /**
    * Read the metadata document and assemble the state from the files it indexes.
    *
+   * The document is upgraded **first**, inside this call, so every reader — a
+   * model tool and the browser half alike — sees a current project rather than
+   * one whose content still lives somewhere this build no longer looks.
+   *
    * @returns the assembled state with the metadata's version token, or `undefined`.
    */
   private async load(policy: CallSandboxPolicy | undefined): Promise<
@@ -491,19 +499,30 @@ export class NovelStore {
       }
     | undefined
   > {
-    const target = await this.resolve()
-    let info = await this.fs.stat(target)
-    if (info === undefined || info.type !== 'file') return undefined
-    const raw = await this.fs.readText(target)
-    if (raw.trim() === '') return undefined
+    const before = await this.readDocument()
+    if (before === undefined) return undefined
+    // Parse once on the ordinary path. An older document is migrated and then
+    // parsed again, because migration is what changes it.
+    let parsed = parseMetadata(before.raw)
+    let document = before
+    if (parsed.version !== NOVEL_SCHEMA_VERSION) {
+      document = (await this.migrateDocument(before.raw, before.info, policy)) ?? before
+      parsed = parseMetadata(document.raw)
+    }
+    // A document the migration could not bring to the current version — a
+    // version-3 project with no collection file to split — is upgraded by the
+    // metadata write below instead: its index shape and version are what change.
+    const upgrade = parsed.version !== NOVEL_SCHEMA_VERSION
+    const info = document.info
 
     const warnings: string[] = []
-    const { metadata } = parseMetadata(raw)
+    const metadata = parsed.metadata
 
     // Directory hygiene: put back whatever the index lost, and report files that
     // cannot be claimed at all rather than deleting or ignoring them silently.
     const claimed = await this.claim({ ...metadata.index }, warnings)
-    const indexed = claimed.index
+    const volumeClaim = await this.claimVolumes(claimed.index, warnings)
+    const indexed = volumeClaim.index
     const outlineFallback = metadata.opening
 
     const files: Record<string, string> = {}
@@ -511,9 +530,9 @@ export class NovelStore {
       indexed.outlineFile,
       indexed.castFile,
       indexed.worldFile,
-      indexed.volumeFile,
       indexed.chapterPlanFile,
       indexed.competitorFile,
+      ...Object.values(indexed.volumes).map((ref) => ref.file),
       ...Object.values(indexed.chapters).flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
     ]
     for (const path of new Set(paths.filter((path) => path !== ''))) {
@@ -540,8 +559,11 @@ export class NovelStore {
 
     // The index is a cache of what is on disk, so keeping it in step costs one
     // metadata write on the reads that changed it and nothing on the reads that
-    // did not. A write here is safe: it is derived entirely from the files.
-    if (refreshed.changed || claimed.changed) {
+    // did not. A write here is safe: it is derived entirely from the files. A
+    // document written by an older build is rewritten even when the index it
+    // produced matches, because the version and the index's own shape are part
+    // of what this write brings up to date.
+    if (refreshed.changed || claimed.changed || volumeClaim.changed || upgrade) {
       const written = await this.writeMetadataText(
         serializeMetadata(metadataOf(state, refreshed.index)),
         info.version,
@@ -554,6 +576,20 @@ export class NovelStore {
     const report = take(this.pendingReport)
     this.pendingReport = undefined
     return { state, version: info.version, warnings, ...report }
+  }
+
+  /**
+   * Read the metadata document itself.
+   *
+   * @returns its text and current info, or `undefined` when there is no project.
+   */
+  private async readDocument(): Promise<{ readonly raw: string; readonly info: FsInfo } | undefined> {
+    const target = await this.resolve()
+    const info = await this.fs.stat(target)
+    if (info === undefined || info.type !== 'file') return undefined
+    const raw = await this.fs.readText(target)
+    if (raw.trim() === '') return undefined
+    return { raw, info }
   }
 
   /**
@@ -607,10 +643,119 @@ export class NovelStore {
         outlineHash: outline === undefined ? (recorded?.outlineHash ?? '') : hashContent(outline),
       }
     }
+    // A volume's path follows its number, so the recorded path is kept as-is:
+    // the author may have named the file themselves, and the file wins.
+    const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+    for (const volume of assembled.outline.volumes) {
+      const key = String(volume.number)
+      const recorded = index.volumes[key]
+      const path = recorded?.file ?? volumePath(volume.number, index)
+      const text = files[path]
+      // A path whose file was not read keeps the hash the index recorded; a
+      // claimed file was read but is not in `files`, and keeps its claimed hash.
+      volumes[key] = {
+        number: volume.number,
+        file: path,
+        hash: text === undefined ? (recorded?.hash ?? '') : hashContent(text),
+      }
+    }
     const hashes: Record<string, string> = {}
     for (const [path, text] of Object.entries(files)) hashes[path] = hashContent(text)
-    const next: StorageIndex = { ...index, chapters, files: hashes }
+    const next: StorageIndex = { ...index, chapters, volumes, files: hashes }
     return { index: next, changed: !sameIndex(index, next) }
+  }
+
+  /**
+   * Adopt volume outline files the index does not know about, and report the ones
+   * that cannot be claimed.
+   *
+   * The volume directory is the per-volume analogue of `章节/`, so it gets the
+   * same treatment: a file dropped in by hand — `分卷大纲/第7卷.md`, or a copy an
+   * author made to draft the next volume — is claimed by its number on the next
+   * read instead of silently existing on disk. A second file claiming a number
+   * that another present file already owns is reported rather than guessed at,
+   * because "which of these two is volume 7" is not a question to answer by
+   * file order.
+   *
+   * @param index - the recorded index, returned extended with whatever was claimed.
+   * @param warnings - collector for what could not be claimed.
+   * @returns the claimed index and whether anything changed.
+   */
+  private async claimVolumes(
+    index: StorageIndex,
+    warnings: string[],
+  ): Promise<{ readonly index: StorageIndex; readonly changed: boolean }> {
+    const directory = await this.fs.resolve(this.contain(index.volumeDir))
+    const info = await this.fs.stat(directory)
+    if (info === undefined || info.type !== 'directory') return { index, changed: false }
+
+    let entries: FsDirEntry[] = []
+    try {
+      entries = await this.fs.listDir(directory)
+    } catch {
+      return { index, changed: false }
+    }
+
+    const known = new Set(Object.values(index.volumes).map((ref) => ref.file))
+    const volumes = { ...index.volumes }
+    let changed = false
+    for (const entry of entries) {
+      if (entry.type !== 'file') continue
+      const path = `${index.volumeDir}/${entry.name}`
+      if (known.has(path) || !isMarkdownFile(path)) continue
+      const text = await this.readContent(path)
+      if (text === undefined) continue
+      const number = volumeNumberFromFileName(path) ?? this.volumeNumberIn(text, path)
+      if (number === undefined) {
+        warnings.push(`${path} 既没有形如「第7卷.md」的文件名，frontmatter 里也没有卷号，无法认领；已保留原文件未做改动`)
+        continue
+      }
+      const current = volumes[String(number)]
+      // The indexed file may simply have been renamed, in which case it is gone
+      // from disk and this file legitimately takes its place.
+      if (current !== undefined && (await this.contentExists(current.file))) {
+        warnings.push(`${path} 与已登记的 ${current.file} 都声明为第 ${String(number)} 卷，未认领；请删掉其中一个`)
+        continue
+      }
+      volumes[String(number)] = { number, file: path, hash: hashContent(text) }
+      known.add(path)
+      changed = true
+      warnings.push(`认领了未登记的分卷大纲 ${path}`)
+    }
+    return { index: { ...index, volumes }, changed }
+  }
+
+  /**
+   * Read the volume number out of a volume file's own frontmatter.
+   *
+   * The fallback for a file an author renamed; a file with neither a number in
+   * its name nor one in its frontmatter is reported instead of guessed at.
+   *
+   * @param text - the file's text.
+   * @param path - the file, for error messages.
+   * @returns the number, or `undefined` when the file carries none.
+   */
+  private volumeNumberIn(text: string, path: string): number | undefined {
+    let frontmatter: YamlMap
+    try {
+      frontmatter = parseDocument(text, path).frontmatter
+    } catch (error) {
+      throw asStoreError(error)
+    }
+    const value = frontmatter['number']
+    const number = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10)
+    return Number.isInteger(number) && number > 0 ? number : undefined
+  }
+
+  /**
+   * Whether a workspace-relative content path currently holds a regular file.
+   *
+   * @param path - the path to probe.
+   * @returns true when the file exists.
+   */
+  private async contentExists(path: string): Promise<boolean> {
+    if (path === '') return false
+    return isRegularFile(this.fs, await this.fs.resolve(this.contain(path)))
   }
 
   /**
@@ -716,34 +861,104 @@ export class NovelStore {
   // ── migration ───────────────────────────────────────────────────────────────
 
   /**
-   * Migrate a pre-split document once per store instance.
+   * Migrate an older document once per store instance, before the reads run.
    *
-   * Reading is the natural trigger: a version-2 document cannot be read without
+   * Reading is the natural trigger: an older document cannot be read without
    * being converted, and the conversion must not run twice concurrently (two
-   * readers would both generate files and race on the backup).
-   *
-   * The order is the plan's: **back up first**, then generate, then replace the
-   * document. The backup is created with `createIfAbsent`, so an existing one is
-   * never overwritten and two racing readers cannot clobber each other's copy.
-   * If it already exists, the project was migrated by an earlier session whose
-   * content files are the current truth, so there is nothing left to do.
+   * readers would both generate files and race on the backup). This wrapper is
+   * what serializes that; {@link migrateDocument} is the work, and {@link load}
+   * calls it directly because it may already be running inside the write queue,
+   * where enqueuing again would deadlock.
    */
   private async ensureMigrated(policy: CallSandboxPolicy | undefined): Promise<void> {
     this.migration ??= this.enqueue(async () => {
-      const target = await this.resolve()
-      const info = await this.fs.stat(target)
-      if (info === undefined || info.type !== 'file') return
-      const raw = await this.fs.readText(target)
-      if (raw.trim() === '') return
-      const { version, legacy } = parseMetadata(raw)
-      if (version === NOVEL_SCHEMA_VERSION || legacy === undefined) return
-      if (!(await this.backup(raw, policy))) return
+      const document = await this.readDocument()
+      if (document === undefined) return
+      await this.migrateDocument(document.raw, document.info, policy)
+    })
+    return this.migration
+  }
+
+  /**
+   * Bring one document up to the current schema, and report what was left on disk.
+   *
+   * Two upgrades live here, and they are different in kind:
+   *
+   * - **Versions 1 and 2** kept the whole novel inside `novel.json`. The
+   *   conversion is the plan's: **back up first**, then generate every content
+   *   file, then replace the document. The backup is created with
+   *   `createIfAbsent`, so an existing one is never overwritten and two racing
+   *   readers cannot clobber each other's copy.
+   * - **Version 3** already kept its content in files, but kept every volume
+   *   outline in one collection file. That is split into one file per volume and
+   *   the collection is deleted. No backup of the document is taken: nothing is
+   *   removed from it, and the volume content is re-rendered into the files that
+   *   replace the collection before the collection goes away.
+   *
+   * @param raw - the document's current text.
+   * @param info - the document's current filesystem info, for the version guard.
+   * @param policy - sandbox policy for this call.
+   * @returns the document as it now stands when this call migrated it, or
+   *   `undefined` when there was nothing to do.
+   */
+  private async migrateDocument(
+    raw: string,
+    info: FsInfo,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<{ readonly raw: string; readonly info: FsInfo } | undefined> {
+    const { version, legacy, legacyVolumeFile } = parseMetadata(raw)
+    if (version === NOVEL_SCHEMA_VERSION) return undefined
+    if (legacy !== undefined) {
+      if (!(await this.backup(raw, policy))) return undefined
       const chapters = Object.keys(legacy.chapters).length
       await this.writeAll(legacy, info.version, policy, { forceRewrite: true })
       this.pendingReport = `novel.json 已升级 v${String(version)} → v${String(NOVEL_SCHEMA_VERSION)}：` +
         `生成 ${String(chapters)} 章的内容文件，原文档备份在 ${MIGRATION_BACKUP_PATH}`
-    })
-    return this.migration
+    } else if (legacyVolumeFile !== undefined) {
+      // A version-3 document with no collection file on disk has nothing to
+      // split; the ordinary index refresh is what upgrades its shape.
+      if (!(await this.splitLegacyVolumes(legacyVolumeFile, policy))) return undefined
+    } else {
+      return undefined
+    }
+    const after = await this.readDocument()
+    return after
+  }
+
+  /**
+   * Split the version-3 volume collection into one file per volume.
+   *
+   * The files are written first and the collection is deleted last, so an
+   * interrupted run leaves the collection — the only copy of the content until
+   * the split finishes — in place, and the next read simply runs it again.
+   *
+   * @param legacyPath - the collection file's workspace-relative path.
+   * @param policy - sandbox policy for this call.
+   * @returns true when the collection existed and was split.
+   */
+  private async splitLegacyVolumes(legacyPath: string, policy: CallSandboxPolicy | undefined): Promise<boolean> {
+    let text: string | undefined
+    try {
+      text = await this.readContent(legacyPath)
+    } catch (error) {
+      throw asStoreError(error)
+    }
+    if (text === undefined) return false
+    let volumes: ReturnType<typeof parseVolumeCollectionFile>
+    try {
+      volumes = parseVolumeCollectionFile(text, legacyPath)
+    } catch (error) {
+      throw asStoreError(error)
+    }
+    for (const volume of [...volumes].sort((a, b) => a.number - b.number)) {
+      const path = volumePath(volume.number, this.layout)
+      const target = await this.fs.resolve(this.contain(path))
+      await this.writeGuarded(target, renderVolumeFile(volume), policy)
+    }
+    await this.remove(legacyPath)
+    this.pendingReport = `分卷大纲已按卷拆分：${legacyPath} → ${this.layout.volumeDir}/` +
+      `（${String(volumes.length)} 个文件，一卷一个），原文件已删除`
+    return true
   }
 
   /**
@@ -854,7 +1069,8 @@ export class NovelStore {
    * produced is already correct and is reused verbatim — which is what lets
    * {@link NovelStore.persistMetadata} skip a metadata write for a change that
    * touched no content file. Only the chapters whose paths moved, plus any new
-   * chapter, have their hashes recomputed.
+   * chapter, have their hashes recomputed. A volume's path follows its number
+   * and cannot move, so volumes only ever appear or disappear here.
    *
    * @param state - the state being written.
    * @param files - the rendered files, keyed by path.
@@ -881,8 +1097,18 @@ export class NovelStore {
         outlineHash: samePaths ? (recorded?.outlineHash ?? '') : '',
       }
     }
-    if (!moved) return base
-    return { ...base, chapters }
+    const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+    for (const volume of state.outline.volumes) {
+      const key = String(volume.number)
+      const recorded = base.volumes[key]
+      volumes[key] = {
+        number: volume.number,
+        file: recorded?.file ?? volumePath(volume.number, base),
+        hash: recorded?.hash ?? '',
+      }
+    }
+    if (!moved && sameVolumes(base.volumes, volumes)) return base
+    return { ...base, chapters, volumes }
   }
 
   /**
@@ -892,9 +1118,8 @@ export class NovelStore {
    * were actually written — and writing is what may have moved a chapter.
    *
    * @param index - the index to complete.
-   * @param index - the index to complete.
    * @param files - the rendered files, keyed by path.
-   * @returns the index with hashes for every chapter and file.
+   * @returns the index with hashes for every chapter, volume, and file.
    */
   private rehash(index: StorageIndex, files: Readonly<Record<string, string>>): StorageIndex {
     let changed = false
@@ -906,8 +1131,14 @@ export class NovelStore {
       if (bodyHash !== ref.bodyHash || outlineHash !== ref.outlineHash) changed = true
       chapters[id] = { ...ref, bodyHash, outlineHash }
     }
+    const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+    for (const [key, ref] of Object.entries(index.volumes)) {
+      const hash = files[ref.file] === undefined ? ref.hash : hashContent(files[ref.file] ?? '')
+      if (hash !== ref.hash) changed = true
+      volumes[key] = { ...ref, hash }
+    }
     if (!changed) return index
-    return { ...index, chapters, files: hashAll(files) }
+    return { ...index, chapters, volumes, files: hashAll(files) }
   }
 
   /**
@@ -1046,7 +1277,9 @@ export class NovelStore {
    * Paths come from the state's own index — never re-derived from titles — so a
    * chapter whose file is named by hand keeps its name across writes. Only a
    * chapter whose number or title actually changed is re-pathed at read time,
-   * which is what makes a rename a rename rather than an orphan.
+   * which is what makes a rename a rename rather than an orphan. A volume's path
+   * is derived from its number when the index has not recorded one, which is the
+   * same rule in its simplest form: the number is the whole name.
    *
    * @param state - the state to render.
    * @param index - the index whose recorded paths are honored; defaults to the
@@ -1065,9 +1298,13 @@ export class NovelStore {
       [index.outlineFile]: parts.outline,
       [index.castFile]: parts.cast,
       [index.worldFile]: parts.world,
-      [index.volumeFile]: parts.volumes,
       [index.chapterPlanFile]: parts.chapterPlan,
       [index.competitorFile]: parts.competitors,
+    }
+    for (const [key, text] of Object.entries(parts.volumes)) {
+      const recorded = index.volumes[key]
+      const path = recorded?.file ?? volumePath(Number.parseInt(key, 10), index)
+      files[path] = text
     }
     for (const [id, chapter] of Object.entries(parts.chapters)) {
       const recorded = index.chapters[id]
@@ -1104,18 +1341,24 @@ export class NovelStore {
         outlineHash: hashes[paths.outlineFile] ?? '',
       }
     }
-    return { ...base, chapters, files: { ...hashes } }
+    const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+    for (const volume of state.outline.volumes) {
+      const key = String(volume.number)
+      const path = base.volumes[key]?.file ?? volumePath(volume.number, base)
+      volumes[key] = { number: volume.number, file: path, hash: hashes[path] ?? '' }
+    }
+    return { ...base, chapters, volumes, files: { ...hashes } }
   }
 
   /**
    * Indexed paths that the new state no longer writes.
    *
    * Both indexes matter. The **previous** one knows the paths this state has
-   * abandoned (a chapter that was renamed or renumbered). The **next** one knows
-   * the paths that were never on disk before — and those must not be mistaken for
-   * orphans: a chapter written for the first time appears in the new index and in
-   * `files`, and treating it as an orphan would delete the chapter the write just
-   * created.
+   * abandoned (a chapter that was renamed or renumbered, a volume that was
+   * dropped). The **next** one knows the paths that were never on disk before —
+   * and those must not be mistaken for orphans: a chapter or volume written for
+   * the first time appears in the new index and in `files`, and treating it as an
+   * orphan would delete the content the write just created.
    *
    * @param previous - the index the write started from.
    * @param next - the index the write produces.
@@ -1131,6 +1374,8 @@ export class NovelStore {
     const candidates = [
       ...Object.values(previous.chapters).flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
       ...Object.values(next.chapters).flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
+      ...Object.values(previous.volumes).map((ref) => ref.file),
+      ...Object.values(next.volumes).map((ref) => ref.file),
       ...topLevelPaths(this.layout),
     ]
     return [...new Set(candidates)].filter((path) => path !== '' && !keep.has(path))
@@ -1297,8 +1542,9 @@ function sameIndex(a: StorageIndex, b: StorageIndex): boolean {
     a.outlineFile !== b.outlineFile ||
     a.castFile !== b.castFile ||
     a.worldFile !== b.worldFile ||
-    a.volumeFile !== b.volumeFile ||
-    a.chapterPlanFile !== b.chapterPlanFile
+    a.volumeDir !== b.volumeDir ||
+    a.chapterPlanFile !== b.chapterPlanFile ||
+    a.competitorFile !== b.competitorFile
   ) {
     return false
   }
@@ -1322,6 +1568,27 @@ function sameIndex(a: StorageIndex, b: StorageIndex): boolean {
     ) {
       return false
     }
+  }
+  return sameVolumes(a.volumes, b.volumes)
+}
+
+/**
+ * Whether two volume maps record the same files and hashes.
+ *
+ * @param a - one map, keyed by volume number as a string.
+ * @param b - the other.
+ * @returns true when they match entry for entry.
+ */
+function sameVolumes(
+  a: StorageIndex['volumes'],
+  b: StorageIndex['volumes'],
+): boolean {
+  const entries = Object.entries(a)
+  if (entries.length !== Object.keys(b).length) return false
+  for (const [key, ref] of entries) {
+    const other = b[key]
+    if (other === undefined) return false
+    if (other.number !== ref.number || other.file !== ref.file || other.hash !== ref.hash) return false
   }
   return true
 }

@@ -390,18 +390,24 @@ export interface MdSection {
 }
 
 /**
- * Split a body into its `##` sections.
+ * Split a body into its `##` sections, keeping any text before the first one.
+ *
+ * A document whose *preface* is content — a volume outline, whose 卷内节奏 is
+ * written above the named elements — needs the text that {@link splitSections}
+ * drops. The level-one title line is still not content: it is the document's
+ * name, and every file here writes one.
  *
  * Headings inside fenced code blocks are not headings — a chapter contract may
  * legitimately contain ```yaml or a quoted scene containing `##`, and treating
  * those as structure would corrupt the section map.
  *
  * @param body - the file text after the frontmatter.
- * @returns the sections, in file order.
+ * @returns the preamble and the sections, both in file order.
  */
-export function splitSections(body: string): MdSection[] {
+export function splitDocument(body: string): { readonly preamble: string; readonly sections: MdSection[] } {
   const lines = body.split('\n')
   const sections: MdSection[] = []
+  const preamble: string[] = []
   let fence: string | undefined
   let title: string | undefined
   let buffer: string[] = []
@@ -414,7 +420,8 @@ export function splitSections(body: string): MdSection[] {
     if (marker !== undefined) {
       if (fence === undefined) fence = marker
       else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined
-      if (title !== undefined) buffer.push(line)
+      if (title === undefined) preamble.push(line)
+      else buffer.push(line)
       continue
     }
     const heading = fence === undefined ? /^##[ \t]+(.*?)[ \t]*$/u.exec(line) : null
@@ -424,10 +431,29 @@ export function splitSections(body: string): MdSection[] {
       buffer = []
       continue
     }
-    if (title !== undefined) buffer.push(line)
+    if (title === undefined) {
+      // The `#` title is the document's name, not its content.
+      if (!/^#[ \t]/u.test(line)) preamble.push(line)
+    } else {
+      buffer.push(line)
+    }
   }
   flush()
-  return sections
+  return { preamble: preamble.join('\n').replace(/^\s+|\s+$/gu, ''), sections }
+}
+
+/**
+ * Split a body into its `##` sections.
+ *
+ * Headings inside fenced code blocks are not headings — a chapter contract may
+ * legitimately contain ```yaml or a quoted scene containing `##`, and treating
+ * those as structure would corrupt the section map.
+ *
+ * @param body - the file text after the frontmatter.
+ * @returns the sections, in file order.
+ */
+export function splitSections(body: string): MdSection[] {
+  return splitDocument(body).sections
 }
 
 /**

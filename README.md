@@ -179,7 +179,7 @@ package cannot insert a row for itself.
 
 The host package has its own developer reference —
 [`packages/novelist-skill/README.md`](packages/novelist-skill/README.md) —
-with the module map, the schema-v3 data model, and the invariants a contributor must keep.
+with the module map, the schema-v4 data model, and the invariants a contributor must keep.
 
 ## Where the novel lives
 
@@ -193,21 +193,28 @@ novel-workspace/
   全书大纲.md            # logline, the narrative spine (synopsis, protagonist/support/antagonist arcs,
                         # faction shift, adversarial arcs, costs, gains), full outline, acts, minimal outline
   世界观设定.md          # one section per world fact
-  人物设定.md            # one section per character
-  分卷大纲.md            # one section per volume: the spine first (synopsis, arcs, factions, conflict,
-                        # costs, gains), then goal/conflict/climax/hook + the volume's own rhythm (≈ volume/50)
+  人物设定.md            # one section per character, by tier: 主要角色 full spine, 配角 role/goal/personality/voice,
+                        # walk-on 路人 just who they are and their first chapter (never counted as debt)
   章节大纲.md            # the chapter table + the rhythm table (each contract ≈ chapter/10)
   竞品拆解.md            # one section per comparable title, twelve editable fields (20–50 of them)
+  分卷大纲/
+    第1卷.md             # ONE FILE PER VOLUME: its own rhythm (≈ volume/50) and the volume's seven
+                         # narrative elements as `##` sections; goal/conflict/climax/hook in the frontmatter
+    第2卷.md             # a later volume is rewritten without touching the volumes before it
   章节/
     第001章-山门.md      # prose
     第001章-山门.细纲.md # the contract: plot task, key turn, price paid, conflict, payoff, gap, beats, hook
   .novel/
-    novel.json            # metadata + index (schemaVersion: 3)
+    novel.json            # metadata + index (schemaVersion: 4)
     novel.v2.backup.json  # only after a migration; never overwritten
     manuscript.md         # written by novel_repo operation="export"
     templates/            # written by novel_repo operation="template"
     reviews/              # model transcripts and rewritten drafts
 ```
+
+**Each volume keeps its outline in its own file.** A volume gets rewritten while the volumes before
+it are already being serialized, so the file is named by number alone (`分卷大纲/第1卷.md`): a retitle
+never moves it, and revising volume 7 never rewrites volumes 1–6.
 
 **Every outline layer is checked story first, payoffs second, length last** (SOP 3.5 §1.5). Each
 layer names its narrative elements as fields, every empty one is reported, and the word-count line
@@ -224,11 +231,14 @@ Writes go content-files-first and metadata-last, so the index may point at older
 the length of one write but never at a file that does not exist. A failed write reports which
 files landed and which did not.
 
-The document is `schemaVersion: 2`. A version-1 document is migrated automatically on read
-and never lost: the old chapter `synopsis` becomes that chapter's task, the old premise,
-cast, world facts and chapters are kept, and everything the SOP needs that version 1 did
-not model starts empty (so the project simply lands in the phase its data supports). An
-unsupported version is refused rather than guessed at.
+The document is `schemaVersion: 4`. Older documents are migrated automatically on read and
+never lost. A version-1 document keeps its premise, cast, world facts and chapters (the old
+chapter `synopsis` becomes that chapter's task, and everything the SOP needs that version 1
+did not model starts empty, so the project simply lands in the phase its data supports). A
+version-2 document is backed up to `.novel/novel.v2.backup.json` before its content is written
+out as files. A version-3 document has its single `分卷大纲.md` split into one file per volume
+and the collection deleted — new files first, collection last. An unsupported version is
+refused rather than guessed at.
 
 ### How a workspace becomes a novel workspace
 

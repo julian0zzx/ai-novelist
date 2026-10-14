@@ -27,6 +27,7 @@ import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
 import {
   assessReading,
   assessStage,
+  castDebt,
   castGaps,
   confirmationStanding,
   describeWritingPlan,
@@ -247,7 +248,7 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
         deAiDue: standing.deAi.due,
         deAiUnreviewed: standing.deAi.unreviewed,
         styleGaps: outlineStyleGaps(state.outline).map((gap) => gap.key),
-        thinCast: castGaps(state).map((gap) => `${gap.name}（缺 ${gap.missing.join('、')}）`),
+        thinCast: castDebt(state).map((gap) => `${gap.name}（缺 ${gap.missing.join('、')}）`),
         confirmationGaps: standing.blockers,
         lastNumber: last?.number ?? 0,
         lastTitle: last?.title ?? '',

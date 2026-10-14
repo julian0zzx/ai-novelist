@@ -256,8 +256,9 @@ describe('phase one: planning', () => {
     const thin = await call('novel_bible', { kind: 'character', name: '林越', role: 'protagonist', goal: '上山' })
     expect((thin['warnings'] as string[]).join(' ')).toMatch(/性格|说话方式/)
 
-    // A walk-on with a role, a goal, a personality and a voice is complete.
-    const walkOn = await call('novel_bible', {
+    // A supporting character (the default tier for a non-protagonist role) with a
+    // role, a goal, a personality and a voice is complete.
+    const support = await call('novel_bible', {
       kind: 'character',
       name: '守门弟子',
       role: 'gatekeeper',
@@ -265,15 +266,122 @@ describe('phase one: planning', () => {
       personality: '死板，认规矩不认人',
       voice: '一句话不问第二遍',
     })
-    expect(((walkOn['warnings'] as string[] | undefined) ?? []).join(' ')).not.toMatch(/性格|说话方式/)
+    expect(((support['warnings'] as string[] | undefined) ?? []).join(' ')).not.toMatch(/性格|说话方式/)
 
     const review = await callText('novel_bible', { kind: 'review' })
-    expect(review).toMatch(/人物丰满度|缺要素/u)
+    expect(review).toMatch(/不够丰满 1 位/u)
     expect(review).toMatch(/林越.*缺.*性格/u)
 
     // …and the dashboard counts them, so it is a number rather than an impression.
     const dashboard = await callText('novel_status', {})
     expect(dashboard).toMatch(/人物不够丰满 1 位/u)
+  })
+
+  it('lets a 路人 through on 「他是谁 + 首次出场章」 alone, and keeps it out of the debt', async () => {
+    await call('novel_init', { title: '青云记' })
+    const walked = await call('novel_bible', {
+      kind: 'character',
+      name: '守夜的老兵',
+      scope: 'cameo',
+      description: '左腿有点瘸，认得后山的每条路。',
+      firstAppearance: '第37章',
+      volume: 2,
+    })
+    // No nag: a register entry is not a flat character.
+    expect(((walked['warnings'] as string[] | undefined) ?? []).join(' ')).not.toMatch(/性格|说话方式|不够丰满/)
+    expect(String(walked['detail'])).toMatch(/路人/u)
+
+    // A cameo that says neither who they are nor where they were seen is reported
+    // — as an incomplete register, never as a character who is not fleshed out.
+    await call('novel_bible', { kind: 'character', name: '挑担老汉', scope: 'cameo' })
+    const review = await callText('novel_bible', { kind: 'review' })
+    expect(review).toMatch(/路人登记缺项 1 位/u)
+    expect(review).toMatch(/挑担老汉.*缺.*他是谁.*首次出场章/u)
+
+    // Neither one leaves the cast layer unfinished, and neither is counted as a
+    // thin character on the dashboard.
+    const dashboard = await callText('novel_status', {})
+    expect(dashboard).toMatch(/主要角色与配角都有性格与说话方式/u)
+    expect(dashboard).toMatch(/另有 2 位路人已登记/u)
+  })
+
+  it('falls back to the role when scope is omitted, so an older cast is held to what it always was', async () => {
+    await call('novel_init', { title: '青云记' })
+    // No scope, a non-protagonist role: the tier is 配角, and 性格/说话方式 are owed.
+    const bare = await call('novel_bible', { kind: 'character', name: '守门弟子', role: 'gatekeeper', goal: '拦人' })
+    expect((bare['warnings'] as string[]).join(' ')).toMatch(/性格|说话方式/)
+    // An explicit cameo is the way out, and it is said in the warning.
+    expect((bare['warnings'] as string[]).join(' ')).toMatch(/cameo/)
+
+    // A protagonist-shaped role with no scope is still held to the full spine.
+    const lead = await call('novel_bible', { kind: 'character', name: '林越', role: '主角', goal: '上山' })
+    expect((lead['warnings'] as string[]).join(' ')).toMatch(/恐惧|执念|软肋|成长线/)
+  })
+
+  it('names a scope it does not know rather than guessing at it', async () => {
+    await call('novel_init', { title: '青云记' })
+    // The tool's own enum will not let a bad tier through, so the only way one
+    // arrives is a hand-edited file — which is the case the reader must not
+    // guess at (the file wins, but "minor" is not a tier anyone defined).
+    await writeFile(
+      join(root, '人物设定.md'),
+      [
+        '# 人物设定',
+        '',
+        '## 守门弟子',
+        '',
+        '```yaml',
+        'id: shoumen-dizi',
+        'role: gatekeeper',
+        'scope: minor',
+        'goal: 拦人',
+        'personality: 死板',
+        'voice: 不问第二遍',
+        '```',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    const review = await callText('novel_bible', { kind: 'review' })
+    expect(review).toMatch(/scope="minor".*不是.*之一/u)
+    expect(review).toMatch(/按 配角/u)
+  })
+
+  it('warns when two cast entries carry one display name', async () => {
+    await call('novel_init', { title: '青云记' })
+    await call('novel_bible', { kind: 'character', id: 'lao-wang', name: '老王', scope: 'cameo', description: '茶馆掌柜。', firstAppearance: '第3章' })
+    const second = await call('novel_bible', {
+      kind: 'character',
+      id: 'lao-wang-houshan',
+      name: '老王',
+      scope: 'cameo',
+      description: '后山的猎户。',
+      firstAppearance: '第40章',
+    })
+    expect((second['warnings'] as string[]).join(' ')).toMatch(/「老王」.*重名/u)
+    expect((second['warnings'] as string[]).join(' ')).toMatch(/lao-wang/u)
+  })
+
+  it('tiers the bible view and answers 「第 N 卷有哪些人」', async () => {
+    await call('novel_init', { title: '青云记' })
+    await call('novel_bible', {
+      kind: 'character',
+      name: '林越',
+      role: 'protagonist',
+      goal: '上山',
+      personality: '外冷内倔',
+      voice: '短句',
+      fear: '被逐',
+      obsession: '断剑',
+      weakness: '受不得激',
+      growthArc: '外门→执剑',
+    })
+    await call('novel_bible', { kind: 'character', name: '守夜的老兵', scope: 'cameo', description: '左腿有点瘸。', firstAppearance: '第37章', volume: 2 })
+    const bible = await callText('novel_status', { detail: 'bible' })
+    expect(bible).toMatch(/### 主要角色（1）/u)
+    expect(bible).toMatch(/### 路人（一次性）（1）/u)
+    expect(bible).toMatch(/## 按卷\/地图查人/u)
+    expect(bible).toMatch(/第 2 卷：守夜的老兵/u)
   })
 })
 

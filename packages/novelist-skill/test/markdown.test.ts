@@ -23,6 +23,7 @@ import {
   sectionText,
   serializeFrontmatter,
   splitEntryBody,
+  splitDocument,
   splitFrontmatter,
   splitSections,
 } from '../src/core/markdown.ts'
@@ -139,6 +140,16 @@ describe('sections', () => {
     const sections = splitSections('## 一\n\n```yaml\nx: "## 不是小节"\n```\n\n正文\n\n## 二\n\n尾\n')
     expect(sections.map((section) => section.title)).toEqual(['一', '二'])
     expect(sectionText(sections, '一')).toContain('## 不是小节')
+  })
+
+  it('keeps the prose above the first heading when the caller asks for it', () => {
+    const { preamble, sections } = splitDocument('# 第 1 卷 山门\n\n标题下面的节奏安排。\n\n## 本卷梗概\n\n故事。\n')
+    // The `#` title is the document's name, not part of the preamble.
+    expect(preamble).toBe('标题下面的节奏安排。')
+    expect(sections.map((section) => section.title)).toEqual(['本卷梗概'])
+    // `splitSections` remains the same view minus the preamble.
+    expect(splitSections('# 第 1 卷 山门\n\n标题下面的节奏安排。\n\n## 本卷梗概\n\n故事。\n')).toEqual(sections)
+    expect(splitDocument('## 一\n\n甲\n').preamble).toBe('')
   })
 
   it('reports a missing section as an empty field, not as an error', () => {

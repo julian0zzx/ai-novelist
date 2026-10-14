@@ -14,9 +14,10 @@
  * @module @ai-novelist/novelist-skill/core/novel
  */
 
-import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from './paths.ts'
+import { DEFAULT_STORAGE_LAYOUT, LEGACY_VOLUME_FILE, chapterPaths, volumePath } from './paths.ts'
 import {
   CHAPTER_STATUSES,
+  CHARACTER_SCOPES,
   COMPETITOR_TARGET,
   CONFIRMATION_KINDS,
   CONFIRMATION_MIN_ROUNDS,
@@ -33,6 +34,7 @@ import {
   type Chapter,
   type ChapterStatus,
   type Character,
+  type CharacterScope,
   type Competitor,
   type Confirmation,
   type ConfirmationKind,
@@ -322,6 +324,62 @@ function hash(text: string): number {
   return value
 }
 
+/**
+ * Which cast tier a character is held to.
+ *
+ * An explicit, recognized {@link CHARACTER_SCOPES} value wins. Otherwise the
+ * answer comes from the role — a protagonist-shaped role is `main`, everything
+ * else `volume` — which reproduces exactly what the cast check demanded before
+ * tiers existed, so an older `人物设定.md` needs no migration and no entry is
+ * quietly let off the stricter requirement by an upgrade. An unrecognized value
+ * is treated the same way rather than guessed at, and `novel_bible
+ * kind="review"` names it so the typo is visible instead of silently demoting
+ * someone.
+ *
+ * @param character - the cast entry.
+ * @returns the scope to hold it to.
+ */
+export function characterScope(character: { readonly role: string; readonly scope: string }): CharacterScope {
+  const declared = character.scope.trim().toLowerCase()
+  const known = CHARACTER_SCOPES.find((scope) => scope === declared)
+  if (known !== undefined) return known
+  return /protagonist|主角|lead/iu.test(character.role) ? 'main' : 'volume'
+}
+
+/**
+ * Whether a cast entry declares a scope this build does not know.
+ *
+ * @param character - the cast entry.
+ * @returns true when `scope` is written but is not one of the three tiers.
+ */
+export function unknownScope(character: { readonly scope: string }): boolean {
+  const declared = character.scope.trim().toLowerCase()
+  return declared !== '' && !CHARACTER_SCOPES.some((scope) => scope === declared)
+}
+
+/** A default cast entry: a name with nothing decided about it yet. */
+export function emptyCharacter(): Character {
+  return {
+    id: '',
+    name: '',
+    role: '',
+    scope: '',
+    volume: 0,
+    firstAppearance: '',
+    exit: '',
+    description: '',
+    personality: '',
+    voice: '',
+    goal: '',
+    fear: '',
+    obsession: '',
+    weakness: '',
+    camp: '',
+    growthArc: '',
+    notes: '',
+  }
+}
+
 // ── defaults ──────────────────────────────────────────────────────────────────
 
 /** A project that exists but has no premise yet. */
@@ -455,17 +513,18 @@ export function emptyNovel(meta: Partial<NovelMeta> = {}, now: Clock = systemClo
  * make module evaluation order load-bearing for no benefit.
  *
  * @param layout - the filenames the index should point at.
- * @returns an index with no chapters and no hashes.
+ * @returns an index with no chapters, no volumes, and no hashes.
  */
 export function emptyIndex(layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): StorageIndex {
   return {
     outlineFile: layout.outlineFile,
     castFile: layout.castFile,
     worldFile: layout.worldFile,
-    volumeFile: layout.volumeFile,
+    volumeDir: layout.volumeDir,
     chapterPlanFile: layout.chapterPlanFile,
     competitorFile: layout.competitorFile,
     chapters: {},
+    volumes: {},
     files: {},
   }
 }
@@ -689,6 +748,10 @@ function readCharacter(id: string, value: Record<string, unknown>): Character {
     id,
     name: readString(value, 'name', id),
     role: readString(value, 'role', ''),
+    scope: readString(value, 'scope', ''),
+    volume: readNumber(value, 'volume', 0),
+    firstAppearance: readString(value, 'firstAppearance', ''),
+    exit: readString(value, 'exit', ''),
     description: readString(value, 'description', ''),
     personality: readString(value, 'personality', ''),
     voice: readString(value, 'voice', ''),
@@ -1177,14 +1240,30 @@ function readIndex(value: unknown, meta: NovelMeta): StorageIndex {
       if (typeof hash === 'string') files[path] = hash
     }
   }
+  const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+  if (isRecord(value['volumes'])) {
+    for (const [key, raw] of Object.entries(value['volumes'])) {
+      if (!isRecord(raw)) continue
+      const file = readString(raw, 'file', '')
+      if (file === '') continue
+      const number = readNumber(raw, 'number', Number.parseInt(key, 10))
+      if (!Number.isInteger(number) || number <= 0) continue
+      volumes[key] = { number, file, hash: readString(raw, 'hash', '') }
+    }
+  }
   return {
     outlineFile: readString(value, 'outlineFile', base.outlineFile),
     castFile: readString(value, 'castFile', base.castFile),
     worldFile: readString(value, 'worldFile', base.worldFile),
-    volumeFile: readString(value, 'volumeFile', base.volumeFile),
+    // A version-3 document names its single volume collection file here instead;
+    // this falls back to the directory the version-4 layout uses, and the store's
+    // migration is what splits the collection into it. An empty string is not a
+    // directory: it would make the workspace root the volume directory.
+    volumeDir: readString(value, 'volumeDir', base.volumeDir) || base.volumeDir,
     chapterPlanFile: readString(value, 'chapterPlanFile', base.chapterPlanFile),
     competitorFile: readString(value, 'competitorFile', base.competitorFile),
     chapters,
+    volumes,
     files,
   }
 }
@@ -1310,9 +1389,9 @@ export function migrateV2(parsed: Record<string, unknown>): { readonly metadata:
  * Used by migration, where the content has never been written and therefore has
  * no recorded paths yet. Hashes stay empty: the store fills them in as it writes.
  *
- * @param state - the state whose chapters need paths.
- * @param base - the index to extend, providing the five top-level names.
- * @returns the index with a chapter entry per chapter.
+ * @param state - the state whose chapters and volumes need paths.
+ * @param base - the index to extend, providing the top-level names.
+ * @returns the index with a chapter entry per chapter and a volume entry per volume.
  */
 function indexFor(state: NovelState, base: StorageIndex): StorageIndex {
   const chapters: Record<string, StorageIndex['chapters'][string]> = {}
@@ -1327,7 +1406,15 @@ function indexFor(state: NovelState, base: StorageIndex): StorageIndex {
       outlineHash: '',
     }
   }
-  return { ...base, chapters }
+  const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+  for (const volume of state.outline.volumes) {
+    volumes[String(volume.number)] = {
+      number: volume.number,
+      file: base.volumes[String(volume.number)]?.file ?? volumePath(volume.number, base),
+      hash: '',
+    }
+  }
+  return { ...base, chapters, volumes }
 }
 
 /**
@@ -1436,15 +1523,21 @@ export function migrateV1(parsed: Record<string, unknown>): NovelState {
  * for the same reason, and lands in the same "content still in the document"
  * shape as version 2 so one migration path serves both.
  *
+ * Version 3 is the version whose content already lives in files, but whose
+ * volumes still share one collection file. Its metadata reads back unchanged;
+ * what the caller has to be told is where that collection file is, because only
+ * a caller with a filesystem can split it — see {@link ParsedMetadata.legacyVolumeFile}.
+ *
  * @param raw - the JSON text read from disk.
- * @returns the version found, the metadata, and the state when the document
- *   still held its content.
+ * @returns the version found, the metadata, the state when the document still
+ *   held its content, and the version-3 volume collection path when there is one.
  * @throws {NovelStoreError} when the payload is not this plugin's document.
  */
 export function parseMetadata(raw: string): {
   readonly version: number
   readonly metadata: NovelMetadata
   readonly legacy?: NovelState
+  readonly legacyVolumeFile?: string
 } {
   let parsed: unknown
   try {
@@ -1462,9 +1555,19 @@ export function parseMetadata(raw: string): {
     const migrated = migrateV2(parsed)
     return { version: 2, metadata: migrated.metadata, legacy: migrated.state }
   }
+  if (version === 3) {
+    // The index is where the collection file was recorded, and it is the only
+    // place that knows: the filename is configurable, so it cannot be assumed.
+    const index = isRecord(parsed['index']) ? parsed['index'] : {}
+    return {
+      version: 3,
+      metadata: readMetadata(parsed),
+      legacyVolumeFile: readString(index, 'volumeFile', LEGACY_VOLUME_FILE),
+    }
+  }
   if (version !== NOVEL_SCHEMA_VERSION) {
     throw new NovelStoreError(
-      `novel store schemaVersion ${String(version)} is not supported (expected ${String(NOVEL_SCHEMA_VERSION)}, 2, or 1)`,
+      `novel store schemaVersion ${String(version)} is not supported (expected ${String(NOVEL_SCHEMA_VERSION)}, 3, 2, or 1)`,
     )
   }
   return { version: NOVEL_SCHEMA_VERSION, metadata: readMetadata(parsed) }
@@ -2578,6 +2681,10 @@ export function upsertCharacter(
     id,
     name: patch.name ?? existing?.name ?? id,
     role: patch.role ?? existing?.role ?? '',
+    scope: patch.scope ?? existing?.scope ?? '',
+    volume: patch.volume ?? existing?.volume ?? 0,
+    firstAppearance: patch.firstAppearance ?? existing?.firstAppearance ?? '',
+    exit: patch.exit ?? existing?.exit ?? '',
     description: patch.description ?? existing?.description ?? '',
     personality: patch.personality ?? existing?.personality ?? '',
     voice: patch.voice ?? existing?.voice ?? '',

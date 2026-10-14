@@ -6,6 +6,11 @@
 >
 > 实现者请注意：本文件是这次改造的契约。§3 的 frontmatter 键名、§4 的归属表、
 > §6 的写入顺序都已拍定，不要各自发挥；有异议先改本文件再加代码。
+>
+> **版本 4 的修订（分卷大纲改为卷一卷一文件）**：连载中要改的通常是后面的卷，而一整份分卷
+> 合集意味着改第 7 卷要重写第 1–6 卷所在的同一个文件。分卷大纲因此从 `分卷大纲.md`
+> （多条目合集）改为 `分卷大纲/第N卷.md`（一卷一文件，文件名只带卷号）。§2、§3.4、§4 的
+> 归属、§5 的索引、§7 的迁移已按此更新；v3 文档由 store 迁移读取并拆分。
 
 ---
 
@@ -40,9 +45,11 @@
 ├── 全书大纲.md
 ├── 人物设定.md
 ├── 世界观设定.md
-├── 分卷大纲.md
 ├── 章节大纲.md
 ├── 竞品拆解.md                       # 3.4 新增：一本同榜书一个 ## 小节
+├── 分卷大纲/                         # 4.0 新增：一卷一个文件
+│   ├── 第1卷.md
+│   └── 第2卷.md
 └── 章节/
     ├── 第001章-山门.细纲.md          # 契约（八个字段）
     └── 第001章-山门.md               # 正文
@@ -50,7 +57,10 @@
 
 ### 2.1 命名规则
 
-- 顶层六个文件名**固定中文名**，不随书名变化。
+- 顶层五个文件名**固定中文名**，不随书名变化。分卷大纲不是顶层文件，而是 `分卷大纲/` 下
+  一卷一个文件；章节同理，一章两个文件。
+- 分卷文件：`分卷大纲/第{卷号}卷.md`，**只带卷号、不补零、不带卷名**。卷名改了文件名不动；
+  章节才靠改名，这是刻意的差别：连载中改卷名比改章名频繁得多。
 - 章节文件：`第{章号补零到 3 位}章-{净化后的标题}.md`；标题为空时 `第001章.md`。
   细纲文件在同名后加 `.细纲`，即 `第001章-山门.细纲.md`。
 - 标题净化：去掉 `/ \ : * ? " < > |`、控制字符、首尾空白与点号；截断到 40 字。
@@ -62,9 +72,9 @@
 
 ### 2.2 章节文件规模说明
 
-1000 章 = 2000 个章节文件。若日后觉得 `章节大纲.md` 单文件过大（它随章节数线性增长，
-且每次计划变更都要整份重写），可改为按卷拆分 `章节大纲/第1卷.md`。**本次不做**，
-但读取代码不要假设"章节大纲只有一个文件"——用索引里的路径列表驱动。
+1000 章 = 2000 个章节文件，外加每卷一个分卷大纲文件。若日后觉得 `章节大纲.md` 单文件过大
+（它随章节数线性增长，且每次计划变更都要整份重写），可改为按卷拆分 `章节大纲/第1卷.md`。
+**本次不做**，但读取代码不要假设"章节大纲只有一个文件"——用索引里的路径列表驱动。
 
 ---
 
@@ -118,6 +128,7 @@ updatedAt: 2026-09-13T14:20:34.921Z
 ```yaml
 id: lin-yue
 role: protagonist
+scope: main
 goal: 上山问清父亲的死因
 fear: 发现父亲确实背叛了师门
 obsession: 断剑不离手
@@ -132,25 +143,52 @@ camp: protagonist-camp
 ```yaml
 id: shoumen-dizi
 role: gatekeeper
+scope: volume
+goal: 拦住上山的人
+personality: 死板，认规矩不认人
+voice: 一句话不问第二遍
 ```
+
+## 挑担老汉
+
+```yaml
+id: tiaodan-laohan
+scope: cameo
+volume: 2
+firstAppearance: 第12章
+```
+
+在山门口问路，问完就走了。
 ````
 
-- `id` 缺失时按标题 slug 补；`id` 重复时**报错**（不猜）。
-- 人物 yaml 键：`id` `role` `goal` `fear` `obsession` `weakness` `camp` `description`（可选）。
-  其余正文拼进 `description`。
+- `id` 缺失时按标题 slug 补；`id` 重复时**报错**（不猜）。文件按档排序（主要角色在前、路人在后），
+  便于人读。
+- 人物 yaml 键：`id` `role` `scope` `volume` `firstAppearance` `exit` `goal` `personality` `voice`
+  `fear` `obsession` `weakness` `camp` `growthArc` `notes` `description`（可选）。其余正文拼进
+  `description`。
+- **`scope` 决定这一条欠什么**（`castGaps`/`castDebt`）：
+  - `main` — 主角/反派/核心伙伴：`role` `goal` `personality` `voice`，另加 `fear` `obsession`
+    `weakness` `growthArc`；
+  - `volume` — 一张地图或一卷内反复出现、或有台词的配角：`role` `goal` `personality` `voice`；
+  - `cameo` — 一次性路人：`description`（他是谁）与 `firstAppearance`（首次出场章），
+    并要求 `description` 或正文有一句说明。
+  - **省略 `scope` 时按 `role` 判**：主角型角色算 `main`，其余算 `volume`——与 3.8 之前的要求
+    完全一致，老文件不需要迁移。写了三档之外的值不会猜：按同样的 role 规则兜底，并由
+    `kind="review"` 点名。
+  - 路人缺项由 `kind="review"` 单独报（「路人登记缺项」），**不计入人物欠账**：看板人设卡、
+    人设层的 `discuss`/`confirm`、`novel_status` 的「人物丰满度」都用只算非路人的 `castDebt`。
+- `volume` / `firstAppearance` / `exit` 是给"只在一个地图里出现"的路人用的登记字段：
+  按卷查人（卷号可由 `firstAppearance` 的章号在章节表里推出，不必重复填）、
+  以及防止"第 2 卷死掉的人第 4 卷又走进来"。
 - 世界观 yaml 键：`id` `kind`（`place|faction|power-system|item|history|rule`）`cost` `limits`
   `name`（可选，缺省用标题）。其余正文拼进 `detail`。
 - **代价与限制是 SOP 的硬要求**：缺 `cost`/`limits` 的规则继续由 `worldGaps` 报缺口，
   行为不变。
 
-### 3.4 `分卷大纲.md`
+### 3.4 `分卷大纲/第1卷.md`（版本 4 起：一卷一文件）
 
 ````markdown
-# 分卷大纲
-
-## 第 1 卷 山门
-
-```yaml
+---
 number: 1
 title: 山门
 goal: 林越拜入山门并立住脚
@@ -158,14 +196,25 @@ conflict: 守门弟子与长老的刁难
 climax: 试剑台上断剑认主
 endHook: 钟声之后，山门后山传来父亲的剑鸣
 chapters: [1, 30]
-```
+---
 
-（detail —— 3.4 新增的卷内节奏与阶段推进，篇幅目标 ≈ 本卷字数 ÷ 50）
+# 第 1 卷 山门
+
+## 卷内节奏
+
+（detail —— 卷内节奏与阶段推进，篇幅目标 ≈ 本卷字数 ÷ 50）
+
+## 本卷梗概
+
+（3.5 的七个叙事要素，各自一个 `##`）
 ````
 
-- `number` 必填且为正整数；`chapters` 为闭区间数组，缺省 `[]`（该卷章数未定）。
-- 卷按 `number` 排序；重复 `number` 视为覆盖同一卷。
-- `detail` 是条目正文（```yaml 块之后的散文），显式 `detail:` 键优先于正文，两者都保留时以键在前拼接。
+- **文件就是这一卷**：标量写在 frontmatter 而不是 ```yaml 块里，标题是 `# 第 N 卷 卷名`。
+- `number` 必填且为正整数，也是文件名；`chapters` 为闭区间数组，缺省 `[]`（该卷章数未定）。
+- 卷内节奏写在 `## 卷内节奏`；七个叙事要素各写一个 `##`。作者另加的 `##` 小节按文件顺序并回
+  `detail`，不丢内容；标题下方、第一个 `##` 之前的散文同样算 `detail`。
+- v3 的 `分卷大纲.md`（多条目合集）只由**迁移**读取：`parseVolumeCollectionFile()`。
+  迁移把它拆成一卷一个文件后删除原文件，先写新文件、后删旧文件。
 
 ### 3.5 `章节大纲.md`
 
@@ -303,9 +352,9 @@ takeaway: 开篇三章内必须给一次小胜
 | `readings[]` `iterations[]` `evaluations[]` `launchDecisions[]` `reviews[]` | `.novel/novel.json` | 反馈与证据链：要被阈值计算，必须原子（3.2 前 `evaluations[]` 名为 `verifications[]`，读取时兼容） |
 | `links{}`（伏笔台账） | `.novel/novel.json` | "承诺"带状态与回收章，参与卷末门禁 |
 | `logline` `acts[]` `minimal` `fullOutline` `fullOutlineDone` + `## 叙事骨架` 的八个叙事要素 | `全书大纲.md` | `fullOutline` 是 3.4 新增的 `## 完整大纲` 正文（篇幅目标 ≈ 总字数/100）；3.5 新增的 `## 叙事骨架` 一节是每项一个 `###` 小标题的八个要素（故事梗概/主角成长线/伙伴成长线/反派成长线/阵营演变/对抗副本/失去了什么/获得了什么），**先于字数核对** |
-| 人物条目 | `人物设定.md` | |
+| 人物条目（含 `scope` 档位与 `volume`/`firstAppearance`/`exit` 登记字段） | `人物设定.md` | 三档：`main` 全 spine、`volume` 要性格与说话方式、`cameo` 只要「他是谁 + 首次出场章」；路人缺项不计欠账 |
 | 世界观条目 | `世界观设定.md` | |
-| 分卷条目（含 `detail` 卷内节奏与 3.5 的七个叙事要素 `###` 小节） | `分卷大纲.md` | `detail` 是 3.4 新增，篇幅目标 ≈ 本卷字数/50；叙事要素是卷条目自己的 `###` 小节——**卷条目是 `##`，卷内不能再有 `##`**，否则会被读成下一卷 |
+| 分卷条目（含 `detail` 卷内节奏与 3.5 的七个叙事要素） | `分卷大纲/第N卷.md` | **一卷一个文件**，文件名只带卷号：改后面的卷不重写前面的卷，改卷名不挪文件。`detail` 篇幅目标 ≈ 本卷字数/50，写在 `## 卷内节奏`；七个叙事要素各一个 `##`——文件即这一卷，不再有"卷内不能再有 `##`"的限制 |
 | 竞品拆解条目 | `竞品拆解.md` | 3.4 新增；文件无条目时回退到 `novel.json` 的 `competitors[]` |
 | 章号、标题、所属卷、目标字数、节拍（章级一句话） | `章节大纲.md` | 计划层 |
 | 八字段契约（剧情任务、关键转折、代价与收获、冲突、情绪回报、信息差、章末钩子、节拍）、`waived`、`delivered` | `章节/*.细纲.md` | 契约层；后两项是 3.5 新增的叙事字段，与其余字段一样可显式豁免 |
@@ -318,11 +367,11 @@ takeaway: 开篇三章内必须给一次小胜
 
 ---
 
-## 5. `novel.json` 的形态（schemaVersion 3）
+## 5. `novel.json` 的形态（schemaVersion 4）
 
 ```jsonc
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "meta": { "title": "…", "premise": "…", "genres": ["…"], "pov": "…", "language": "…" },
   "platform": { … },
   "pitch": { … },
@@ -338,9 +387,12 @@ takeaway: 开篇三章内必须给一次小胜
     "outlineFile": "全书大纲.md",
     "castFile": "人物设定.md",
     "worldFile": "世界观设定.md",
-    "volumeFile": "分卷大纲.md",
+    "volumeDir": "分卷大纲",
     "chapterPlanFile": "章节大纲.md",
     "competitorFile": "竞品拆解.md",
+    "volumes": {
+      "1": { "number": 1, "file": "分卷大纲/第1卷.md", "hash": "sha256:…" }
+    },
     "chapters": {
       "chapter-1": {
         "number": 1,
@@ -358,8 +410,8 @@ takeaway: 开篇三章内必须给一次小胜
 }
 ```
 
-- 顶层六个文件名可被配置覆盖（`Config.storageLayout`），但默认如上；索引是**唯一**记录
-  实际路径的地方。
+- 顶层文件名与两个内容目录名可被配置覆盖（`Config.storageLayout`），但默认如上；索引是
+  **唯一**记录实际路径的地方（`volumes` 记每卷的文件与哈希，路径由卷号推出、由索引兜底）。
 - `hash` 的用途是**跳过未变文件、发现外部改动**，不是冲突拦截（冲突策略是"文件为准"）。
 - 元数据文档**仍然**是一次版本守卫写（`replaceIfVersion`），因为它是索引与证据链的家。
 
@@ -412,11 +464,17 @@ store.update(mutate)
 1. 读到 `schemaVersion: 2`（内容仍在 JSON 里）：
    - **先备份**：把原文写到 `.novel/novel.v2.backup.json`（已存在则不覆盖）。
    - 按 §2/§3 生成全部 Markdown 文件。
-   - 生成 `schemaVersion: 3` 的元数据（含索引与哈希），写回 `novel.json`。
+   - 生成当前版本的元数据（含索引与哈希）——v2 直接升到 v4——写回 `novel.json`。
    - 输出一行迁移报告（生成了哪些文件、章节数）。
 2. 读到 `schemaVersion: 1`：先按现有 `migrateV1` 升到 2，再走上面的路径。
-3. 读到 `schemaVersion: 3`：正常读取。
-4. 备份文件永远保留（人的草稿不能因为一次升级消失）。
+3. 读到 `schemaVersion: 3`：内容已在文件里，只有分卷还挤在 `分卷大纲.md`。
+   - 读出 `index.volumeFile` 指向的合集，按 §3.4 拆成一卷一个文件并写入；
+   - **新文件写完之后**才删除合集，中断则下次读取重跑；
+   - 索引改写成 `volumeDir` + 每卷 `file`/`hash`，文档写成 v4。没有合集文件时不做拆分，
+     只把索引形态升到 v4。不备份 `novel.json`：这次迁移不删文档里的任何字段，卷内容在
+     删掉合集前已经完整落到新文件里。
+4. 读到 `schemaVersion: 4`：正常读取。
+5. 备份文件永远保留（人的草稿不能因为一次升级消失）。
 
 ---
 
@@ -431,6 +489,7 @@ store.update(mutate)
 | 5 | `src/host/tools.ts` | 写路径改为"改 state"不变（store 负责落盘），但 `novel_write`/`novel_plan` 的字段归属按 §4 对齐；`novel_status` 的读数不变 |
 | 6 | `src/client/index.tsx` | 面板读元数据 + 按需读章节文件（通过 `ctx.remote.workspaceFiles`） |
 | 7 | `test/*` | 断言从 `novel.json` 改为断文件；新增 §9 的用例 |
+| 10 | `core/paths.ts`、`core/content.ts`、`host/store.ts` | 版本 4：`volumeDir` 取代 `volumeFile`，一卷一个文件，v3 → v4 迁移（见文首修订说明） |
 | 8 | 文档 | `docs/architecture.md` 存储一节、README 中英、host README、`docs/sop.md` 的存储说明、SKILL/INSTALL 里"项目文档"的措辞 |
 | 9 | 打包 | `scripts/pack.mjs` 不需要改工具表；确认 INSTALL 措辞 |
 
@@ -447,7 +506,11 @@ store.update(mutate)
 - **外部改动采纳**：手改 `章节/第001章-山门.细纲.md` 的 `## 章末钩子` → 下次 `novel_write`
   的兑现回报按新钩子判定。
 - **语法坏掉**：把正文文件 frontmatter 写坏 → 工具**报错并指名文件**，且**不改动该文件**。
-- **迁移**：v2 文档 → 生成全部文件 + 备份 + v3 元数据；再读一次幂等。
+- **迁移**：v2 文档 → 生成全部文件 + 备份 + 当前版本元数据；再读一次幂等。
+  v3 文档 → 合集拆成一卷一个文件、合集被删除、索引写成 `volumeDir` + `volumes`；再读一次幂等；
+  没有合集文件的 v3 文档不凭空造出卷。
+- **分卷**：一卷一文件；改第 2 卷不动第 1 卷的字节；删掉某一卷后它的文件被删；手写放进
+  `分卷大纲/第9卷.md` 的文件下次读取被认领。
 - **重命名**：改章节标题 → 文件改名、旧文件消失、索引指向新路径、`章节大纲.md` 同步。
 - **现有 187 个 spec**：逐个改断言目标（不是删测试）；SOP 流程的端到端用例必须继续全绿。
 

@@ -15,12 +15,12 @@
 
 import type { StorageLayout } from './types.ts'
 
-/** The layout the plan fixes: six Chinese filenames and a `章节/` directory. */
+/** The layout the plan fixes: five Chinese filenames and two content directories. */
 export const DEFAULT_STORAGE_LAYOUT: StorageLayout = {
   outlineFile: '全书大纲.md',
   castFile: '人物设定.md',
   worldFile: '世界观设定.md',
-  volumeFile: '分卷大纲.md',
+  volumeDir: '分卷大纲',
   chapterPlanFile: '章节大纲.md',
   competitorFile: '竞品拆解.md',
   chapterDir: '章节',
@@ -33,11 +33,24 @@ export const METADATA_RELATIVE_PATH = '.novel/novel.json'
 export const MIGRATION_BACKUP_PATH = '.novel/novel.v2.backup.json'
 
 /**
- * The six top-level content paths, in the order they are written.
+ * The old single-file home of the volume outlines, kept only so the version-3
+ * reader can find it.
+ *
+ * Version 4 moved every volume into its own file under {@link
+ * DEFAULT_STORAGE_LAYOUT.volumeDir}; a document written before that names its
+ * collection file in `index.volumeFile`, which the migration reads and then
+ * deletes once the per-volume files exist.
+ */
+export const LEGACY_VOLUME_FILE = '分卷大纲.md'
+
+/**
+ * The top-level content paths, in the order they are written.
  *
  * Read path-driven rather than position-driven: the plan's own note on a
  * 1000-chapter book leaves room for the chapter plan to split per volume later,
- * and code that iterates this list will not have to change when it does.
+ * and code that iterates this list will not have to change when it does. The
+ * volume outlines and the chapters are not here: each of them is one file per
+ * unit inside its own directory.
  *
  * @param layout - the storage layout.
  * @returns the workspace-relative paths.
@@ -47,7 +60,6 @@ export function topLevelPaths(layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): s
     layout.outlineFile,
     layout.castFile,
     layout.worldFile,
-    layout.volumeFile,
     layout.chapterPlanFile,
     layout.competitorFile,
   ]
@@ -127,6 +139,70 @@ export function numberFromFileName(fileName: string): number | undefined {
   if (match === null) return undefined
   const value = Number.parseInt(match[1] ?? '', 10)
   return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+// ── volume outlines ───────────────────────────────────────────────────────────
+
+/**
+ * The filename of one volume's outline.
+ *
+ * The number is the whole name — no title, no zero padding. A title in the name
+ * would move the file every time the author retitled a volume, which is the one
+ * thing a per-volume file exists to avoid; and padding would only matter for a
+ * directory listing nobody sorts by hand, since every reader sorts by the number
+ * in the file's frontmatter.
+ *
+ * @param number - the 1-based volume number.
+ * @returns the basename, e.g. `第1卷.md`.
+ */
+export function volumeFileName(number: number): string {
+  return `第${String(Math.max(0, Math.trunc(number)))}卷.md`
+}
+
+/**
+ * The path of one volume's outline file.
+ *
+ * Takes just the directory rather than a whole {@link StorageLayout}, because
+ * both halves of the storage layer compute it: the codec with the configured
+ * layout, and the migration with a {@link StorageIndex}, which records the
+ * directory but not the rest of the layout.
+ *
+ * @param number - the volume number.
+ * @param home - the layout, or anything carrying the volume directory.
+ * @returns the path, e.g. `分卷大纲/第1卷.md`.
+ */
+export function volumePath(
+  number: number,
+  home: { readonly volumeDir: string } = DEFAULT_STORAGE_LAYOUT,
+): string {
+  return `${home.volumeDir}/${volumeFileName(number)}`
+}
+
+/**
+ * Recover a volume number from a volume outline's filename.
+ *
+ * @param fileName - a path or basename such as `分卷大纲/第1卷.md`.
+ * @returns the number, or `undefined` when the name carries none.
+ */
+export function volumeNumberFromFileName(fileName: string): number | undefined {
+  const match = /第(\d{1,6})卷/u.exec(fileName)
+  if (match === null) return undefined
+  const value = Number.parseInt(match[1] ?? '', 10)
+  return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+/**
+ * Whether a path sits inside the volume-outline directory.
+ *
+ * @param relativePath - a workspace-relative path.
+ * @param layout - the storage layout.
+ * @returns true when the path is a direct child of the volume directory.
+ */
+export function isVolumePath(relativePath: string, layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): boolean {
+  const prefix = `${layout.volumeDir}/`
+  if (!relativePath.startsWith(prefix)) return false
+  const rest = relativePath.slice(prefix.length)
+  return rest !== '' && !rest.includes('/')
 }
 
 /**

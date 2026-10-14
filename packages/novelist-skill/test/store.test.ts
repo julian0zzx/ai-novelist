@@ -4,8 +4,37 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
-import { NovelStoreError, emptyNovel, hashContent, upsertChapter } from '../src/core/index.ts'
+import { NOVEL_SCHEMA_VERSION, NovelStoreError, emptyNovel, hashContent, upsertChapter } from '../src/core/index.ts'
 import { NOVEL_RELATIVE_PATH, NovelConflictError, NovelStore, isRegularFile } from '../src/host/store.ts'
+import type { VolumePlan } from '../src/core/types.ts'
+
+/**
+ * A volume plan with every narrative field present, so a fixture that only cares
+ * about one of them still hands the codec a complete record.
+ *
+ * @param number - the volume number.
+ * @param title - the volume title.
+ * @returns the volume.
+ */
+function emptyVolume(number: number, title: string): VolumePlan {
+  return {
+    number,
+    title,
+    detail: '',
+    goal: '',
+    conflict: '',
+    climax: '',
+    endHook: '',
+    synopsis: '',
+    protagonistArc: '',
+    antagonistArc: '',
+    factionShift: '',
+    mainConflict: '',
+    costs: '',
+    gains: '',
+    chapters: [],
+  }
+}
 
 /**
  * Store integration specs against the real local filesystem backend.
@@ -44,8 +73,8 @@ describe('NovelStore', () => {
     await store.create(state)
     const read = await store.read()
     // The content half round-trips through the files; the index gains the hashes
-    // of the six files the create wrote, which is the only difference from the
-    // in-memory state that was handed in.
+    // of the five whole-book files the create wrote, which is the only difference
+    // from the in-memory state that was handed in.
     expect(read).toEqual({
       ...state,
       index: { ...state.index, files: read?.index?.files },
@@ -54,7 +83,6 @@ describe('NovelStore', () => {
       '世界观设定.md',
       '人物设定.md',
       '全书大纲.md',
-      '分卷大纲.md',
       '竞品拆解.md',
       '章节大纲.md',
     ])
@@ -356,6 +384,10 @@ describe('NovelStore migration', () => {
             id: 'lin-yue',
             name: '林越',
             role: 'protagonist',
+            scope: '',
+            volume: 0,
+            firstAppearance: '',
+            exit: '',
             description: '十六岁，瘦。',
             personality: '外冷内倔',
             voice: '短句，先问价再动手',
@@ -392,17 +424,18 @@ describe('NovelStore migration', () => {
     expect(await readFile(join(root, '人物设定.md'), 'utf8')).toContain('## 林越')
     expect(await readFile(join(root, '章节/第001章-山门.md'), 'utf8')).toContain('山门很高。')
     expect(await readFile(join(root, '章节/第001章-山门.细纲.md'), 'utf8')).toContain('抵达山门')
-    // 3. The document is v3 and carries only metadata plus the index.
+    // 3. The document is at the current version and carries only metadata plus
+    // the index.
     const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as {
       schemaVersion: number
       chapters?: unknown
       index: { chapters: Record<string, { bodyFile: string }> }
     }
-    expect(migrated.schemaVersion).toBe(3)
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
     expect(migrated.chapters).toBeUndefined()
     expect(migrated.index.chapters['chapter-1']?.bodyFile).toBe('章节/第001章-山门.md')
     // 4. The read reports the migration and returns the migrated project whole.
-    expect(loaded?.migration).toMatch(/v2 → v3/u)
+    expect(loaded?.migration).toMatch(/v2 → v4/u)
     expect(loaded?.state.characters['lin-yue']?.growthArc).toBe('外门→执剑')
     expect(loaded?.state.chapters['chapter-1']?.body).toBe('山门很高。')
     expect(loaded?.state.chapters['chapter-1']?.plotTask).toBe('抵达山门')
@@ -427,6 +460,178 @@ describe('NovelStore migration', () => {
     await writeFile(join(root, '.novel/novel.v2.backup.json'), 'the author\'s own copy\n', 'utf8')
     await store.read()
     expect(await readFile(join(root, '.novel/novel.v2.backup.json'), 'utf8')).toBe('the author\'s own copy\n')
+  })
+})
+
+describe('NovelStore volume migration', () => {
+  /** A version-3 document whose volumes still share the collection file. */
+  function collectionDocument(): string {
+    const state = emptyNovel({ title: '青云记', premise: '少年持断剑上山' }, () => clock)
+    const index = { ...state.index, volumeFile: '分卷大纲.md' } as Record<string, unknown>
+    delete index['volumeDir']
+    const { index: _dropped, ...withoutIndex } = state
+    return `${JSON.stringify({ ...withoutIndex, schemaVersion: 3, index }, null, 2)}\n`
+  }
+
+  /** The pre-version-4 collection file, exactly as that build wrote it. */
+  const COLLECTION = [
+    '# 分卷大纲',
+    '',
+    '## 第 1 卷 山门',
+    '',
+    '```yaml',
+    'number: 1',
+    'title: 山门',
+    'goal: 林越拜入山门并立住脚',
+    'climax: 试剑台上断剑认主',
+    'chapters: [1, 30]',
+    '```',
+    '',
+    '卷一从前山石阶写到试剑台。',
+    '',
+    '### 本卷梗概',
+    '',
+    '林越背着断剑上山，卷末在试剑台上让断剑认了主。',
+    '',
+    '## 第 2 卷 后山',
+    '',
+    '```yaml',
+    'number: 2',
+    'title: 后山',
+    'goal: 查父亲的旧案',
+    '```',
+    '',
+    '后山的雾里埋着旧案的第一个证人。',
+    '',
+    '',
+  ].join('\n')
+
+  beforeEach(async () => {
+    await mkdir(join(root, '.novel'), { recursive: true })
+    await mkdir(join(root, '分卷大纲'), { recursive: true })
+    await writeFile(docPath(), collectionDocument(), 'utf8')
+    await writeFile(join(root, '分卷大纲.md'), COLLECTION, 'utf8')
+  })
+
+  it('splits the collection into one file per volume, then deletes it', async () => {
+    const loaded = await store.readVersioned()
+
+    // 1. One file per volume, each a document of its own.
+    const first = await readFile(join(root, '分卷大纲', '第1卷.md'), 'utf8')
+    expect(first).toContain('# 第 1 卷 山门')
+    expect(first).toContain('## 卷内节奏')
+    expect(first).toContain('卷一从前山石阶写到试剑台。')
+    expect(first).toContain('## 本卷梗概')
+    expect(first).toContain('林越背着断剑上山')
+    expect(first).toContain('goal: "林越拜入山门并立住脚"')
+    const second = await readFile(join(root, '分卷大纲', '第2卷.md'), 'utf8')
+    expect(second).toContain('# 第 2 卷 后山')
+    expect(second).toContain('后山的雾里埋着旧案的第一个证人。')
+    // 2. The collection is gone, and the read reports what it did.
+    await expect(readFile(join(root, '分卷大纲.md'), 'utf8')).rejects.toThrow()
+    expect(loaded?.migration).toMatch(/分卷大纲已按卷拆分/u)
+
+    // 3. The document is at the current version, and its index names the files.
+    const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as {
+      schemaVersion: number
+      index: { volumeFile?: string; volumeDir: string; volumes: Record<string, { file: string }> }
+    }
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
+    expect(migrated.index.volumeFile).toBeUndefined()
+    expect(migrated.index.volumeDir).toBe('分卷大纲')
+    expect(migrated.index.volumes['1']?.file).toBe('分卷大纲/第1卷.md')
+
+    // 4. The volumes read back whole, spine elements included.
+    expect(loaded?.state.outline.volumes).toHaveLength(2)
+    expect(loaded?.state.outline.volumes[0]?.climax).toBe('试剑台上断剑认主')
+    expect(loaded?.state.outline.volumes[0]?.chapters).toEqual([1, 30])
+    expect(loaded?.state.outline.volumes[0]?.synopsis).toBe('林越背着断剑上山，卷末在试剑台上让断剑认了主。')
+    expect(loaded?.state.outline.volumes[1]?.goal).toBe('查父亲的旧案')
+  })
+
+  it('is idempotent: a second read leaves the split files alone', async () => {
+    await store.read()
+    const first = await readFile(join(root, '分卷大纲', '第1卷.md'), 'utf8')
+    const again = await store.readVersioned()
+    expect(again?.migration).toBeUndefined()
+    expect(await readFile(join(root, '分卷大纲', '第1卷.md'), 'utf8')).toBe(first)
+    expect(again?.state.outline.volumes).toHaveLength(2)
+  })
+
+  it('upgrades a v3 document with no collection file without inventing volumes', async () => {
+    await rm(join(root, '分卷大纲.md'))
+    const loaded = await store.readVersioned()
+    expect(loaded?.migration).toBeUndefined()
+    expect(loaded?.state.outline.volumes).toEqual([])
+    const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as { schemaVersion: number; index: { volumeFile?: string } }
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
+    expect(migrated.index.volumeFile).toBeUndefined()
+  })
+})
+
+describe('NovelStore volume files', () => {
+  it('writes one file per volume and rewrites only the volume that changed', async () => {
+    const state = emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock)
+    await store.create(state)
+    await store.update((current) => ({
+      ...current,
+      outline: {
+        ...current.outline,
+        volumes: [
+          { ...emptyVolume(1, '山门'), goal: '立住脚' },
+          { ...emptyVolume(2, '后山'), goal: '查旧案' },
+        ],
+      },
+    }))
+
+    const first = join(root, '分卷大纲', '第1卷.md')
+    const second = join(root, '分卷大纲', '第2卷.md')
+    expect(await readFile(first, 'utf8')).toContain('goal: "立住脚"')
+    expect(await readFile(second, 'utf8')).toContain('goal: "查旧案"')
+    const untouched = await readFile(first, 'utf8')
+
+    // Revising the second volume must not touch the first one's file — the whole
+    // point of splitting the collection.
+    await store.update((current) => ({
+      ...current,
+      outline: {
+        ...current.outline,
+        volumes: current.outline.volumes.map((volume) =>
+          volume.number === 2 ? { ...volume, goal: '把旧案翻过来' } : volume,
+        ),
+      },
+    }))
+    expect(await readFile(second, 'utf8')).toContain('goal: "把旧案翻过来"')
+    expect(await readFile(first, 'utf8')).toBe(untouched)
+  })
+
+  it('claims a volume file dropped into the directory by hand', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await mkdir(join(root, '分卷大纲'), { recursive: true })
+    await writeFile(
+      join(root, '分卷大纲', '第3卷.md'),
+      ['---', 'number: 3', 'title: 手写的第三卷', '---', '', '# 第 3 卷 手写的第三卷', '', '## 卷内节奏', '', '手写的节奏。', ''].join('\n'),
+      'utf8',
+    )
+    const loaded = await store.readVersioned()
+    expect(loaded?.warnings.join(' ')).toMatch(/认领了未登记的分卷大纲 分卷大纲\/第3卷\.md/u)
+    expect(loaded?.state.outline.volumes.map((volume) => volume.title)).toEqual(['手写的第三卷'])
+  })
+
+  it('deletes a volume file once its volume is removed from the outline', async () => {
+    const state = emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock)
+    await store.create(state)
+    await store.update((current) => ({
+      ...current,
+      outline: { ...current.outline, volumes: [emptyVolume(1, '山门'), emptyVolume(2, '后山')] },
+    }))
+    expect(await readFile(join(root, '分卷大纲', '第2卷.md'), 'utf8')).toContain('# 第 2 卷 后山')
+    await store.update((current) => ({
+      ...current,
+      outline: { ...current.outline, volumes: current.outline.volumes.filter((volume) => volume.number === 1) },
+    }))
+    await expect(readFile(join(root, '分卷大纲', '第2卷.md'), 'utf8')).rejects.toThrow()
+    expect(await readFile(join(root, '分卷大纲', '第1卷.md'), 'utf8')).toContain('# 第 1 卷 山门')
   })
 })
 

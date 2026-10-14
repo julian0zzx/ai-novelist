@@ -137,7 +137,8 @@ export function underRoot(root: string, path: string): string {
  *
  * Only two reads are unavoidable per chapter — the prose file, which carries
  * `status` and the word count, and the contract file, which carries the beats and
- * the hook. The five whole-book files are read once each.
+ * the hook. The five whole-book files are read once each, and so is each
+ * volume's own outline file, since there is one of those per volume.
  *
  * @param remote - the client Remote face.
  * @param sessionId - the session whose workspace to read.
@@ -163,16 +164,16 @@ export async function readProject(
   if (raw === undefined) return { status: 'none' }
 
   try {
-    const { metadata } = parseMetadata(raw)
+    const { metadata, legacyVolumeFile } = parseMetadata(raw)
     const index = metadata.index
     const channels = Object.values(index.chapters)
     const paths = [
       index.outlineFile,
       index.castFile,
       index.worldFile,
-      index.volumeFile,
       index.chapterPlanFile,
       index.competitorFile,
+      ...Object.values(index.volumes).map((ref) => ref.file),
       ...channels.flatMap((ref) => [ref.bodyFile, ref.outlineFile]),
     ]
 
@@ -181,8 +182,14 @@ export async function readProject(
       [...new Set(paths.filter((path) => path !== ''))].map(async (path) => [path, await readFile(path)] as const),
     )
     for (const [path, text] of loaded) if (text !== undefined) files[path] = text
+    // A version-3 project keeps every volume in one file until the host migrates
+    // it; reading that file here keeps the panel correct in the meantime.
+    if (legacyVolumeFile !== undefined && files[legacyVolumeFile] === undefined) {
+      const text = await readFile(legacyVolumeFile)
+      if (text !== undefined) files[legacyVolumeFile] = text
+    }
 
-    const assembled = composeContent(files, index, metadata.opening, metadata.competitors)
+    const assembled = composeContent(files, index, metadata.opening, metadata.competitors, legacyVolumeFile)
     return { status: 'ready', raw, metadata, state: stateOf(metadata, assembled) }
   } catch (error) {
     return { status: 'error', message: describe(error) }

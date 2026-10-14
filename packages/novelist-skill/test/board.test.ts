@@ -312,6 +312,41 @@ describe('boardOf documents', () => {
     expect(doc(boardOf(thin), 'cast')?.total).toBe(0)
   })
 
+  it('does not hold the cast card open for the people who appear once', () => {
+    const walkOn = upsertCharacter(
+      stateOf(),
+      { id: 'laobing', name: '守夜的老兵', scope: 'cameo' },
+      () => '2026-01-01T00:00:00.000Z',
+    )
+    const card = doc(boardOf(walkOn), 'cast')
+    // The incomplete register is information, not a debt: there is nothing left
+    // for the card to name, and only the layer's sign-off can confirm it.
+    expect(card?.gaps).toEqual(['另有 1 位路人已登记（不计欠账）'])
+    expect(card?.state).toBe('draft')
+    // The card's number counts the people who owe a spine, not the register.
+    expect(card?.done).toBe(0)
+
+    const withLead = upsertCharacter(
+      walkOn,
+      {
+        id: 'lin',
+        name: '林砚',
+        role: 'protagonist',
+        scope: 'main',
+        goal: '上山',
+        personality: '外冷内倔',
+        voice: '短句',
+        fear: '被逐',
+        obsession: '断剑',
+        weakness: '受不得激',
+        growthArc: '外门→执剑',
+      },
+      () => '2026-01-01T00:00:00.000Z',
+    )
+    expect(doc(boardOf(withLead), 'cast')?.done).toBe(1)
+    expect(doc(boardOf(withLead), 'cast')?.gaps).toEqual(['另有 1 位路人已登记（不计欠账）'])
+  })
+
   it('counts world rules that state no price', () => {
     const priced = upsertWorld(
       stateOf(),

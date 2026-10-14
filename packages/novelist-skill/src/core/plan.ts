@@ -15,13 +15,14 @@ import {
   NAMING_MIN_CANDIDATES,
   type Chapter,
   type ChapterStatus,
+  type CharacterScope,
   type ContractField,
   type NovelState,
   type Outline,
   type Premise,
   type WritingPlan,
 } from './types.ts'
-import { confirmationStanding } from './novel.ts'
+import { characterScope, confirmationStanding } from './novel.ts'
 
 /** One required field that is still empty, with where to fill it. */
 export interface MissingField {
@@ -108,44 +109,74 @@ export interface CastGap {
   readonly id: string
   /** The character name. */
   readonly name: string
+  /** Which tier it was held to. */
+  readonly scope: CharacterScope
   /** Which parts are missing. */
   readonly missing: readonly string[]
 }
 
 /**
- * Cast members missing the traits the SOP requires.
+ * Cast members missing the traits their tier requires.
  *
- * Every character owes a `role`, a `goal`, a `personality` and a `voice`; a cast
- * entry with a name and a one-line goal is a name, not a character — two of them
- * in one scene read as one person wearing two names, which is the failure this
- * check exists to name ("有些角色不够丰满" is a finding about behaviour, and free
- * prose about looks does not make it checkable).
+ * **The tier decides what is owed**, because "有些角色不够丰满" is a finding about
+ * the people the reader will meet again, not about every name on the page:
  *
- * Only the protagonist is held to the full spine (欲望/恐惧/执念/软肋 + 成长线);
- * supporting cast are not, because demanding a full arc from every walk-on role
- * produces filler, not depth.
+ * - `main` (protagonist, antagonist, core companions) — the full spine:
+ *   身份/阵营, 欲望, 性格, 说话方式, plus 恐惧, 执念, 软肋 and 成长线.
+ * - `volume` (recurring inside one map, or anyone with lines) — 身份/阵营, 欲望,
+ *   性格, 说话方式. A character who speaks needs a voice, or a scene of dialogue
+ *   reads as one person wearing several names; they do not need an arc, because
+ *   demanding one from every supporting role produces filler, not depth.
+ * - `cameo` (scenery, one appearance) — one line saying who they are and the
+ *   chapter they were seen in. No personality, no voice, no goal: a 挑担老汉 who
+ *   says nothing owes the book nothing but a name that is not already taken.
+ *
+ * Cameo gaps are still reported — this is the honest answer to "what is
+ * missing" — but they are **not debt**: {@link castDebt} is what the cast layer
+ * and the dashboard are measured against, so registering a walk-on can no longer
+ * hold the cast card open forever.
  *
  * @param state - the project.
- * @returns the gaps.
+ * @returns the gaps, one per incomplete character.
  */
 export function castGaps(state: NovelState): CastGap[] {
   const gaps: CastGap[] = []
   for (const character of Object.values(state.characters)) {
-    const isLead = /protagonist|主角|lead/iu.test(character.role)
+    const scope = characterScope(character)
     const missing: string[] = []
-    if (character.role.trim() === '') missing.push('role')
-    if (character.goal.trim() === '') missing.push('goal')
-    if (character.personality.trim() === '') missing.push('personality')
-    if (character.voice.trim() === '') missing.push('voice')
-    if (isLead) {
-      if (character.fear.trim() === '') missing.push('fear')
-      if (character.obsession.trim() === '') missing.push('obsession')
-      if (character.weakness.trim() === '') missing.push('weakness')
-      if (character.growthArc.trim() === '') missing.push('growthArc')
+    if (scope === 'cameo') {
+      if (character.description.trim() === '') missing.push('description')
+      if (character.firstAppearance.trim() === '') missing.push('firstAppearance')
+    } else {
+      if (character.role.trim() === '') missing.push('role')
+      if (character.goal.trim() === '') missing.push('goal')
+      if (character.personality.trim() === '') missing.push('personality')
+      if (character.voice.trim() === '') missing.push('voice')
+      if (scope === 'main') {
+        if (character.fear.trim() === '') missing.push('fear')
+        if (character.obsession.trim() === '') missing.push('obsession')
+        if (character.weakness.trim() === '') missing.push('weakness')
+        if (character.growthArc.trim() === '') missing.push('growthArc')
+      }
     }
-    if (missing.length > 0) gaps.push({ id: character.id, name: character.name, missing })
+    if (missing.length > 0) gaps.push({ id: character.id, name: character.name, scope, missing })
   }
   return gaps
+}
+
+/**
+ * The cast gaps that leave the cast layer unfinished.
+ *
+ * Walk-ons are deliberately excluded: a cameo is a register entry, not a
+ * character study, and counting one as debt is how a cast card gets held open
+ * for 200 chapters by a tea boy who appears once. `novel_bible kind="review"`
+ * still prints them, under a heading of their own.
+ *
+ * @param state - the project.
+ * @returns the gaps that count as work still owed.
+ */
+export function castDebt(state: NovelState): CastGap[] {
+  return castGaps(state).filter((gap) => gap.scope !== 'cameo')
 }
 
 /** A chapter whose contract is not yet answerable. */

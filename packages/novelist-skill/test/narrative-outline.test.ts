@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { Config, apply } from '../src/index.ts'
+import { Config, VOLUME_SPINE_PARTS, apply } from '../src/index.ts'
 
 /**
  * Narrative completeness as the tools report it: story first, payoffs second,
@@ -246,7 +246,7 @@ describe('the narrative spine survives the file round trip', () => {
     expect(body).toMatch(/✅ 对抗副本/)
   })
 
-  it('writes a volume spine as subsections of the volume entry, and does not turn it into a second volume', async () => {
+  it('writes a volume spine into that volume file alone, and reads it back', async () => {
     await withLengths()
     await call('novel_plan', {
       operation: 'volume',
@@ -261,11 +261,17 @@ describe('the narrative spine survives the file round trip', () => {
       ...VOLUME_SPINE,
     })
 
-    const text = await readFile(join(root, '分卷大纲.md'), 'utf8')
-    expect(text).toContain('### 本卷梗概')
+    // One volume, one file: nothing else on disk holds this volume's outline.
+    const text = await readFile(join(root, '分卷大纲', '第1卷.md'), 'utf8')
+    expect(text).toContain('# 第 1 卷 第一卷')
+    expect(text).toContain('## 卷内节奏')
+    expect(text).toContain('## 本卷梗概')
     expect(text).toContain(VOLUME_SPINE['synopsis'] as string)
-    // The entry stays one entry: exactly one `##` heading, the volume itself.
-    expect(text.match(/^## /gmu)).toHaveLength(1)
+    expect(text).toContain('goal: "入门"')
+    // Seven named elements plus the pacing detail, and no second volume: the
+    // old collection file is gone.
+    expect(text.match(/^## /gmu)).toHaveLength(1 + VOLUME_SPINE_PARTS.length)
+    await expect(readFile(join(root, '分卷大纲.md'), 'utf8')).rejects.toThrow()
 
     const status = await call('novel_status', { detail: 'plan' })
     const body = String((status['body'] as string[]).join('\n'))

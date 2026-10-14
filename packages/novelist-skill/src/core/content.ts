@@ -30,6 +30,7 @@ import {
   type Chapter,
   type ChapterStatus,
   type Character,
+  type CharacterScope,
   type Competitor,
   type ContractField,
   type NovelState,
@@ -63,14 +64,15 @@ import {
   renderTable,
   sectionList,
   sectionText,
+  splitDocument,
   splitSections,
   splitSubsections,
   type MdSection,
   type YamlScalar,
   type YamlValue,
 } from './markdown.ts'
-import { emptyIndex, countWords, emptyOutline, normalizeId, slugify } from './novel.ts'
-import { chapterPaths, numberFromFileName } from './paths.ts'
+import { characterScope, countWords, emptyIndex, emptyOutline, normalizeId, slugify } from './novel.ts'
+import { chapterPaths, numberFromFileName, volumeNumberFromFileName } from './paths.ts'
 
 /** Raised when content files cannot be assembled into a state. */
 export class NovelContentError extends Error {
@@ -267,6 +269,12 @@ export function parseCastFile(raw: string, where: string): Record<string, Charac
       id,
       name: frontString(entry.fields, 'name', '') || entry.title,
       role: frontString(entry.fields, 'role', ''),
+      // The tier a character is held to, plus the three register fields a walk-on
+      // needs to be findable again: which map, first seen where, and how they left.
+      scope: frontString(entry.fields, 'scope', ''),
+      volume: frontNumber(entry.fields, 'volume', 0),
+      firstAppearance: frontString(entry.fields, 'firstAppearance', ''),
+      exit: frontString(entry.fields, 'exit', ''),
       // The prose after the block is the long description; an explicit
       // `description:` key is kept ahead of it, because a keyed value is a
       // deliberate one whereas prose may have accumulated from several edits.
@@ -289,6 +297,15 @@ export function parseCastFile(raw: string, where: string): Record<string, Charac
 }
 
 /**
+ * Where each cast tier sorts in `人物设定.md`: leads first, walk-ons last.
+ *
+ * A reading order, not a ranking of worth — the file is opened by a human
+ * looking for the protagonist, and a flat id sort buries him among thirty people
+ * who each appear once.
+ */
+const SCOPE_RANK: Readonly<Record<CharacterScope, number>> = { main: 0, volume: 1, cameo: 2 }
+
+/**
  * Render `人物设定.md`.
  *
  * @param characters - the cast, keyed by id.
@@ -296,7 +313,11 @@ export function parseCastFile(raw: string, where: string): Record<string, Charac
  */
 export function renderCastFile(characters: Readonly<Record<string, Character>>): string {
   const sections = Object.values(characters)
-    .sort((a, b) => a.id.localeCompare(b.id, 'zh-Hans-CN'))
+    // Leads first, walk-ons last: the file is read by a human who is looking for
+    // the protagonist, and a flat id sort buries him among 30 people who appear
+    // once. Sorting by tier is stable, so it does not churn the file on writes.
+    .sort((a, b) => SCOPE_RANK[characterScope(a)] - SCOPE_RANK[characterScope(b)]
+      || a.id.localeCompare(b.id, 'zh-Hans-CN'))
     .map((character) =>
       renderEntry(
         character.name === '' ? character.id : character.name,
@@ -304,6 +325,10 @@ export function renderCastFile(characters: Readonly<Record<string, Character>>):
           id: character.id,
           name: character.name,
           role: character.role,
+          scope: character.scope,
+          volume: character.volume > 0 ? character.volume : undefined,
+          firstAppearance: character.firstAppearance,
+          exit: character.exit,
           personality: character.personality,
           voice: character.voice,
           goal: character.goal,
@@ -517,17 +542,111 @@ export function renderWorldFile(world: Readonly<Record<string, WorldEntry>>): st
   return renderDocument({}, '世界观设定', sections)
 }
 
-// ── volume file ───────────────────────────────────────────────────────────────
+// ── volume files ──────────────────────────────────────────────────────────────
 
 /**
- * Parse `分卷大纲.md` into volumes, sorted by number.
+ * The heading one volume's 卷内节奏 is written under.
+ *
+ * The pacing detail is the volume's own 分卷剧情大纲 and the measure of its
+ * length, so it gets a name in the file rather than being "the prose above the
+ * first heading" — a file whose first named element is 本卷梗概 should not also
+ * be the place the pacing plan quietly lives.
+ */
+export const VOLUME_DETAIL_HEADING = '卷内节奏'
+
+/**
+ * Parse one volume's outline file (`分卷大纲/第1卷.md`).
+ *
+ * The file *is* the volume, so its scalars are frontmatter keys rather than a
+ * ```yaml block inside a `##` entry, its pacing detail is the `## 卷内节奏`
+ * section, and the seven narrative elements are `##` sections of their own. Any
+ * further `##` section the author adds is folded back into `detail`, in file
+ * order, so hand-written structure survives a read-write round trip.
+ *
+ * @param raw - the file text.
+ * @param where - the file path, for error messages and for the number fallback.
+ * @returns the volume.
+ * @throws {NovelContentError} when neither the frontmatter nor the filename
+ *   carries a positive `number`.
+ */
+export function parseVolumeFile(raw: string, where: string): VolumePlan {
+  const front = docFrontmatter(raw, where)
+  // The filename is the number's second home, exactly as it is for a chapter: a
+  // file the author wrote by hand and named `第3卷.md` is volume 3 even before
+  // anyone writes the frontmatter key.
+  const number = frontNumber(front, 'number', volumeNumberFromFileName(where) ?? 0)
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new NovelContentError(
+      `${where}: a volume outline needs a positive integer \`number\` in its frontmatter, or a filename like 第3卷.md (found ${JSON.stringify(front['number'] ?? null)})`,
+    )
+  }
+  const { preamble, sections } = splitDocument(bodyText(raw, where))
+  const isSpine = (section: MdSection): boolean => VOLUME_SPINE_PARTS.some((part) => part.heading === section.title)
+  // Everything that is not a named element belongs to the pacing detail: the
+  // preface, the `## 卷内节奏` section, and any heading the author invented. The
+  // pacing section contributes its *body* — re-rendering its heading would nest
+  // one `## 卷内节奏` inside another on the next write.
+  const detail = [
+    preamble,
+    sectionText(sections, VOLUME_DETAIL_HEADING),
+    ...sections
+      .filter((section) => !isSpine(section) && section.title !== VOLUME_DETAIL_HEADING)
+      .map((section) => renderSection(section.title, section.body.trim())),
+  ].map((part) => part.trim()).filter((part) => part !== '').join('\n\n')
+  const declared = frontString(front, 'detail', '')
+  return {
+    number,
+    title: frontString(front, 'title', ''),
+    goal: frontString(front, 'goal', ''),
+    conflict: frontString(front, 'conflict', ''),
+    climax: frontString(front, 'climax', ''),
+    endHook: frontString(front, 'endHook', ''),
+    ...spineOf(VOLUME_SPINE_PARTS, sections.filter(isSpine)),
+    detail: [declared, detail].filter((part) => part !== '').join('\n\n'),
+    chapters: numberList(front['chapters']),
+  }
+}
+
+/**
+ * Render one volume's outline file.
+ *
+ * @param volume - the volume.
+ * @returns the file text.
+ */
+export function renderVolumeFile(volume: VolumePlan): string {
+  const title = `第 ${String(volume.number)} 卷${volume.title === '' ? '' : ` ${volume.title}`}`
+  const sections = [
+    renderSection(VOLUME_DETAIL_HEADING, volume.detail),
+    ...VOLUME_SPINE_PARTS.map((part) => renderSection(part.heading, volume[part.field])),
+  ]
+  return renderDocument(
+    dropEmpty({
+      number: volume.number,
+      title: volume.title,
+      goal: volume.goal,
+      conflict: volume.conflict,
+      climax: volume.climax,
+      endHook: volume.endHook,
+      chapters: [...volume.chapters],
+    }),
+    title,
+    sections,
+  )
+}
+
+/**
+ * Parse the single collection file that held every volume before version 4.
+ *
+ * Kept for the migration and for nothing else: it is the only reader that
+ * understands `分卷大纲.md`, where each volume was a `## 第 N 卷` entry with a
+ * ```yaml block and `###` spine subsections. New projects never write it.
  *
  * @param raw - the file text.
  * @param where - the file path, for error messages.
  * @returns the volumes in reading order.
  * @throws {NovelContentError} on an entry without a positive `number`.
  */
-export function parseVolumeFile(raw: string, where: string): VolumePlan[] {
+export function parseVolumeCollectionFile(raw: string, where: string): VolumePlan[] {
   const text = bodyText(raw, where)
   const volumes: VolumePlan[] = []
   for (const entry of readEntries(splitSections(text), where)) {
@@ -543,14 +662,13 @@ export function parseVolumeFile(raw: string, where: string): VolumePlan[] {
     // The narrative spine lives in `###` subsections of the entry; the volume's
     // 卷内节奏 is everything else. Volume entries are delimited by `##`, so an
     // extra `##` inside one would read as the next volume — which is why the
-    // spine is `###` here and a `##` block on `全书大纲.md` only.
+    // spine is `###` in the collection file and a `##` block in the per-volume
+    // file that replaced it.
     const { preamble, subsections } = splitSubsections(entry.prose)
     const spineSections = subsections.filter((section) =>
       VOLUME_SPINE_PARTS.some((part) => part.heading === section.title),
     )
     const rest = subsections.filter((section) => !VOLUME_SPINE_PARTS.some((part) => part.heading === section.title))
-    // Rebuild the pacing body in element order: spine elements first, then
-    // everything the author wrote under other subheadings.
     const prose = [
       preamble,
       ...rest.map((section) => `### ${section.title}\n\n${section.body}`.trim()),
@@ -573,42 +691,6 @@ export function parseVolumeFile(raw: string, where: string): VolumePlan[] {
     else volumes.push(volume)
   }
   return volumes.sort((a, b) => a.number - b.number)
-}
-
-/**
- * Render `分卷大纲.md`.
- *
- * @param volumes - the volume plans.
- * @returns the file text.
- */
-export function renderVolumeFile(volumes: readonly VolumePlan[]): string {
-  const sections = [...volumes]
-    .sort((a, b) => a.number - b.number)
-    .map((volume) => {
-      // The volume's 卷内节奏 is the entry's preamble and its named narrative
-      // elements are `###` subsections below it. The order is deliberate: an
-      // unlabelled body written *above* the first subheading is unambiguously
-      // preamble, whereas the same body placed after a final subsection whose
-      // element was never written would be read as that element's text.
-      const spine = renderSpine(VOLUME_SPINE_PARTS, volume)
-      const detail = volume.detail.replace(/^\s+|\s+$/gu, '')
-      const prose = [detail, spine].filter((part) => part !== '').join('\n\n')
-      return renderEntry(
-        `第 ${String(volume.number)} 卷${volume.title === '' ? '' : ` ${volume.title}`}`,
-        dropEmpty({
-          number: volume.number,
-          title: volume.title,
-          goal: volume.goal,
-          conflict: volume.conflict,
-          climax: volume.climax,
-          endHook: volume.endHook,
-          chapters: [...volume.chapters],
-        }),
-        prose,
-      )
-    })
-  // No `updatedAt`: see {@link renderCastFile}.
-  return renderDocument({}, '分卷大纲', sections)
 }
 
 // ── chapter plan file ─────────────────────────────────────────────────────────
@@ -1039,6 +1121,10 @@ function waivedMap(chapter: Chapter): Record<string, YamlScalar> {
 /**
  * The content-bearing slice of a state, as the files that own it.
  *
+ * `volumes` is one text per volume, keyed by the volume number as a string: the
+ * caller decides where each one lands, exactly as it does for chapters, because
+ * the index is what records the path a file actually has.
+ *
  * @param state - the state to slice.
  * @returns one rendered text per kind, keyed by the index's own field names.
  */
@@ -1046,7 +1132,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   readonly outline: string
   readonly cast: string
   readonly world: string
-  readonly volumes: string
+  readonly volumes: Readonly<Record<string, string>>
   readonly chapterPlan: string
   readonly competitors: string
   readonly chapters: Readonly<Record<string, { readonly body: string; readonly outline: string }>>
@@ -1060,6 +1146,10 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   }
   const competitorMap: Record<string, Competitor> = {}
   for (const competitor of state.competitors) competitorMap[competitor.id] = competitor
+  const volumes: Record<string, string> = {}
+  for (const volume of [...state.outline.volumes].sort((a, b) => a.number - b.number)) {
+    volumes[String(volume.number)] = renderVolumeFile(volume)
+  }
   return {
     outline: renderOutlineFile({
       logline: state.outline.logline,
@@ -1081,7 +1171,7 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
     }),
     cast: renderCastFile(state.characters),
     world: renderWorldFile(state.world),
-    volumes: renderVolumeFile(state.outline.volumes),
+    volumes,
     chapterPlan: renderChapterPlanFile({
       rows: planRowsOf(state),
       beats: state.outline.beats,
@@ -1128,6 +1218,9 @@ export type ContentFiles = Readonly<Record<string, string>>
  * @param index - the index naming those paths.
  * @param openingFallback - checklist kept when the plan file has no such section.
  * @param competitorFallback - dismantles kept when the competitor file has no entries.
+ * @param legacyVolumeFile - the version-3 volume collection file, read when the
+ *   index names no per-volume files yet; the host's migration splits it, and
+ *   this keeps a browser read of a not-yet-migrated project correct.
  * @returns the outline, cast, world, competitors, and chapters.
  * @throws {NovelContentError} when a present file is malformed or a key repeats.
  */
@@ -1136,6 +1229,7 @@ export function composeContent(
   index: StorageIndex,
   openingFallback: Outline['opening'],
   competitorFallback: readonly Competitor[] = [],
+  legacyVolumeFile?: string,
 ): {
   readonly outline: Outline
   readonly characters: Readonly<Record<string, Character>>
@@ -1165,8 +1259,6 @@ export function composeContent(
       ? { rows: [], beats: [], opening: openingFallback }
       : parseChapterPlanFile(planFile, index.chapterPlanFile, openingFallback)
 
-  const volumeFile = read(index.volumeFile)
-
   const outline: Outline = {
     ...emptyOutline(),
     logline: outlineText.logline,
@@ -1176,7 +1268,7 @@ export function composeContent(
     acts: outlineText.acts,
     minimal: outlineText.minimal,
     fullOutlineDone: outlineText.fullOutlineDone,
-    volumes: volumeFile === undefined ? [] : parseVolumeFile(volumeFile, index.volumeFile),
+    volumes: composeVolumes(files, index, legacyVolumeFile),
     beats: plan.beats,
     opening: plan.opening,
   }
@@ -1194,6 +1286,39 @@ export function composeContent(
 
   const chapters = composeChapters(files, index, plan.rows)
   return { outline, characters, world, competitors: parsed ?? competitorFallback, chapters }
+}
+
+/**
+ * Read the volumes the index points at, in reading order.
+ *
+ * The **file wins**, so a volume whose frontmatter number disagrees with the key
+ * it was indexed under is returned as its file says; the next index refresh
+ * re-keys it. An indexed file that is missing is skipped rather than fatal —
+ * the caller already reports that as a warning.
+ *
+ * @param files - the raw text of every content file.
+ * @param index - the index naming each volume's file.
+ * @param legacyVolumeFile - the version-3 collection file, read only when the
+ *   index names no per-volume files.
+ * @returns the volumes, sorted by number.
+ * @throws {NovelContentError} when a volume file is malformed.
+ */
+function composeVolumes(
+  files: ContentFiles,
+  index: StorageIndex,
+  legacyVolumeFile: string | undefined,
+): VolumePlan[] {
+  const volumes: VolumePlan[] = []
+  for (const ref of Object.values(index.volumes)) {
+    const raw = files[ref.file]
+    if (raw === undefined) continue
+    volumes.push(parseVolumeFile(raw, ref.file))
+  }
+  if (volumes.length === 0 && legacyVolumeFile !== undefined) {
+    const raw = files[legacyVolumeFile]
+    if (raw !== undefined) volumes.push(...parseVolumeCollectionFile(raw, legacyVolumeFile))
+  }
+  return volumes.sort((a, b) => a.number - b.number)
 }
 
 /**

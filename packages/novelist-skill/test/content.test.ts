@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_STORAGE_LAYOUT,
   NovelContentError,
+  VOLUME_SPINE_PARTS,
   chapterPaths,
   chapterStem,
   composeContent,
@@ -9,11 +10,18 @@ import {
   defaultOpeningChecks,
   emptyIndex,
   emptyNovel,
+  isVolumePath,
   numberFromFileName,
   parseCastFile,
   parseChapterPlanFile,
+  parseVolumeCollectionFile,
+  parseVolumeFile,
+  renderVolumeFile,
   sanitizeTitle,
   upsertChapter,
+  volumeFileName,
+  volumeNumberFromFileName,
+  volumePath,
   type ChapterPlanRow,
 } from '../src/core/index.ts'
 import type { NovelState, StorageIndex } from '../src/core/types.ts'
@@ -46,6 +54,10 @@ function fixture(): NovelState {
         id: 'lin-yue',
         name: '林越',
         role: 'protagonist',
+        scope: '',
+        volume: 0,
+        firstAppearance: '',
+        exit: '',
         description: '十六岁，瘦，左手虎口有旧疤。\n他问：「父亲的剑，为何断在|山门？」',
         personality: '外冷内倔，受不得激；压力越大越沉默，沉默过后下狠手',
         voice: '短句，先问价再动手；急了才连说两句',
@@ -61,6 +73,10 @@ function fixture(): NovelState {
         id: 'shoumen-dizi',
         name: '守门弟子',
         role: 'gatekeeper',
+        scope: '',
+        volume: 0,
+        firstAppearance: '',
+        exit: '',
         description: '',
         personality: '',
         voice: '',
@@ -180,8 +196,10 @@ function roundTrip(state: NovelState): { readonly back: ReturnType<typeof compos
     [index.outlineFile]: parts.outline,
     [index.castFile]: parts.cast,
     [index.worldFile]: parts.world,
-    [index.volumeFile]: parts.volumes,
     [index.chapterPlanFile]: parts.chapterPlan,
+  }
+  for (const [key, text] of Object.entries(parts.volumes)) {
+    files[index.volumes[key]?.file ?? volumePath(Number.parseInt(key, 10))] = text
   }
   for (const [id, ref] of Object.entries(index.chapters)) {
     files[ref.bodyFile] = parts.chapters[id]?.body ?? ''
@@ -205,7 +223,11 @@ function indexOf(state: NovelState): StorageIndex {
       outlineHash: '',
     }
   }
-  return { ...base, chapters }
+  const volumes: Record<string, StorageIndex['volumes'][string]> = {}
+  for (const volume of state.outline.volumes) {
+    volumes[String(volume.number)] = { number: volume.number, file: volumePath(volume.number), hash: '' }
+  }
+  return { ...base, chapters, volumes }
 }
 
 describe('content codec round trip', () => {
@@ -252,6 +274,72 @@ describe('content codec round trip', () => {
     expect(after.wordCount).toBe(0)
   })
 
+  it('round-trips a 路人 register entry, tiers included', () => {
+    const state = fixture()
+    const withCameo: NovelState = {
+      ...state,
+      characters: {
+        ...state.characters,
+        'shouye-laobing': {
+          id: 'shouye-laobing',
+          name: '守夜的老兵',
+          role: '',
+          scope: 'cameo',
+          volume: 2,
+          firstAppearance: '第37章',
+          exit: '第52章 被灭口',
+          description: '左腿有点瘸，认得后山的每条路。',
+          personality: '',
+          voice: '',
+          goal: '',
+          fear: '',
+          obsession: '',
+          weakness: '',
+          camp: '',
+          growthArc: '',
+          notes: '',
+        },
+      },
+    }
+    const index = indexOf(withCameo)
+    const parts = decomposeContent(withCameo, STAMP)
+    const back = composeContent({ [index.castFile]: parts.cast }, index, defaultOpeningChecks())
+    expect(back.characters['shouye-laobing']).toEqual(withCameo.characters['shouye-laobing'])
+    // The cameo's own section carries the register keys and none of the spine.
+    const section = parts.cast.slice(parts.cast.indexOf('## 守夜的老兵'))
+    expect(section).toContain('scope: "cameo"')
+    expect(section).toContain('firstAppearance: "第37章"')
+    expect(section).toContain('exit: "第52章 被灭口"')
+    expect(section).not.toContain('personality:')
+    expect(section).not.toContain('goal:')
+  })
+
+  it('orders the cast file by tier, so the protagonist is not buried among walk-ons', () => {
+    const state = fixture()
+    const parts = decomposeContent(
+      {
+        ...state,
+        characters: {
+          ...state.characters,
+          'a-cameo': {
+            ...Object.values(state.characters)[0]!,
+            id: 'a-cameo',
+            name: '阿三',
+            scope: 'cameo',
+            description: '茶楼跑堂。',
+            firstAppearance: '第2章',
+          },
+        },
+      },
+      STAMP,
+    )
+    // 林越 (main) sorts before the id `a-cameo`, which would win a plain id sort.
+    expect(parts.cast.indexOf('## 林越')).toBeLessThan(parts.cast.indexOf('## 阿三'))
+    // …and the render is stable, so tier ordering does not churn the file.
+    const again = decomposeContent(fixture(), STAMP)
+    expect(again.cast).toBe(decomposeContent(fixture(), STAMP).cast)
+  })
+
   it('keeps a literal pipe in cast prose and in a table cell', () => {
     const state = fixture()
     const { back, files } = roundTrip(state)
@@ -268,7 +356,10 @@ describe('content codec round trip', () => {
     expect(again.outline).toBe(files[index.outlineFile])
     expect(again.cast).toBe(files[index.castFile])
     expect(again.world).toBe(files[index.worldFile])
-    expect(again.volumes).toBe(files[index.volumeFile])
+    expect(again.volumes).toEqual({
+      '1': files[volumePath(1)],
+      '2': files[volumePath(2)],
+    })
     expect(again.chapterPlan).toBe(files[index.chapterPlanFile])
   })
 
@@ -347,6 +438,150 @@ describe('content codec file naming', () => {
     expect(numberFromFileName('章节/第1000章.md')).toBe(1000)
     expect(numberFromFileName('章节/手写的一章.md')).toBeUndefined()
   })
+
+  it('puts one volume per file in the volume directory, named by number alone', () => {
+    expect(volumePath(1)).toBe('分卷大纲/第1卷.md')
+    expect(volumePath(12)).toBe('分卷大纲/第12卷.md')
+    // The number is the whole name, so a retitled volume never moves its file.
+    expect(volumeFileName(3)).toBe('第3卷.md')
+    expect(volumeNumberFromFileName('分卷大纲/第12卷.md')).toBe(12)
+    expect(volumeNumberFromFileName('分卷大纲/卷一.md')).toBeUndefined()
+    expect(isVolumePath('分卷大纲/第1卷.md')).toBe(true)
+    expect(isVolumePath('分卷大纲/第1卷/续.md')).toBe(false)
+  })
+})
+
+describe('volume outline files', () => {
+  /** A volume with every field written, so the round trip has something to lose. */
+  function written(): ReturnType<typeof parseVolumeFile> {
+    return parseVolumeFile(
+      renderVolumeFile({
+        number: 1,
+        title: '山门',
+        detail: '卷一从前山石阶写到试剑台。',
+        goal: '林越拜入山门并立住脚',
+        conflict: '守门弟子与长老的刁难',
+        climax: '试剑台上断剑认主',
+        endHook: '钟声之后，后山传来父亲的剑鸣',
+        synopsis: '林越背着断剑上山，卷末在试剑台上让断剑认了主。',
+        protagonistArc: '从「只想问清父亲死因」变成「愿意在山门里站住脚」',
+        antagonistArc: '长老露出第一次试探的底色',
+        factionShift: '后山一脉开始盯上他',
+        mainConflict: '试剑台上一场以断剑认主收场的比试',
+        costs: '他失去了「悄悄查父亲死因」的可能',
+        gains: '剑骨被承认',
+        chapters: [1, 30],
+      }),
+      '分卷大纲/第1卷.md',
+    )
+  }
+
+  it('round-trips every field of one volume', () => {
+    const volume = written()
+    expect(volume.number).toBe(1)
+    expect(volume.title).toBe('山门')
+    expect(volume.goal).toBe('林越拜入山门并立住脚')
+    expect(volume.detail).toBe('卷一从前山石阶写到试剑台。')
+    expect(volume.synopsis).toContain('让断剑认了主')
+    expect(volume.mainConflict).toContain('试剑台')
+    expect(volume.costs).toContain('悄悄查父亲死因')
+    expect(volume.chapters).toEqual([1, 30])
+  })
+
+  it('names the pacing detail, and gives each element a `##` of its own', () => {
+    const text = renderVolumeFile(written())
+    expect(text).toContain('# 第 1 卷 山门')
+    expect(text).toContain('number: 1')
+    expect(text).toContain('## 卷内节奏')
+    expect(text).toContain('## 本卷梗概')
+    // Seven elements plus the pacing detail, and no nested collection entry.
+    expect(text.match(/^## /gmu)).toHaveLength(1 + VOLUME_SPINE_PARTS.length)
+  })
+
+  it('keeps prose above the first heading, and an invented section, in detail', () => {
+    const raw = [
+      '---',
+      'number: 4',
+      'title: 手写',
+      '---',
+      '',
+      '# 第 4 卷 手写',
+      '',
+      '标题下面直接写的节奏安排。',
+      '',
+      '## 卷内节奏',
+      '',
+      '命名的节奏段落。',
+      '',
+      '## 阶段推进',
+      '',
+      '作者自己加的小节。',
+      '',
+      '## 本卷梗概',
+      '',
+      '第四卷的故事。',
+      '',
+      '',
+    ].join('\n')
+    const volume = parseVolumeFile(raw, '分卷大纲/第4卷.md')
+    expect(volume.number).toBe(4)
+    expect(volume.detail).toContain('标题下面直接写的节奏安排。')
+    expect(volume.detail).toContain('命名的节奏段落。')
+    expect(volume.detail).toContain('## 阶段推进')
+    expect(volume.detail).toContain('作者自己加的小节。')
+    expect(volume.synopsis).toBe('第四卷的故事。')
+    // Re-rendering cannot nest one `## 卷内节奏` inside another.
+    const again = parseVolumeFile(renderVolumeFile(volume), '分卷大纲/第4卷.md')
+    expect(again.detail).toBe(volume.detail)
+    expect((renderVolumeFile(again).match(/## 卷内节奏/gu) ?? [])).toHaveLength(1)
+  })
+
+  it('takes the number from the filename when the frontmatter leaves it out', () => {
+    const volume = parseVolumeFile(
+      ['---', 'title: 手写的第三卷', '---', '', '# 第 3 卷 手写的第三卷', '', '## 卷内节奏', '', '手写的节奏。', ''].join('\n'),
+      '分卷大纲/第3卷.md',
+    )
+    expect(volume.number).toBe(3)
+    expect(volume.title).toBe('手写的第三卷')
+    expect(volume.detail).toBe('手写的节奏。')
+  })
+
+  it('reads the pre-version-4 collection file for the migration', () => {
+    const raw = [
+      '# 分卷大纲',
+      '',
+      '## 第 1 卷 山门',
+      '',
+      '```yaml',
+      'number: 1',
+      'title: 山门',
+      'chapters: [1, 30]',
+      '```',
+      '',
+      '卷一从前山石阶写到试剑台。',
+      '',
+      '### 本卷梗概',
+      '',
+      '林越背着断剑上山。',
+      '',
+      '## 第 2 卷 后山',
+      '',
+      '```yaml',
+      'number: 2',
+      'title: 后山',
+      '```',
+      '',
+      '后山的雾。',
+      '',
+      '',
+    ].join('\n')
+    const volumes = parseVolumeCollectionFile(raw, '分卷大纲.md')
+    expect(volumes.map((volume) => volume.number)).toEqual([1, 2])
+    expect(volumes[0]?.detail).toBe('卷一从前山石阶写到试剑台。')
+    expect(volumes[0]?.synopsis).toBe('林越背着断剑上山。')
+    expect(volumes[0]?.chapters).toEqual([1, 30])
+    expect(volumes[1]?.detail).toBe('后山的雾。')
+  })
 })
 
 describe('content codec errors', () => {
@@ -390,9 +625,13 @@ describe('content codec errors', () => {
     expect(() => parseChapterPlanFile(raw, '章节大纲.md', [])).toThrow(/chapter 1 appears twice/u)
   })
 
-  it('reports a volume without a number', () => {
-    const raw = ['## 第一卷', '', '```yaml', 'title: 山门', '```', ''].join('\n')
-    expect(() => composeContent({ '分卷大纲.md': raw }, emptyIndex(), [])).toThrow(/needs a positive integer/u)
+  it('reports a volume with no number in its frontmatter and none in its filename', () => {
+    const raw = ['---', 'title: 山门', '---', '', '# 第 1 卷 山门', '', '## 卷内节奏', '', '从前山写到试剑台。', ''].join('\n')
+    const index: StorageIndex = {
+      ...emptyIndex(),
+      volumes: { '1': { number: 1, file: '分卷大纲/手写的一卷.md', hash: '' } },
+    }
+    expect(() => composeContent({ '分卷大纲/手写的一卷.md': raw }, index, [])).toThrow(/needs a positive integer/u)
   })
 
   it('reports an unknown beat kind rather than storing it', () => {

@@ -38,8 +38,8 @@ import {
   SPINE_LABELS,
 } from '../core/types.ts'
 import type { Chapter, ChapterStatus, NovelState, SettingsLayerStanding } from '../core/types.ts'
-import { castGaps, draftTargetWords, lengthStageFor, missingContract, missingPitchFields, worldGaps } from '../core/plan.ts'
-import { assessStage, confirmationStanding, progressOf, styleGateReached } from '../core/novel.ts'
+import { castDebt, draftTargetWords, lengthStageFor, missingContract, missingPitchFields, worldGaps } from '../core/plan.ts'
+import { assessStage, characterScope, confirmationStanding, progressOf, styleGateReached } from '../core/novel.ts'
 import { outlineSpineGaps, outlineStyleGaps, volumeSpineGaps } from '../core/spine.ts'
 
 /** One chapter as the board shows it; every field is a fact about the state. */
@@ -135,7 +135,7 @@ export interface DocumentCard {
   /**
    * The names of the parts this document still owes.
    *
-   * Filled from the core's own gap checks (`outlineSpineGaps`, `castGaps`,
+   * Filled from the core's own gap checks (`outlineSpineGaps`, `castDebt`,
    * …) rather than recomputed here, so the board and the tools can never
    * disagree about what a document is missing. The labels are the domain's
    * Chinese ones — this is the same vocabulary the tools print — and they are
@@ -231,7 +231,7 @@ export function boardOf(state: NovelState): KanbanBoard {
  * Every entry answers the same three questions — does anything exist, is it
  * complete enough to act on, and, where the SOP put a checkpoint in front of it,
  * did the author sign it off — from the state alone. The completeness checks are
- * the core's own (`missingPitchFields`, `castGaps`, `outlineSpineGaps`, …), so
+ * the core's own (`missingPitchFields`, `castDebt`, `outlineSpineGaps`, …), so
  * "the board says the outline is thin" and "`novel_status` says the outline is
  * thin" are one finding with two renderings.
  *
@@ -258,7 +258,11 @@ function documentsOf(
   const world = Object.values(state.world)
   const worldDebt = worldGaps(state)
   const cast = Object.values(state.characters)
-  const castDebt = castGaps(state)
+  // The card counts the people who owe a spine. Walk-ons are a register that
+  // grows while the book is written, and counting them as unfinished is how a
+  // cast card is held open for 200 chapters by a tea boy who appears once.
+  const castDebtGaps = castDebt(state)
+  const cameos = cast.length - cast.filter((character) => characterScope(character) === 'cameo').length
   const outlineGaps = outlineSpineGaps(state.outline)
   const styleGaps = outlineStyleGaps(state.outline)
   const volumes = state.outline.volumes
@@ -333,15 +337,20 @@ function documentsOf(
     {
       id: 'cast',
       state: cardState({
-        complete: cast.length > 0 && castDebt.length === 0,
+        complete: cast.length > 0 && castDebtGaps.length === 0,
         started: cast.length > 0,
         needsSignOff: true,
         signedOff: layer('cast')?.confirmed === true,
       }),
-      done: cast.length,
+      // 主要角色 + 配角: what the card's number counts. The cameo count rides in the
+      // tooltip, where it is information rather than a debt.
+      done: cameos,
       total: 0,
       gates: '',
-      gaps: castDebt.map((gap) => gap.name),
+      gaps: [
+        ...castDebtGaps.map((gap) => gap.name),
+        ...(cast.length - cameos > 0 ? [`另有 ${String(cast.length - cameos)} 位路人已登记（不计欠账）`] : []),
+      ],
     },
     // 去 AI 化诊断 — the receipt the SOP's step 23 never used to leave. It sits
     // beside the prose rather than among the planning layers because that is when

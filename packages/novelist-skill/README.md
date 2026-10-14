@@ -132,7 +132,7 @@ whether the book is still worth continuing, and nothing in the pipeline waits fo
 |---|---|---|
 | `novel_init` | — (one call, idempotent) | Project, commercial frame, `baselines` + `multipliers`, writing parameters. The length plan (`targetWords`, `chapterWords`, `volumes`) is asked of the user and never guessed: `totalChapters` is derived from total ÷ chapter length, unanswered questions are reported as a checklist, and contradictions between the numbers are warned about. `volumes: 0` is the explicit 不分卷 answer; omitting it leaves the question open. Never overwrites an existing premise (it warns and points at `novel_plan operation="pitch"`). Unknown metric keys in `baselines` are ignored with a warning. |
 | `novel_plan` | `competitor`, `pitch`, `world`, `outline`, `volume`, `chapter`, `beat`, `opening`, `naming`, `launch` | `competitor` writes each dismantle into `竞品拆解.md` (all twelve fields), so the study is a file the author can read and reuse. `outline` takes the narrative spine (`synopsis`, `protagonistArc`, `supportArcs`, `antagonistArc`, `factionShift`, `conflictArcs`, `costs`, `gains`), the 写作风格 block (`styleTone`, `stylePerspective`, `styleRhythm`, `styleDiction`, `styleDialogue`, `styleEmotion`, `styleTaboos` — all seven are a prose gate) and `fullOutline` (the `## 完整大纲` body); `volume` takes its own seven (`synopsis`, `protagonistArc`, `antagonistArc`, `factionShift`, `mainConflict`, `costs`, `gains`) and `detail` (the volume's own 分卷剧情大纲); `chapter` adds `keyBeat` and `price` to the contract. **Every layer reports story → 写作风格 → payoffs → length in that order**, and the ratio target (÷100 / ÷50 / ÷10) is only printed after the narrative elements have been reported; falling short of it is a **warning**, never a refusal, and is overridable per call with `targetWords`. A partial `volume` call keeps the elements it did not name. `chapter` accepts `waive` + `waiveReason`, `remove: true`, and derives the id from `id`/`title`. `opening` without a `key` lists the checklist and reports `ok: false` (nothing changed). `launch` records the phase-three human go/no-go (`verdict` = `go` / `revise` / `abandon`); `go` is what unlocks phase four, and a `revise` or `abandon` **throws** unless `fallback` and `abandonIf` are supplied. Writing a settings layer out of order is warned about, not refused. |
-| `novel_bible` | `character`, `world`, `link`, `review` | `link` carries `plantedAt` / `dueAt` / `payoff` / `status` / `volume`; `review` reports world gaps, cast gaps and unrecovered or overdue promises. |
+| `novel_bible` | `character`, `world`, `link`, `review` | `character` carries the tier (`scope` = `main` / `volume` / `cameo`) plus the walk-on register (`volume`, `firstAppearance`, `exit`), and warns when two entries share one display name; `link` carries `plantedAt` / `dueAt` / `payoff` / `status` / `volume`; `review` reports world gaps, cast gaps **by tier** (walk-on register gaps are listed separately and never as debt), an unknown `scope`, and unrecovered or overdue promises. |
 | `novel_confirm` | `status`, `discuss`, `confirm`; `kind` = `settings`/`premise`, `world`, `cast`, `outline`, `volume`, `style` | The author checkpoints, and the record of the conversation that closes them. The settings are settled **one layer at a time, in order** (立意 → 世界观 → 人物设定 → 全书大纲（含写作风格）→ 分卷大纲); a later layer's `discuss`/`confirm` **throws** while an earlier one is open, and `status` reports every layer plus which one is in turn. The 全书大纲 layer **throws** on `confirm` while its 写作风格 block is incomplete, and `kind="style"` is the 文风复核 after the golden three chapters (第 1–3 章): it **throws** on `confirm` until those chapters have prose. `discuss` requires the user's own words in `feedback`; `confirm` requires both `summary` and `note`. The premise needs 2 rounds, every later layer and the voice review need 1. `settings` and `premise` are the same checkpoint two ways, and rounds recorded under either spelling count for both. |
 | `novel_write` | `write`, `read`, `check` | **The one hard-gating tool**: `proseGate` **throws** while the premise layer is unsigned, while the 写作风格 block of the 全书大纲 is incomplete, and — once the golden three chapters (第 1–3 章) have prose — while the user has not reviewed the voice **and** while no 去 AI 化 diagnosis has been recorded at all (so chapter 4 onward waits; chapters 1–3 are written against a style the author has already seen, and the diagnosis is the receipt that the SOP's step 23 actually happened rather than depending on the model choosing to run it). `chapterId` is required; `write` replaces the body (never appends) and takes `delivered` = the contract fields the draft reached. A first draft is written to 125% of the chapter target (去 AI 化与手改会成段删减), so the tool prints both length windows and checks the draft against whichever gate the chapter's status implies (`planned`/`drafting` = 125%, `revised`/`final` = -5%/+15%). Every `write` and `check` also returns the SOP's 去 AI 化 statistics — long paragraphs, average paragraph length, dialogue density, repeated sentence openings, the 对举句 count with two quoted hits, and any phrase of the book's 负面清单 that appears — as countable symptoms; the tool never edits the prose, so a revision goes back through `write`. Marking `status: 'final'` prints the pre-publish blockers and the compliance checklist, but does not refuse. |
 | `novel_assess` | `record`, `iterate`, `evaluate`, `outcome`, `history`, `rules` | `record` needs at least one numeric metric and returns the rules it fires (action + scope); `record`/`evaluate` also accept `baselines` to re-calibrate on the spot. `iterate` needs an `action`. `evaluate` compares the reading with the calibrated medians, back-fills every open iteration against it, and returns the verdict → action mapping; it **throws** without `nextAtChapter`/`nextTrigger`, throws without `fallback`/`abandonIf` when the verdict is not a pass, and refuses to answer when every metric lacks a median. `outcome` is the manual override for the automatic back-fill: it closes the named `iterationId` against the named `outcomeReadingId` (defaulting to the most recent of each), throws when that reading is the change's own baseline, and reports whether it improved. `history` lists the evaluations with their verdicts, fallback, abandon condition and next appointment; `rules` prints every metric's median, multiplier and trigger line. |
@@ -165,7 +165,7 @@ from becoming a formality: `novel_plan operation="launch"` refuses a non-`go` ve
 appointment for the next evaluation and refuses to answer when no metric has a comparable
 median. Every tool also refuses to guess a chapter it cannot resolve.
 
-## Schema v3 data model
+## Schema v4 data model
 
 The novel is split. `.novel/novel.json` holds metadata, the evidence chain, and an index; the
 content lives in the Markdown files that index names, so an author can read and revise it.
@@ -181,7 +181,7 @@ content lives in the Markdown files that index names, so an author can read and 
 | Promises | `links` (map) — status and recovery chapter feed the volume-end gate, so this must be atomic |
 | Feedback | `readings[]`, `iterations[]` (with `baselineReadingId` / `outcomeReadingId` / `outcome`), `evaluations[]` (with `nextAtChapter` / `nextTrigger`), `launchDecisions[]` (the phase-three go/no-go with its `fallback` / `abandonIf`), `reviews[]` |
 | Checklist | `opening[]`: the opening-engineering items whose `done` flags gate phase two |
-| Index | `index`: `outlineFile`, `castFile`, `worldFile`, `volumeFile`, `chapterPlanFile`, `competitorFile`, `chapters` (id → number, title, `bodyFile`, `outlineFile`, both hashes), `files` (path → hash) |
+| Index | `index`: `outlineFile`, `castFile`, `worldFile`, `volumeDir`, `chapterPlanFile`, `competitorFile`, `chapters` (id → number, title, `bodyFile`, `outlineFile`, both hashes), `volumes` (number → `number`, `file`, `hash`), `files` (path → hash) |
 | Closing | `retro?` (dataSummary, highlights, problems, lessons, assets, templates) |
 
 **In the files** (`docs/plan-markdown-storage.md` §4 is the authority):
@@ -189,9 +189,9 @@ content lives in the Markdown files that index names, so an author can read and 
 | File | Holds |
 |---|---|
 | `全书大纲.md` | `logline`, the `## 叙事骨架` block (eight named narrative elements as `###` subsections), the `## 写作风格` block (seven named style elements, same dialect), the `## 完整大纲` body (`fullOutline`), `acts[]`, `minimal`, `fullOutlineDone` |
-| `人物设定.md` | One `##` section per character: `id`, `role`, `goal`, `fear`, `obsession`, `weakness`, `camp`, `growthArc`, `notes`, and the prose `description` |
+| `人物设定.md` | One `##` section per character, sorted by tier (leads first, walk-ons last): `id`, `role`, `scope`, `volume`, `firstAppearance`, `exit`, `goal`, `personality`, `voice`, `fear`, `obsession`, `weakness`, `camp`, `growthArc`, `notes`, and the prose `description`. `scope` decides what the entry owes — `main` the full spine, `volume` role/goal/personality/voice, `cameo` only 「他是谁 + 首次出场章」 — and an absent `scope` falls back to `role`, so a pre-tier file is held to exactly what it was |
 | `世界观设定.md` | One `##` section per fact: `id`, `kind`, `name`, `cost`, `limits`, and the prose `detail` |
-| `分卷大纲.md` | One `##` section per volume: `number`, `title`, `goal`, `conflict`, `climax`, `endHook`, `chapters`, the prose `detail` (the volume's own 分卷剧情大纲), and the volume's seven narrative elements as `###` subsections. A volume entry cannot contain another `##`: it would parse as the next volume |
+| `分卷大纲/第N卷.md` | **One file per volume.** Frontmatter: `number`, `title`, `goal`, `conflict`, `climax`, `endHook`, `chapters`. Body: `## 卷内节奏` (the volume's own 分卷剧情大纲) plus the volume's seven narrative elements as `##` sections. Any further `##` section the author writes is folded back into the pacing detail, in file order. The file is named by number alone, so a retitle never moves it; a version-3 project's single `分卷大纲.md` is split into these by the store's migration |
 | `章节大纲.md` | The chapter table (number, title, volume, target words, one-line summary) and the rhythm table — the plan layer's only home for those |
 | `竞品拆解.md` | One `##` section per comparable title: `id`, `title`, `tags`, `blurb`, `openingEvent`, `goldenFinger`, `protagonistDesire`, `antagonistMotive`, `shuangFrequency`, `emotionCurve`, `paywallPoint`, `chapterHooks`, `commentKeywords`, `takeaway` |
 | `章节/第NNN章-*.md` | `status` and the prose (`wordCount` is derived: recomputed on read, back-filled on write) |
@@ -243,7 +243,7 @@ serial and a 300 万字 epic alike:
 | Layer | Ratio | Written where |
 |---|---|---|
 | 全书大纲 (`fullOutline`) | 总字数 ÷ 100 | `## 完整大纲` in `全书大纲.md` |
-| 分卷大纲 (`detail`) | 本卷字数 ÷ 50 | the volume entry's prose in `分卷大纲.md` |
+| 分卷大纲 (`detail`) | 本卷字数 ÷ 50 | the `## 卷内节奏` section of that volume's own file |
 | 章节大纲 (the contract fields) | 单章字数 ÷ 10 | the contract sections in `*.细纲.md` |
 
 The ratios are SOP constants (`OUTLINE_LAYER_RATIOS`), reportable at `novel_plan` time and
@@ -263,8 +263,12 @@ Two conventions hold everywhere:
 
 ### Versioning and migration
 
-`parseNovel` accepts `schemaVersion` 1 and 2 and refuses anything else with a
-`NovelStoreError` naming the supported versions.
+`parseNovel` accepts `schemaVersion` 1, 2 and 3 and refuses anything else with a
+`NovelStoreError` naming the supported versions. Version 3 is the layout whose
+content already lived in files but whose volumes still shared one collection
+file: the store reads that file and splits it into `分卷大纲/第N卷.md`, then
+deletes the collection — new files first, collection last, so an interrupted run
+reruns on the next read. Version 4 is what this build writes.
 
 `migrateV1` keeps the whole draft: the v1 chapter `synopsis` becomes `plotTask` (an existing
 plan must not be silently emptied by an upgrade), premise, cast, world entries and chapters

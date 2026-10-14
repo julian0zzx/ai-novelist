@@ -31,8 +31,15 @@
  * @module @ai-novelist/novelist-skill/core/types
  */
 
-/** On-disk schema version written by this build. */
-export const NOVEL_SCHEMA_VERSION = 3 as const
+/**
+ * On-disk schema version written by this build.
+ *
+ * Version 4 moved the volume outlines out of one collection file
+ * (`分卷大纲.md`) and into one file per volume (`分卷大纲/第1卷.md`), so a later
+ * volume can be revised while the ones before it are being written. Version 3
+ * documents are read by the store's migration, which splits the collection.
+ */
+export const NOVEL_SCHEMA_VERSION = 4 as const
 
 /** Lifecycle of one chapter from plan to frozen prose. */
 export const CHAPTER_STATUSES = ['planned', 'drafting', 'revised', 'final'] as const
@@ -711,6 +718,37 @@ export interface Character {
   readonly name: string
   /** Narrator-facing role, for example `protagonist` or `antagonist`. */
   readonly role: string
+  /**
+   * How much of the spine this character owes; see {@link CHARACTER_SCOPES}.
+   *
+   * Empty means "not decided", and the check falls back to {@link role}: a
+   * protagonist-shaped role is `main`, anything else is `volume`. That default is
+   * deliberately the stricter of the two, so a cast written before this field
+   * existed is held to exactly what it was held to before.
+   */
+  readonly scope: string
+  /**
+   * The volume or map this character belongs to, 0 when unset.
+   *
+   * What makes a walk-on findable: "第 5 卷已经出场过哪些人" is the page a writer
+   * opens when starting a chapter inside a map they have used before.
+   */
+  readonly volume: number
+  /**
+   * The chapter this character was first seen in: a chapter id or number.
+   *
+   * Free text like {@link StoryLink.plantedAt}, because the author may write
+   * "第37章" before the chapter has an id, and because a cameo registered after
+   * the fact should be able to name the chapter it already appeared in.
+   */
+  readonly firstAppearance: string
+  /**
+   * How they left the story, when they did: "第 52 章 被灭口".
+   *
+   * The failure this prevents is a walk-on who died in volume 2 walking back in
+   * at volume 4 — nothing else in the project records that he is gone.
+   */
+  readonly exit: string
   /** Appearance, habits, and anything else the prose must honor. */
   readonly description: string
   /**
@@ -745,6 +783,35 @@ export interface Character {
   readonly growthArc: string
   /** Free-form continuity notes; append-only by convention. */
   readonly notes: string
+}
+
+/**
+ * How much of the cast spine a character is held to.
+ *
+ * The question a tier answers is not "how important is he" but two things the
+ * prose actually depends on: **will he appear again**, and **does he speak**. A
+ * 200-chapter novel has dozens of people who exist for one map — a 掌柜, a 队正,
+ * a 守夜的老兵 — and demanding a personality and a voice from each of them
+ * produces filler, not depth (see `castGaps`). What those people really need is
+ * a *register*: a name nobody else already has, where they were seen, and
+ * whether they are still around.
+ *
+ * - `main` — protagonist, antagonist, core companions: the full spine.
+ * - `volume` — recurring within one volume or map, or a character with lines:
+ *   owes a voice, not an arc.
+ * - `cameo` — scenery, one appearance: owes a name, one line saying who they
+ *   are, and the chapter they were seen in.
+ */
+export const CHARACTER_SCOPES = ['main', 'volume', 'cameo'] as const
+
+/** One entry of {@link CHARACTER_SCOPES}. */
+export type CharacterScope = (typeof CHARACTER_SCOPES)[number]
+
+/** How each scope reads to the author, wherever it is reported. */
+export const SCOPE_LABELS: Readonly<Record<CharacterScope, string>> = {
+  main: '主要角色',
+  volume: '配角（本卷/本地图）',
+  cameo: '路人（一次性）',
 }
 
 /** A setting fact the novel must keep consistent. */
@@ -796,7 +863,7 @@ export interface StoryLink {
 // ── the plan ──────────────────────────────────────────────────────────────────
 
 /**
- * The filenames the six top-level content files use.
+ * The filenames the top-level content files use.
  *
  * Fixed Chinese names by default, overridable through configuration; the index
  * is the only thing that records which names are actually in force, so nothing
@@ -809,8 +876,17 @@ export interface StorageLayout {
   readonly castFile: string
   /** World facts. */
   readonly worldFile: string
-  /** Volume plans. */
-  readonly volumeFile: string
+  /**
+   * Directory holding the per-volume outline files, one per volume.
+   *
+   * A volume outline is revised while the volumes before it are already being
+   * written, so it is one file per volume (`分卷大纲/第1卷.md`) rather than one
+   * collection file: editing volume 7 must not rewrite volumes 1–6, and a
+   * 200 000-character outline is not a file anyone wants to re-read each time.
+   * The filename carries the volume number only, so a volume's title can change
+   * without its file moving.
+   */
+  readonly volumeDir: string
   /** Chapter plan and rhythm table. */
   readonly chapterPlanFile: string
   /**
@@ -1495,17 +1571,37 @@ export interface ChapterFileRef {
 }
 
 /**
+ * Where one volume's outline file lives, and what it contained.
+ *
+ * The stable key is the **volume number**, which is also the filename
+ * (`分卷大纲/第1卷.md`), so a retitled volume never moves its file — unlike a
+ * chapter, whose name carries the title. `file` is recorded anyway, exactly as
+ * `ChapterFileRef` records its paths: the author may have named the file
+ * themselves, and "the file wins" means the index follows the file rather than
+ * re-deriving a name over it.
+ */
+export interface VolumeFileRef {
+  /** 1-based volume number, as the volume's own frontmatter records it. */
+  readonly number: number
+  /** Workspace-relative path of the volume's outline file. */
+  readonly file: string
+  /** `sha256:…` of that file's text at the last read or write. */
+  readonly hash: string
+}
+
+/**
  * The index: the one place that records where content actually lives.
  *
- * The six top-level names are fixed Chinese filenames by default and
- * configurable through `Config.storageLayout`; everything else is keyed by
- * chapter id so a title change (and the file rename it causes) can be recovered,
- * because the id travels in the file's own frontmatter.
+ * The top-level names are fixed Chinese filenames by default and configurable
+ * through `Config.storageLayout`; everything else is keyed by a stable id — a
+ * chapter id, a volume number — so a retitle can be recovered from the file's
+ * own frontmatter.
  *
- * `files` is a path→hash map rather than six fields because the reader must not
- * assume "one file per kind": the plan's own note on a 1000-chapter book says the
- * chapter plan may later split per volume, and code that reads this map is
- * already indifferent to that.
+ * `files` is a path→hash map rather than one field per kind because the reader
+ * must not assume "one file per kind": the volume outlines are already one file
+ * per volume, and the plan's own note on a 1000-chapter book leaves room for the
+ * chapter plan to split per volume later. Code that reads this map is already
+ * indifferent to that.
  */
 export interface StorageIndex {
   /** Workspace-relative path of the whole-book outline file. */
@@ -1514,14 +1610,16 @@ export interface StorageIndex {
   readonly castFile: string
   /** Workspace-relative path of the world file. */
   readonly worldFile: string
-  /** Workspace-relative path of the volume-outline file. */
-  readonly volumeFile: string
+  /** Workspace-relative path of the directory holding one file per volume. */
+  readonly volumeDir: string
   /** Workspace-relative path of the chapter-plan file. */
   readonly chapterPlanFile: string
   /** Workspace-relative path of the competitor-dismantle file. */
   readonly competitorFile: string
   /** One entry per chapter, keyed by {@link Chapter.id}. */
   readonly chapters: Readonly<Record<string, ChapterFileRef>>
+  /** One entry per volume, keyed by the volume number as a string. */
+  readonly volumes: Readonly<Record<string, VolumeFileRef>>
   /** `sha256:…` of every indexed content file, keyed by workspace-relative path. */
   readonly files: Readonly<Record<string, string>>
 }
