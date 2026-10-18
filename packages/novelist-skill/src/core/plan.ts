@@ -490,7 +490,7 @@ export type OutlineLayer = 'full' | 'volume' | 'chapter'
  * How long each planning layer should run, as a fraction of the words it governs.
  *
  * These are SOP constants, not knobs: 全书大纲 at 1/100 of the whole book,
- * 分卷大纲 at 1/50 of the volume, 章节大纲 at 1/10 of the chapter. They are
+ * 分卷大纲 at 1/50 of the volume, 章节大纲 at 1/5 of the chapter. They are
  * deliberately *ratios* rather than word counts because the book's length is the
  * author's answer from `novel_init`, and a hard-coded "10000 字" would be wrong
  * for a 30 万字 short serial and a 300 万字 paid epic alike.
@@ -498,7 +498,7 @@ export type OutlineLayer = 'full' | 'volume' | 'chapter'
 export const OUTLINE_LAYER_RATIOS: Readonly<Record<OutlineLayer, number>> = {
   full: 1 / 100,
   volume: 1 / 50,
-  chapter: 1 / 10,
+  chapter: 1 / 5,
 }
 
 /** The label the tools print for one layer's ratio. */

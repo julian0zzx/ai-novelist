@@ -791,7 +791,7 @@ repeat itself.
 **Planning layers carry length budgets, not length gates.** A chapter's length was checkable
 against a stated target from the start; an outline's was not, so a two-line 全书大纲 and a
 twenty-thousand-character one passed the same checks. `OUTLINE_LAYER_RATIOS` budgets each layer
-as a fraction of the prose it governs — 1/100, 1/50, 1/10 — and `layerLengthCheck` compares what
+as a fraction of the prose it governs — 1/100, 1/50, 1/5 — and `layerLengthCheck` compares what
 was written against it. The ratio is chosen over a word count on purpose: the book's length is
 the author's `novel_init` answer, and a hard-coded "10000 字" is wrong for a 30 万字 serial and
 a 300 万字 epic alike. An unanswered length question yields **no** target rather than an

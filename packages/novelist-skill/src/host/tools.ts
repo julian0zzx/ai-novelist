@@ -1564,7 +1564,7 @@ export function registerTools(
           type: 'integer',
           description:
             'outline/volume/chapter: the target length in characters, overriding the SOP default ratio for that layer '
-            + '(全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲正文 ≈ 单章字数/10). Ignored for chapter: a chapter '
+            + '(全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲正文 ≈ 单章字数/5). Ignored for chapter: a chapter '
             + 'inherits the per-chapter length settled at initialization (novel_init chapterWords).',
         },
         number: { type: 'integer', description: 'volume/chapter/beat: the 1-based position.' },
@@ -1946,7 +1946,7 @@ export function registerTools(
                 `- 初稿目标 ${String(draft)} 字 = 成稿目标 × ${draftRatioLabel()}：初稿按这个写，去 AI 化与手改删减后才留得住成稿长度`,
               )
             }
-            // The SOP budgets the contract text itself at ~1/10 of the chapter.
+            // The SOP budgets the contract text itself at ~1/5 of the chapter.
             if (chapter !== undefined) {
               const contractLength = layerLengthCheck(
                 'chapter',

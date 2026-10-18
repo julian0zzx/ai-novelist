@@ -197,7 +197,7 @@ novel-workspace/
                         # walk-on 路人 just who they are and their first chapter (never counted as debt)
   章节大纲.md            # the whole-book part: the opening checklist + an index of the per-volume files
   章节大纲/
-    第1卷.md             # this volume's chapter table + its rhythm table (each contract ≈ chapter/10)
+    第1卷.md             # this volume's chapter table + its rhythm table (each contract ≈ chapter/5)
     未分卷.md            # chapters filed under no volume yet
   竞品拆解.md            # one section per comparable title, twelve editable fields (20–50 of them)
   分卷大纲/

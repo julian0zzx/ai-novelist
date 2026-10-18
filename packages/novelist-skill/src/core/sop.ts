@@ -214,7 +214,7 @@ export const TOOL_SURFACE = {
     phase: "一/二/三/四",
     operations: ["competitor", "pitch", "world", "outline", "volume", "chapter", "beat", "opening", "naming", "launch"],
     selector: "operation",
-    purpose: "the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor dismantles land in `竞品拆解.md`; the 写作风格 block of the 全书大纲 is written here and is the prose gate (七要素写全之前 novel_write 拒绝写正文); `fullOutline` and a volume's `detail` are measured against the layer's length budget (÷100 / ÷50 / ÷10) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition",
+    purpose: "the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor dismantles land in `竞品拆解.md`; the 写作风格 block of the 全书大纲 is written here and is the prose gate (七要素写全之前 novel_write 拒绝写正文); `fullOutline` and a volume's `detail` are measured against the layer's length budget (÷100 / ÷50 / ÷5) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition",
     summary:
         'The planning pipeline, in the SOP order. One operation per step; each feeds the next, and the tool reports what '
         + 'is still missing. '
@@ -246,7 +246,7 @@ export const TOOL_SURFACE = {
         + 'a layer whose narrative spine is incomplete is reported as incomplete before its word count is compared with the '
         + 'ratio target, and a long outline does not pass by being long. Write the spine first, then the style, then the '
         + 'beats, then look at '
-        + 'the length line the tool prints for that layer (全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲 ≈ 单章字数/10). '
+        + 'the length line the tool prints for that layer (全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲 ≈ 单章字数/5). '
         + 'Soft gate: a call always succeeds, but when the SOP would not have you here yet the result carries warnings '
         + 'naming what is still missing. Read them before writing prose. '
         + 'THE SETTINGS ARE SETTLED ONE LAYER AT A TIME, IN ORDER: 世界观 → 人物设定 → 全书大纲 → 分卷大纲. Write a layer, '

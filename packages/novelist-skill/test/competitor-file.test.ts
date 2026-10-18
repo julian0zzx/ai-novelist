@@ -340,7 +340,7 @@ describe('novel_plan reports each layer against its length budget', () => {
     expect(text).toMatch(/低于目标 1980 字（1\/50）/u)
   })
 
-  it('budgets the chapter contract at 1/10 of the chapter, and reports it', async () => {
+  it('budgets the chapter contract at 1/5 of the chapter, and reports it', async () => {
     await withLengths()
     const result = await call('novel_plan', {
       operation: 'chapter',
@@ -355,9 +355,9 @@ describe('novel_plan reports each layer against its length budget', () => {
     })
     const text = String((result['body'] as string[]).join('\n'))
     expect(text).toContain('## 本章细纲字数')
-    expect(text).toMatch(/建议 300 字/u)
-    // The contract above is well under 300 characters, so the disagreement is
+    expect(text).toMatch(/建议 600 字/u)
+    // The contract above is well under 600 characters, so the disagreement is
     // reported — as a warning, because a short contract can be a deliberate one.
-    expect((result['warnings'] as string[]).join(' ')).toMatch(/章节大纲.*低于目标 300 字/u)
+    expect((result['warnings'] as string[]).join(' ')).toMatch(/章节大纲.*低于目标 600 字/u)
   })
 })

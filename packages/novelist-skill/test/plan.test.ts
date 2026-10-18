@@ -290,7 +290,7 @@ describe('the two length gates', () => {
  * A chapter's length was checkable from the start; an *outline's* was not, so a
  * two-line 全书大纲 and a twenty-thousand-character one passed the same checks.
  * The SOP budgets each layer as a fraction of the prose it governs — 1/100,
- * 1/50, 1/10 — which is the only form of the number that scales from a 30 万字
+ * 1/50, 1/5 — which is the only form of the number that scales from a 30 万字
  * short serial to a 300 万字 paid epic. These specs pin the arithmetic and, more
  * importantly, that a missing length answer produces no target rather than a
  * made-up one.
@@ -301,15 +301,15 @@ describe('the planning layers\' length budgets', () => {
     expect(layerWordTarget(1_000_000, 'full')).toBe(10_000)
     // 20 万字一卷 → 4000 字分卷大纲.
     expect(layerWordTarget(200_000, 'volume')).toBe(4000)
-    // 3000 字一章 → 300 字章节大纲.
-    expect(layerWordTarget(3000, 'chapter')).toBe(300)
-    expect(chapterOutlineTarget(3000)).toBe(300)
+    // 3000 字一章 → 600 字章节大纲.
+    expect(layerWordTarget(3000, 'chapter')).toBe(600)
+    expect(chapterOutlineTarget(3000)).toBe(600)
   })
 
   it('labels the ratio it applied, so the number is auditable', () => {
     expect(outlineRatioLabel('full')).toBe('1/100')
     expect(outlineRatioLabel('volume')).toBe('1/50')
-    expect(outlineRatioLabel('chapter')).toBe('1/10')
+    expect(outlineRatioLabel('chapter')).toBe('1/5')
     expect(layerLengthCheck('full', 0, 1_000_000)?.ratio).toBe('1/100')
   })
 
