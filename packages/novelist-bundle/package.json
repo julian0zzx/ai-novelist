@@ -1,6 +1,6 @@
 {
   "name": "@ai-novelist/novelist-bundle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Profile bundle for the AI Web Novel Composer: the patch layer that inserts the composer plugin into a DSH profile",
   "type": "module",
   "license": "MIT",

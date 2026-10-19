@@ -114,6 +114,8 @@ describe('styleObservations', () => {
       `段落平均 ${String(sentence.length * 4)} 字，短段落化可提升代入感`,
       '对话句占比约 0%，偏低可考虑增加场景对话',
       '以「他看」开头的句子出现 4 次，句式重复感明显',
+      '有 4 句超过 60 字，长句会拖慢阅读节奏，考虑在动作或情绪拐点断句',
+      `平均句长 ${String(sentence.length)} 字，偏书面；网文语感多用 15–30 字的短句推进`,
     ])
   })
 })
@@ -146,6 +148,8 @@ describe('analyzeDelivery length gates', () => {
       updatedAt: '2026-01-01T00:00:00.000Z',
       volume: 0,
       plotTask: '推进',
+      timeAnchor: '第三日 黄昏',
+      place: '山门',
       conflict: '拦路',
       emotionalPayoff: '期待',
       infoGap: '为何上山',

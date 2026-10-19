@@ -13,6 +13,12 @@
 import {
   CONTRACT_FIELDS,
   NAMING_MIN_CANDIDATES,
+  SIX_ELEMENT_LABELS,
+  SIX_ELEMENT_ORDER,
+  SPACE_TIME_FIELDS,
+  SPACE_TIME_LABELS,
+  WORLD_KINDS,
+  type BeatKind,
   type Chapter,
   type ChapterStatus,
   type CharacterScope,
@@ -20,6 +26,9 @@ import {
   type NovelState,
   type Outline,
   type Premise,
+  type SixElementKey,
+  type SpaceTimeField,
+  type StoryElementField,
   type WritingPlan,
 } from './types.ts'
 import { characterScope, confirmationStanding } from './novel.ts'
@@ -88,6 +97,12 @@ export interface WorldGap {
  * it forbids; an entry that only describes what it can do is the seed of a
  * system that cannot generate conflict.
  *
+ * **Not every kind is a rule.** A place, a faction, an item and a historical
+ * event have no price to pay, so demanding `cost`/`limits` from them is how the
+ * world file turns into a pile of fake rules. The requirement follows the kind:
+ * `rule`, `power-system` and the legacy `note` default owe both; everything else
+ * owes its `detail`.
+ *
  * @param state - the project.
  * @returns the gaps, in insertion order.
  */
@@ -96,9 +111,70 @@ export function worldGaps(state: NovelState): WorldGap[] {
   for (const entry of Object.values(state.world)) {
     const missing: string[] = []
     if (entry.detail.trim() === '') missing.push('detail')
-    if (entry.cost.trim() === '') missing.push('cost')
-    if (entry.limits.trim() === '') missing.push('limits')
+    if (ruleShaped(entry.kind)) {
+      if (entry.cost.trim() === '') missing.push('cost')
+      if (entry.limits.trim() === '') missing.push('limits')
+    }
     if (missing.length > 0) gaps.push({ id: entry.id, name: entry.name, missing })
+  }
+  return gaps
+}
+
+/**
+ * Whether a world kind is a rule, and therefore owes a price and a ceiling.
+ *
+ * Unknown kinds are treated as rules on purpose: a typo should be reported by
+ * {@link worldStructureGaps}, and until it is fixed the stricter check is the
+ * safer one.
+ */
+function ruleShaped(kind: string): boolean {
+  const value = kind.trim().toLowerCase()
+  if (value === '' || value === 'note') return true
+  return value === 'rule' || value === 'power-system' || !(WORLD_KINDS as readonly string[]).includes(value)
+}
+
+/** One world entry whose hierarchy or kind cannot be trusted. */
+export interface WorldStructureGap {
+  /** The entry id. */
+  readonly id: string
+  /** The entry name. */
+  readonly name: string
+  /** What is wrong, in the author's words. */
+  readonly problem: string
+}
+
+/**
+ * World entries whose kind, parent, level or volume does not resolve.
+ *
+ * These are the checks that make the world *layered* rather than a list of
+ * labels: a parent that names no entry is a hierarchy the reader can never
+ * follow, and a kind outside {@link WORLD_KINDS} silently becomes a seventh
+ * bucket nobody groups by.
+ *
+ * @param state - the project.
+ * @returns one gap per problem, in entry order.
+ */
+export function worldStructureGaps(state: NovelState): WorldStructureGap[] {
+  const gaps: WorldStructureGap[] = []
+  const ids = new Set(Object.keys(state.world))
+  for (const entry of Object.values(state.world)) {
+    const kind = entry.kind.trim().toLowerCase()
+    if (kind !== '' && kind !== 'note' && !(WORLD_KINDS as readonly string[]).includes(kind)) {
+      gaps.push({
+        id: entry.id,
+        name: entry.name,
+        problem: `kind="${entry.kind}" 不是 ${WORLD_KINDS.join('/')} 之一，按未知类型处理`,
+      })
+    }
+    if (entry.parent.trim() !== '') {
+      if (entry.parent === entry.id) {
+        gaps.push({ id: entry.id, name: entry.name, problem: `parent 指向自己（${entry.parent}）` })
+      } else if (!ids.has(entry.parent)) {
+        gaps.push({ id: entry.id, name: entry.name, problem: `parent="${entry.parent}" 在世界观里不存在` })
+      }
+    }
+    if (entry.level < 0) gaps.push({ id: entry.id, name: entry.name, problem: `level=${String(entry.level)} 不能为负` })
+    if (entry.volume < 0) gaps.push({ id: entry.id, name: entry.name, problem: `volume=${String(entry.volume)} 不能为负` })
   }
   return gaps
 }
@@ -177,6 +253,201 @@ export function castGaps(state: NovelState): CastGap[] {
  */
 export function castDebt(state: NovelState): CastGap[] {
   return castGaps(state).filter((gap) => gap.scope !== 'cameo')
+}
+
+/**
+ * Main characters that carry no relation line.
+ *
+ * Advisory rather than debt: a protagonist with no `relations` is not "unfinished"
+ * the way one with no voice is, but a scene between two people whose relation is
+ * never written is a scene the model has to invent. Reported in the cast review
+ * and the bible, never as a `castGaps` entry.
+ *
+ * @param state - the project.
+ * @returns the main-scope characters with an empty relations field.
+ */
+export function castRelationGaps(state: NovelState): CastGap[] {
+  return Object.values(state.characters)
+    .filter((character) => characterScope(character) === 'main' && character.relations.trim() === '')
+    .map((character) => ({ id: character.id, name: character.name, scope: 'main', missing: ['relations'] }))
+}
+
+// ── the traditional 六要素 ────────────────────────────────────────────────────
+
+/** One row of the 六要素 report, with 人物 derived from the cast. */
+export interface SixElementRow {
+  /** Which element. */
+  readonly key: SixElementKey
+  /** The element's name in the author's language. */
+  readonly label: string
+  /** Whether the element is answered. */
+  readonly filled: boolean
+  /** One line on what is written, or what is missing. */
+  readonly note: string
+}
+
+/**
+ * The traditional 六要素 as one report, 人物 included.
+ *
+ * Five rows come from `outline.story`; 人物 is derived from the cast, because the
+ * cast file already owns every person and a second copy would drift. A book with
+ * one main character whose spine is complete has answered 人物; a book with only
+ * walk-ons has not.
+ *
+ * @param state - the project.
+ * @returns the six rows, in reading order.
+ */
+export function sixElementRows(state: NovelState): SixElementRow[] {
+  const cast = Object.values(state.characters)
+  const mains = cast.filter((character) => characterScope(character) === 'main')
+  const thin = castGaps(state).filter((gap) => gap.scope === 'main')
+  const charactersFilled = mains.length > 0 && thin.length === 0
+  return SIX_ELEMENT_ORDER.map((key) => {
+    if (key === 'characters') {
+      return {
+        key,
+        label: SIX_ELEMENT_LABELS[key],
+        filled: charactersFilled,
+        note: mains.length === 0
+          ? '还没有主要角色（novel_bible kind="character" scope="main"）'
+          : thin.length > 0
+            ? `主要角色还欠：${thin.map((gap) => `${gap.name}（${gap.missing.join('、')}）`).join('；')}`
+            : `主要角色 ${String(mains.length)} 位，spine 完整`,
+      }
+    }
+    const value = state.outline.story[key].trim()
+    return {
+      key,
+      label: SIX_ELEMENT_LABELS[key],
+      filled: value !== '',
+      note: value === '' ? `未写（${STORY_REQUIREMENT[key]}）` : value.length > 80 ? `${value.slice(0, 80)}…` : value,
+    }
+  })
+}
+
+/** The short requirement each stored story element has to answer. */
+const STORY_REQUIREMENT: Readonly<Record<StoryElementField, string>> = {
+  time: '时代/时段、跨多久、关键时间节点',
+  place: '主要地图、场景，空间如何转换',
+  cause: '故事为什么开始，谁要什么',
+  process: '冲突怎么升级，关键回合与代价',
+  result: '故事怎么收束，谁付出什么',
+}
+
+// ── chapter 时空锚点 ──────────────────────────────────────────────────────────
+
+/**
+ * The 时空锚点 one chapter has not answered.
+ *
+ * Deliberately separate from {@link missingContract}: the eight contract fields
+ * are the prose's binding promises, and adding two more would turn every chapter
+ * planned before these existed into "未完成". The anchors are reported here, by
+ * `novel_plan chapter`, `novel_write` and the board, and they never block a final
+ * chapter — a missing time anchor is a planning debt, not a broken promise.
+ *
+ * @param chapter - the chapter to inspect.
+ * @returns the missing anchors, in report order.
+ */
+export function spaceTimeGaps(chapter: Chapter): SpaceTimeField[] {
+  return SPACE_TIME_FIELDS.filter((field) => chapter[field].trim() === '')
+}
+
+/** One chapter whose time or place is unrecorded. */
+export interface SpaceTimeDebt {
+  /** The chapter id. */
+  readonly id: string
+  /** The chapter number. */
+  readonly number: number
+  /** Which anchors are missing. */
+  readonly missing: readonly SpaceTimeField[]
+}
+
+/**
+ * Chapters that never say when or where they happen.
+ *
+ * @param state - the project.
+ * @returns the chapters with a missing anchor, in reading order.
+ */
+export function spaceTimeDebt(state: NovelState): SpaceTimeDebt[] {
+  return Object.values(state.chapters)
+    .sort((a, b) => a.number - b.number)
+    .map((chapter) => ({ id: chapter.id, number: chapter.number, missing: spaceTimeGaps(chapter) }))
+    .filter((entry) => entry.missing.length > 0)
+}
+
+/**
+ * A one-line label for the anchors a chapter is missing, for the tools and board.
+ *
+ * @param missing - the missing fields.
+ * @returns for example `时间、地点`.
+ */
+export function spaceTimeLabel(missing: readonly SpaceTimeField[]): string {
+  return missing.map((field) => SPACE_TIME_LABELS[field]).join('、')
+}
+
+// ── 爽点节奏 ──────────────────────────────────────────────────────────────────
+
+/**
+ * Where the rhythm table contradicts the chapter contracts.
+ *
+ * The two records are written at different times — `novel_plan operation="beat"`
+ * places a slot, `novel_plan operation="chapter"` records the beats the chapter
+ * carries — and nothing until now compared them. A chapter planned as a 爽点 but
+ * marked `info` in the contract is a promise the prose cannot keep.
+ *
+ * @param state - the project.
+ * @returns one note per contradiction, in chapter order.
+ */
+export function beatConflicts(state: NovelState): string[] {
+  const notes: string[] = []
+  const byNumber = new Map<number, Chapter>()
+  for (const chapter of Object.values(state.chapters)) byNumber.set(chapter.number, chapter)
+  for (const slot of state.outline.beats) {
+    const chapter = byNumber.get(slot.chapter)
+    if (chapter === undefined || chapter.beats.length === 0) continue
+    if (!chapter.beats.includes(slot.kind as BeatKind)) {
+      notes.push(
+        `第 ${String(slot.chapter)} 章：节拍表记「${slot.kind}」，章节契约记「${chapter.beats.join('、')}」`,
+      )
+    }
+  }
+  return notes
+}
+
+/**
+ * Where the rhythm table leaves the SOP's cadence unmet.
+ *
+ * The SOP asks for a small payoff every three chapters, a bigger one every ten,
+ * and a volume-end climax. `novel_plan operation="chapter"` already suggests the
+ * beat for a chapter on that cadence; this checks the table that was actually
+ * written: consecutive beats more than three chapters apart, and volumes whose
+ * final chapter has no beat at all.
+ *
+ * @param state - the project.
+ * @returns one note per cadence gap; empty when no beat is planned yet.
+ */
+export function beatCadenceGaps(state: NovelState): string[] {
+  const beats = [...state.outline.beats].sort((a, b) => a.chapter - b.chapter)
+  if (beats.length === 0) return []
+  const notes: string[] = []
+  for (let index = 1; index < beats.length; index += 1) {
+    const previous = beats[index - 1]?.chapter ?? 0
+    const current = beats[index]?.chapter ?? 0
+    if (current - previous > 3) {
+      notes.push(
+        `第 ${String(previous)}–${String(current)} 章之间没有节拍（SOP 每 3 章一个小爽点，中间空 ${String(current - previous - 1)} 章）`,
+      )
+    }
+  }
+  for (const volume of state.outline.volumes) {
+    if (volume.chapters.length < 2) continue
+    const end = volume.chapters.at(-1) ?? 0
+    const hasEnd = beats.some((beat) => beat.chapter === end || beat.chapter === end - 1)
+    if (!hasEnd) {
+      notes.push(`第 ${String(volume.number)} 卷卷末（第 ${String(end)} 章）没有节拍：卷末爆点没有落点（novel_plan operation="beat"）`)
+    }
+  }
+  return notes
 }
 
 /** A chapter whose contract is not yet answerable. */
@@ -606,6 +877,8 @@ export function chapterOutlineTarget(chapterWords: number): number {
 export function chapterContractLength(chapter: Chapter): number {
   return [
     chapter.plotTask,
+    chapter.timeAnchor,
+    chapter.place,
     chapter.keyBeat,
     chapter.price,
     chapter.conflict,

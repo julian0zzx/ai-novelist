@@ -1,6 +1,6 @@
 {
   "name": "ai-novelist",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "DSH Plugin-based AI Web Novel Composer",
   "type": "module",

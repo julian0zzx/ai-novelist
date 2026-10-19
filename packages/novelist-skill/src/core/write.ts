@@ -15,8 +15,16 @@
  */
 
 import { countWords } from './novel.ts'
-import { contractRows, lengthCheck, lengthStageFor, missingContract, type LengthCheck } from './plan.ts'
-import { CONTRACT_FIELDS, type Chapter, type ContractField } from './types.ts'
+import {
+  contractRows,
+  lengthCheck,
+  lengthStageFor,
+  missingContract,
+  spaceTimeGaps,
+  spaceTimeLabel,
+  type LengthCheck,
+} from './plan.ts'
+import { CONTRACT_FIELDS, type Chapter, type ContractField, type SpaceTimeField } from './types.ts'
 
 /** How one contract field fared in a draft. */
 export interface FieldDelivery {
@@ -46,6 +54,14 @@ export interface DeliveryReport {
   readonly missed: readonly ContractField[]
   /** Fields reached. */
   readonly reached: readonly ContractField[]
+  /**
+   * Time/place anchors the contract never answered.
+   *
+   * Reported beside the contract fields rather than as part of them: these are
+   * the traditional 六要素's 时间 and 地点, and a chapter planned before they
+   * existed must not read as "contract incomplete" because of them.
+   */
+  readonly spaceTimeMissing: readonly SpaceTimeField[]
   /** The gate that binds at the chapter's current lifecycle stage. */
   readonly length: LengthCheck | undefined
   /** The first-draft comparison (125%), whenever a target and prose exist. */
@@ -84,6 +100,7 @@ export function analyzeDelivery(chapter: Chapter): DeliveryReport {
     .filter((entry) => entry.plannedAtAll && !entry.delivered)
     .map((entry) => entry.field)
   const reached = fields.filter((entry) => entry.delivered).map((entry) => entry.field)
+  const spaceTimeMissing = spaceTimeGaps(chapter)
   // Both gates are reported; which one binds is the chapter's own lifecycle
   // stage, so a first draft is held to the draft target and a trimmed chapter to the finished
   // window (-5%/+15%).
@@ -94,6 +111,7 @@ export function analyzeDelivery(chapter: Chapter): DeliveryReport {
   const parts: string[] = [`已兑现 ${String(reached.length)}/${String(CONTRACT_FIELDS.length)} 项契约`]
   if (missed.length > 0) parts.push(`未兑现：${missed.join('、')}`)
   if (unplanned.length > 0) parts.push(`细纲未写：${unplanned.join('、')}`)
+  if (spaceTimeMissing.length > 0) parts.push(`缺时空锚点：${spaceTimeLabel(spaceTimeMissing)}`)
   if (length !== undefined && !length.within) parts.push(length.short)
 
   return {
@@ -103,6 +121,7 @@ export function analyzeDelivery(chapter: Chapter): DeliveryReport {
     unplanned,
     missed,
     reached,
+    spaceTimeMissing,
     length,
     draftLength,
     finalLength,
@@ -262,6 +281,20 @@ export function styleObservations(body: string, taboos: readonly string[] = []):
   const worst = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
   if (worst !== undefined && worst[1] >= 4 && openings.length > 0) {
     observations.push(`以「${worst[0]}」开头的句子出现 ${String(worst[1])} 次，句式重复感明显`)
+  }
+  // Sentence length is the readability half of a chapter's rhythm: a wall of
+  // 60-character sentences reads slowly even when every paragraph is short.
+  // Reported as a count and a mean, never as a verdict — a deliberately long
+  // sentence is a legitimate choice.
+  if (sentences.length > 0) {
+    const long = sentences.filter((sentence) => countWords(sentence) > 60).length
+    if (long > 0) {
+      observations.push(`有 ${String(long)} 句超过 60 字，长句会拖慢阅读节奏，考虑在动作或情绪拐点断句`)
+    }
+    const averageSentence = countWords(body) / sentences.length
+    if (averageSentence > 40) {
+      observations.push(`平均句长 ${String(Math.round(averageSentence))} 字，偏书面；网文语感多用 15–30 字的短句推进`)
+    }
   }
   // The contrast frame and the author's own forbidden phrases are reported after
   // the four thresholds, so the fixed order stays the order the SOP lists.

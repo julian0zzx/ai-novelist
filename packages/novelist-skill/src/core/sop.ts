@@ -27,7 +27,7 @@
  * `docs/sop.md` carries the long-form workflow and is checked against this value by
  * `test/sop-spec.test.ts`, so the prose revision and the code revision cannot part ways.
  */
-export const SOP_VERSION = '3.8'
+export const SOP_VERSION = '3.9'
 
 /** One phase of the SOP, bound to the derived {@link ProjectStage} it belongs to. */
 export interface SopPhase {
@@ -212,9 +212,9 @@ export const TOOL_SURFACE = {
   novel_plan: {
     name: "novel_plan",
     phase: "一/二/三/四",
-    operations: ["competitor", "pitch", "world", "outline", "volume", "chapter", "beat", "opening", "naming", "launch"],
+    operations: ["competitor", "pitch", "world", "cheat", "outline", "volume", "chapter", "beat", "opening", "naming", "launch"],
     selector: "operation",
-    purpose: "the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor dismantles land in `竞品拆解.md`; the 写作风格 block of the 全书大纲 is written here and is the prose gate (七要素写全之前 novel_write 拒绝写正文); `fullOutline` and a volume's `detail` are measured against the layer's length budget (÷100 / ÷50 / ÷5) and warned about when short; `launch` records the stage-three go/no-go, and a non-`go` verdict must name its fallback and abandon condition",
+    purpose: "the planning pipeline, soft-gated: it never refuses a call, it reports what the SOP still wants. Competitor dismantles land in `竞品拆解.md`; the traditional 六要素 (`storyTime`…`storyResult`) and the 金手指 (`operation=\"cheat\"`) get named blocks in `全书大纲.md`; 世界观 carries parent/level/volume for a layered map; every chapter carries a time anchor and a place; the 写作风格 block is the prose gate; `launch` records the stage-three go/no-go",
     summary:
         'The planning pipeline, in the SOP order. One operation per step; each feeds the next, and the tool reports what '
         + 'is still missing. '
@@ -222,27 +222,32 @@ export const TOOL_SURFACE = {
         + '竞品拆解.md, the file beside the other settings, so the author can read and reuse the research '
         + '(每个字段都可写入：tags/blurb/openingEvent/goldenFinger/protagonistDesire/antagonistMotive/shuangFrequency/'
         + 'emotionCurve/paywallPoint/chapterHooks/commentKeywords/takeaway) · pitch=the one-sentence memorable point '
-        + 'plus core emotion, payoff list, differentiators, kernel · world=one world rule (a rule without its cost and '
-        + 'limit is flagged) · outline=logline, the narrative spine (synopsis=整本书的故事, 主角成长线, 伙伴成长线, 反派成长线, '
-        + '阵营演变, 对抗副本, 失去了什么, 获得了什么), the 写作风格 block (styleTone=文风基调, stylePerspective=人称与视角, '
-        + 'styleRhythm=句式与节奏, styleDiction=遣词用句, styleDialogue=对话与描写, styleEmotion=情绪与爽点落点, '
-        + 'styleTaboos=负面清单 — all seven are the prose gate), the fullOutline skeleton, acts, the minimal viable '
-        + 'outline, or the full outline flag · volume=one volume, in the same order (本卷梗概, 主角成长, 反派成长, 阵营演变, '
-        + '核心对抗, 代价与失去, 收获与获得), then its goal, conflict, climax, end hook and 卷内节奏 detail · '
-        + 'chapter=one chapter contract (plot task, key turn, price paid, conflict, emotional payoff, '
-        + 'information gap, beats, hook, target length) — the target is the finished length, and the chapter is drafted '
-        + 'at 125% of it · beat=place a rhythm beat · '
-        + 'opening=confirm an opening-engineering '
-        + 'checklist item (omit `key` to list it) · naming=a candidate title/blurb/tag set · '
-        + 'launch=the stage-three go/no-go: whether the opening package is worth building out into a full skeleton. '
+        + 'plus core emotion, payoff list, differentiators, kernel · world=one world fact (a rule without its cost and '
+        + 'limit is flagged; a place/faction/item/history only needs its detail). A world fact can name its `parent`, '
+        + 'its `level` (1 凡界/外门, 2 宗门/一城, 3 灵界 …), the `volume` it first becomes available in, and its '
+        + '`relations` — that is what makes 分层世界观 answerable · cheat=the protagonist\'s 金手指: name, owner, rule, '
+        + 'cost, limits, growth curve, first reveal chapter (a cheat with no price or ceiling is flagged) · '
+        + 'outline=logline, the traditional 六要素 (storyTime=时间, storyPlace=地点, storyCause=起因, '
+        + 'storyProcess=经过, storyResult=结果; 人物 is the cast), the narrative spine (synopsis=整本书的故事, 主角成长线, '
+        + '伙伴成长线, 反派成长线, 阵营演变, 对抗副本, 失去了什么, 获得了什么), the 写作风格 block (styleTone=文风基调, '
+        + 'stylePerspective=人称与视角, styleRhythm=句式与节奏, styleDiction=遣词用句, styleDialogue=对话与描写, '
+        + 'styleEmotion=情绪与爽点落点, styleTaboos=负面清单 — all seven are the prose gate), the fullOutline skeleton, '
+        + 'acts, the minimal viable outline, or the full outline flag · volume=one volume, in the same order (本卷梗概, '
+        + '主角成长, 反派成长, 阵营演变, 核心对抗, 代价与失去, 收获与获得), then its goal, conflict, climax, end hook and '
+        + '卷内节奏 detail · chapter=one chapter contract (plot task, time anchor, place, key turn, price paid, conflict, '
+        + 'emotional payoff, information gap, beats, hook, target length) — the target is the finished length, and the '
+        + 'chapter is drafted at 125% of it · beat=place a rhythm beat (cadence gaps and beat/contract conflicts are '
+        + 'reported) · opening=confirm an opening-engineering checklist item (omit `key` to list it) · naming=a candidate '
+        + 'title/blurb/tag set · launch=the stage-three go/no-go: whether the opening package is worth building out into '
+        + 'a full skeleton. '
         + 'launch is a declared judgement, not a computed number — the evidence at that point is an editor and a handful '
         + 'of readers. A verdict that is not `go` must name where to fall back to (`fallback`) and what would make you '
         + 'drop the concept (`abandonIf`); the tool refuses it otherwise, because that requirement is what stops the '
         + 'decision from becoming a formality. Platform numbers are never required here: the data check is '
         + '`novel_assess`, run on demand. '
-        + 'AT EVERY OUTLINE LAYER THE ORDER OF BUSINESS IS FIXED: (1) tell the whole story — 梗概, 成长线, 阵营, 对抗副本, 得失; '
-        + '(2) write the 写作风格 the story is told in; (3) say the 爽点/爆点 clearly and place them; (4) only then check '
-        + 'the length. 体量是叙事完整性之上的要求，不是它的替代：'
+        + 'AT EVERY OUTLINE LAYER THE ORDER OF BUSINESS IS FIXED: (1) tell the whole story — 六要素, 梗概, 成长线, 阵营, '
+        + '对抗副本, 得失; (2) write the 写作风格 the story is told in; (3) say the 爽点/爆点 clearly and place them; '
+        + '(4) only then check the length. 体量是叙事完整性之上的要求，不是它的替代：'
         + 'a layer whose narrative spine is incomplete is reported as incomplete before its word count is compared with the '
         + 'ratio target, and a long outline does not pass by being long. Write the spine first, then the style, then the '
         + 'beats, then look at '
@@ -270,14 +275,21 @@ export const TOOL_SURFACE = {
         + 'cameo（一次性路人）只要一句「他是谁」与 firstAppearance 首次出场章：路人是**登记**，不是人物小传，'
         + '所以不计入人物欠账。省略 scope 时按 role 判：主角型算 main，其余算 volume（即旧版行为）。'
         + '可选 volume / exit 让「第 N 卷有哪些人」与「谁已经死了」查得到。 '
-        + 'kind="world" states a rule with its cost and limits (a rule without them is flagged). '
+        + 'kind="world" states a fact with its cost and limits. Only rule-shaped kinds (rule, power-system) owe a price '
+        + 'and a ceiling; a place, faction, item or historical event owes its detail. A world fact can name its `parent` '
+        + '(the region/sect that contains it), its `level` (1 凡界/外门, 2 宗门/一城, 3 灵界 …), the `volume` it first becomes '
+        + 'available in, and its `relations` — that is the layered world, and `kind="review"` reports a dangling parent '
+        + 'or an unknown kind. '
+        + 'kind="character" also takes `relations` (盟友/宿敌/师徒/旧识): the main cast is asked for it, but an empty one is '
+        + 'reported as information rather than debt. '
         + 'kind="link" records a promise the reader is now waiting on: plant it, give it a due chapter, say how it pays '
         + 'off. Promises are what the SOP closes at volume end — an open promise whose due chapter is already written is '
         + 'reported as overdue. '
-        + 'kind="review" reports every gap across the bible: missing traits, tier by tier (角色不够丰满 is reported '
-        + 'character by character, and a walk-on register that is incomplete is reported separately, never as debt), '
-        + 'rules without a price, and unrecovered or overdue promises. It also names a `scope` that is not one of the '
-        + 'three values rather than guessing at it.',
+        + 'kind="review" reports every gap across the bible: the traditional 六要素 (时间/地点/人物/起因/经过/结果), the '
+        + '金手指 fields, missing traits tier by tier (角色不够丰满 is reported character by character, and a walk-on '
+        + 'register that is incomplete is reported separately, never as debt), rules without a price, world entries whose '
+        + 'parent/kind does not resolve, and unrecovered or overdue promises. It also names a `scope` that is not one of '
+        + 'the three values rather than guessing at it.',
   },
   novel_assess: {
     name: "novel_assess",
@@ -338,7 +350,9 @@ export const TOOL_SURFACE = {
         + 'Report which contract fields the draft actually delivered (delivered=[...]); the tool compares that report '
         + 'with the plan and returns what was missed, what was never planned, and whether the length landed. That '
         + 'comparison is the SOP\'s "严格对应细纲" made checkable — it is the only place the workflow notices a chapter '
-        + 'that quietly ignored its plan. '
+        + 'that quietly ignored its plan. It also reports the chapter\'s 时空锚点 (the contract\'s 时间/地点): a scene with '
+        + 'no time and no place is a planning debt, not a broken contract, so it is named as a warning rather than '
+        + 'refused. '
         + 'Marking a chapter final (published) still works but is warned when the contract or the delivery is incomplete. '
         + 'Both write and check also return the SOP\'s 去 AI 化 statistics — paragraph length, dialogue density, repeated '
         + 'sentence openings — as countable symptoms and never as a verdict. Nothing here edits the prose: revise the '

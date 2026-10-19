@@ -670,7 +670,7 @@ describe.
 
 ### The migration policy
 
-`parseMetadata` accepts version 1, version 2, and version 3, and refuses anything else with a
+`parseMetadata` accepts version 1 through version 5, and refuses anything else with a
 `NovelStoreError` naming the versions it supports. Because content migration needs a
 filesystem, the *store* performs it, not the pure codec: `migrateV2` extracts the content and
 returns both halves, and `NovelStore.migrateDocument` writes the original document to

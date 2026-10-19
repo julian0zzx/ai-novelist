@@ -377,6 +377,10 @@ describe('progressOf', () => {
       detail: '正道第一宗',
       cost: '献祭',
       limits: '不出山门',
+      parent: '',
+      level: 0,
+      volume: 0,
+      relations: '',
     })
     expect(state.world['青云宗']).not.toHaveProperty('schemaVersion')
   })

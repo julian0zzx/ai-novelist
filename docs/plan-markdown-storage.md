@@ -111,6 +111,58 @@ updatedAt: 2026-09-13T14:20:34.921Z
 
 （logline）
 
+## 故事六要素
+
+### 时间
+
+（时代/时段、跨多久、关键时间节点）
+
+### 地点
+
+（主要地图/场景，空间如何转换）
+
+### 起因
+
+（故事为什么开始）
+
+### 经过
+
+（冲突怎么升级）
+
+### 结果
+
+（故事怎么收束）
+
+## 金手指
+
+### 名称
+
+（读者会记住的名字）
+
+### 归属
+
+（人物 id 或姓名）
+
+### 规则
+
+（怎么运转、能做什么）
+
+### 代价
+
+（每次使用付出什么）
+
+### 限制
+
+（做不到什么）
+
+### 成长曲线
+
+（从初始形态到最终形态）
+
+### 首次亮相
+
+（读者第一次看到它的章）
+
 ## 完整大纲
 
 （fullOutline —— 3.4 新增：三幕主线、核心剧情走向、全局伏笔、大高潮节点、终极冲突、
@@ -130,6 +182,11 @@ updatedAt: 2026-09-13T14:20:34.921Z
 解析：`## 一句话` / `## 最小可行大纲` 取其后正文；`## 三幕` 取有序列表项（保持顺序，
 允许 1 项以上，不强制恰好 3 项——SOP 说三幕，但工具不因此拒绝）。
 
+`## 故事六要素` 与 `## 金手指` 是 3.9 新增的两块：前者五个 `###`（时间/地点/起因/经过/结果，
+人物读自 `人物设定.md`，不在此重复），后者七个 `###`（名称/归属/规则/代价/限制/成长曲线/首次亮相）。
+两块都用与 `## 叙事骨架` 相同的 `###` 方言；缺项由 `storyElementGaps` / `cheatGaps` 报出，
+`novel_plan operation="outline"` / `operation="cheat"` 写入。
+
 ### 3.2 `人物设定.md` / `3.3 世界观设定.md`
 
 一个条目 = 一个 `## 名称` 节 + 紧随其后的 ```yaml 块 + 其余正文（长描述）。
@@ -148,6 +205,7 @@ fear: 发现父亲确实背叛了师门
 obsession: 断剑不离手
 weakness: 受不得激
 camp: protagonist-camp
+relations: 与掌门有杀父疑云；与守门弟子有一面之缘
 ```
 
 十六岁，瘦，左手虎口有旧疤……
@@ -178,8 +236,8 @@ firstAppearance: 第12章
 - `id` 缺失时按标题 slug 补；`id` 重复时**报错**（不猜）。文件按档排序（主要角色在前、路人在后），
   便于人读。
 - 人物 yaml 键：`id` `role` `scope` `volume` `firstAppearance` `exit` `goal` `personality` `voice`
-  `fear` `obsession` `weakness` `camp` `growthArc` `notes` `description`（可选）。其余正文拼进
-  `description`。
+  `fear` `obsession` `weakness` `camp` `relations` `growthArc` `notes` `description`（可选）。其余正文拼进
+  `description`。`relations` 是 3.9 新增：主要角色未写会被 `castRelationGaps` 点名，但不计欠账。
 - **`scope` 决定这一条欠什么**（`castGaps`/`castDebt`）：
   - `main` — 主角/反派/核心伙伴：`role` `goal` `personality` `voice`，另加 `fear` `obsession`
     `weakness` `growthArc`；
@@ -195,9 +253,11 @@ firstAppearance: 第12章
   按卷查人（卷号可由 `firstAppearance` 的章号在章节表里推出，不必重复填）、
   以及防止"第 2 卷死掉的人第 4 卷又走进来"。
 - 世界观 yaml 键：`id` `kind`（`place|faction|power-system|item|history|rule`）`cost` `limits`
-  `name`（可选，缺省用标题）。其余正文拼进 `detail`。
-- **代价与限制是 SOP 的硬要求**：缺 `cost`/`limits` 的规则继续由 `worldGaps` 报缺口，
-  行为不变。
+  `parent` `level` `volume` `relations` `name`（可选，缺省用标题）。其余正文拼进 `detail`。
+  `parent`/`level`/`volume` 是 3.9 新增的分层字段：父子包含、层级（1 凡界/2 宗门/3 灵界…）、
+  第几卷起出现；悬空 parent、自指与未知 kind 由 `worldStructureGaps` 报出。
+- **代价与限制只对规则型条目是硬要求**：`rule`/`power-system`（以及缺省 `note`）缺 `cost`/`limits`
+  由 `worldGaps` 报缺口；`place`/`faction`/`item`/`history` 只要求 `detail`。
 
 ### 3.4 `分卷大纲/第1卷.md`（版本 4 起：一卷一文件）
 
@@ -304,6 +364,22 @@ delivered: [plotTask, hook]
 
 …
 
+## 时间
+
+（故事内时间，例如「第三日 黄昏」）
+
+## 地点
+
+（本章主要地点，例如「青云山 外门石阶」）
+
+## 关键转折
+
+…
+
+## 代价与收获
+
+…
+
 ## 冲突
 
 …
@@ -321,9 +397,11 @@ delivered: [plotTask, hook]
 …
 ```
 
-- 六个小节名固定：`剧情任务` `冲突` `情绪回报` `信息差` `章末钩子`；`beats` 与
-  `waived`/`delivered` 在 frontmatter。
-- 小节缺失 = 该字段为空（与现在的"未写"等价），继续由 `missingContract` 报缺口。
+- 小节名固定：`剧情任务` `时间` `地点` `关键转折` `代价与收获` `冲突` `情绪回报` `信息差` `章末钩子`；
+  `beats` 与 `waived`/`delivered` 在 frontmatter。
+- 八个契约字段（`plotTask` `conflict` `emotionalPayoff` `infoGap` `beats` `hook` `keyBeat` `price`）
+  缺失 = 空，由 `missingContract` 报缺口。`时间`/`地点` 是 3.9 新增的**时空锚点**，不在八个契约字段里，
+  由 `spaceTimeGaps` 单独报出——旧章节不会因为多这两项突然判为"细纲未完成"。
 - 标题以 `细纲` 结尾的行不参与正文解析。
 
 ### 3.7 `章节/第001章-山门.md`
@@ -391,7 +469,7 @@ takeaway: 开篇三章内必须给一次小胜
 | `platform` `pitch` `baselines` `writing` | `.novel/novel.json` | 商业框架、校准中位、写作参数 |
 | `readings[]` `iterations[]` `evaluations[]` `launchDecisions[]` `reviews[]` | `.novel/novel.json` | 反馈与证据链：要被阈值计算，必须原子（3.2 前 `evaluations[]` 名为 `verifications[]`，读取时兼容） |
 | `links{}`（伏笔台账） | `.novel/novel.json` | "承诺"带状态与回收章，参与卷末门禁 |
-| `logline` `acts[]` `minimal` `fullOutline` `fullOutlineDone` + `## 叙事骨架` 的八个叙事要素 | `全书大纲.md` | `fullOutline` 是 3.4 新增的 `## 完整大纲` 正文（篇幅目标 ≈ 总字数/100）；3.5 新增的 `## 叙事骨架` 一节是每项一个 `###` 小标题的八个要素（故事梗概/主角成长线/伙伴成长线/反派成长线/阵营演变/对抗副本/失去了什么/获得了什么），**先于字数核对** |
+| `logline` `acts[]` `minimal` `fullOutline` `fullOutlineDone` + `## 故事六要素` 五项 + `## 金手指` 七项 + `## 叙事骨架` 八个叙事要素 | `全书大纲.md` | `fullOutline` 是 3.4 新增的 `## 完整大纲` 正文（篇幅目标 ≈ 总字数/100）；3.5 新增的 `## 叙事骨架` 一节是每项一个 `###` 小标题的八个要素（故事梗概/主角成长线/伙伴成长线/反派成长线/阵营演变/对抗副本/失去了什么/获得了什么），**先于字数核对**；3.9 新增的 `## 故事六要素`（时间/地点/起因/经过/结果）与 `## 金手指`（名称/归属/规则/代价/限制/成长曲线/首次亮相）同方言，人物读自人物设定 |
 | 人物条目（含 `scope` 档位与 `volume`/`firstAppearance`/`exit` 登记字段） | `人物设定.md` | 三档：`main` 全 spine、`volume` 要性格与说话方式、`cameo` 只要「他是谁 + 首次出场章」；路人缺项不计欠账 |
 | 世界观条目 | `世界观设定.md` | |
 | 分卷条目（含 `detail` 卷内节奏与 3.5 的七个叙事要素） | `分卷大纲/第N卷.md` | **一卷一个文件**，文件名只带卷号：改后面的卷不重写前面的卷，改卷名不挪文件。`detail` 篇幅目标 ≈ 本卷字数/50，写在 `## 卷内节奏`；七个叙事要素各一个 `##`——文件即这一卷，不再有"卷内不能再有 `##`"的限制 |
@@ -399,7 +477,7 @@ takeaway: 开篇三章内必须给一次小胜
 | 章号、标题、所属卷、目标字数、节拍（章级一句话） | `章节大纲/第N卷.md` | 计划层；版本 5 起一卷一个文件，表里的「卷」列决定行落在哪个文件 |
 | 开篇工程清单 | `章节大纲.md` | 全书层；`done` 决定阶段二门禁，兜底在 `novel.json` 的 `opening` |
 | 各卷章节表的位置与章号区间 | `章节大纲.md` 的 `## 分卷章节表` | **派生**，每次写入重排，不作为内容来源 |
-| 八字段契约（剧情任务、关键转折、代价与收获、冲突、情绪回报、信息差、章末钩子、节拍）、`waived`、`delivered` | `章节/*.细纲.md` | 契约层；后两项是 3.5 新增的叙事字段，与其余字段一样可显式豁免 |
+| 八字段契约（剧情任务、关键转折、代价与收获、冲突、情绪回报、信息差、章末钩子、节拍）、`waived`、`delivered` + 时间/地点两个时空锚点 | `章节/*.细纲.md` | 契约层；`keyBeat`/`price` 是 3.5 新增的叙事字段，与其余字段一样可显式豁免；`时间`/`地点` 是 3.9 新增的非契约锚点，由 `spaceTimeGaps` 报告，不参与 `missingContract` |
 | 正文、`status` | `章节/*.md` | 产出层（`wordCount` 是派生量） |
 | 索引与摘要（§5） | `.novel/novel.json` | 由工具维护，**不作为内容来源** |
 

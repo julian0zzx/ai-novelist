@@ -42,6 +42,7 @@ import type { ScheduleService } from '@deepseek-ai/dsh-schedule'
 import {
   BEAT_KINDS,
   CHAPTER_STATUSES,
+  CHEAT_PARTS,
   CONFIRMATION_KINDS,
   CONFIRMATION_MIN_ROUNDS,
   COMPETITOR_TARGET,
@@ -60,7 +61,10 @@ import {
   REVIEW_PROMPT_VERSION,
   SETTINGS_LAYERS,
   SPINE_LABELS,
+  STORY_ELEMENT_PARTS,
   STYLE_GATE_CHAPTER,
+  WORLD_KINDS,
+  WORLD_KIND_LABELS,
   styleParamName,
   TOOL_SURFACE,
   VOLUME_SPINE_PARTS,
@@ -76,6 +80,8 @@ import {
   analyzeDelivery,
   assessReading,
   assessStage,
+  beatCadenceGaps,
+  beatConflicts,
   blockersToFinal,
   buildAiFlavorRequest,
   buildCompetitorRequest,
@@ -87,10 +93,13 @@ import {
   calibrationAge,
   castDebt,
   castGaps,
+  castRelationGaps,
   chapterContractLength,
   characterScope,
   chapterOutlineTarget,
   chaptersPerVolume,
+  cheatGaps,
+  cheatValues,
   complianceChecklist,
   confirmationStanding,
   contractGaps,
@@ -131,13 +140,18 @@ import {
   resolveChapterId,
   rhythmExpectation,
   setOpeningCheck,
+  sixElementRows,
   skeletonGate,
+  spaceTimeDebt,
+  spaceTimeGaps,
+  spaceTimeLabel,
   stageLabel,
   styleGateReached,
   styleObservations,
   styleTabooPhrases,
   tallyAssessments,
   updateBaselines,
+  updateCheat,
   updateMeta,
   updateOutline,
   updatePitch,
@@ -158,11 +172,13 @@ import {
   volumeSpineValues,
   volumeWordTarget,
   worldGaps,
+  worldStructureGaps,
   writingPlanConflicts,
   writingPlanGaps,
   type Clock,
   type Chapter,
   type CharacterScope,
+  type CheatField,
   type ConfirmationKind,
   type DiscussionRound,
   type Evaluation,
@@ -379,13 +395,19 @@ function layerBrief(key: SettingsLayerKey): string {
         + '留到「全书大纲」那一层，与故事一起交给用户。'
     case 'world':
       return '只定影响冲突的规则：力量体系、代价、限制、阶层、核心矛盾、势力关系。每条规则都要能说出它花什么、禁什么——没有代价的规则生不出冲突。'
+        + '世界观是**分层**的：地点/势力可以有 parent（包含它的上一层）、level（层级，1 凡界、2 宗门/一城、3 灵界……）、'
+        + 'volume（第几卷/哪张地图开始出现）；势力关系写 relations。地点、势力、物件、历史只欠 detail，只有 rule/power-system 欠代价与限制。'
     case 'cast':
       return '主角的欲望/恐惧/执念/软肋/成长线，主要配角阵营，反派动机，人物关系与冲突体系，金手指的规则、限制与成长曲线。'
         + '每位出场人物都要有 role（身份/阵营）、goal（要什么）、personality（性格底色与压力下的反应）、voice（说话方式：句长、口头禅、称呼、情绪怎么外化）——'
-        + '只有名字和目标的人物在对话里等于没有人物；主角另需 fear/obsession/weakness/growthArc。'
+        + '只有名字和目标的人物在对话里等于没有人物；主角另需 fear/obsession/weakness/growthArc 与 relations（与主要人物的关系）。'
+        + '金手指单独用 novel_plan operation="cheat" 写：名称、归属、规则、代价、限制、成长曲线、首次亮相——'
+        + '没有代价与限制的金手指会让任何冲突失去张力。'
         + '用 novel_bible kind="review" 可以点名谁还不够丰满。'
     case 'outline':
       return '先讲完整故事：故事梗概（从开头到结局）、主角成长线、伙伴成长线、反派成长线、阵营演变、对抗副本（每一场怎么打、奇遇在哪）、失去了什么、获得了什么。'
+        + '再补传统六要素：storyTime 时间、storyPlace 地点、storyCause 起因、storyProcess 经过、storyResult 结果（人物来自人物设定），'
+        + '以及金手指（novel_plan operation="cheat"）——时间/地点/因果没有写下来的故事，章节就没有可对齐的锚点。'
         + '再定写作风格七要素：文风基调、人称与视角、句式与节奏、遣词用句、对话与描写、情绪与爽点落点、负面清单——这一版是第 1 章起笔的依据，'
         + '正文只能按它写（没写全时 novel_write 会拒绝写正文）。'
         + '再讲爽点与爆点：每 3 章小爽点、每 10 章大爽点、每卷卷末爆点，落到章位上。最后才是体量：全书大纲 ≈ 总字数 ÷ 100。'
@@ -1420,7 +1442,7 @@ export function registerTools(
         operation: {
           type: 'string',
           required: true,
-          enum: ['competitor', 'pitch', 'world', 'outline', 'volume', 'chapter', 'beat', 'opening', 'naming', 'launch'],
+          enum: ['competitor', 'pitch', 'world', 'cheat', 'outline', 'volume', 'chapter', 'beat', 'opening', 'naming', 'launch'],
           description: 'Which planning step to write.',
         },
         id: { type: 'string', description: 'Slug of the record; derived from title/name when omitted.' },
@@ -1443,9 +1465,25 @@ export function registerTools(
         differentiators: { type: 'array', items: { type: 'string' }, description: 'pitch: how it differs from the comparables.' },
         kernel: { type: 'string', description: 'pitch: the theme underneath the plot.' },
         name: { type: 'string', description: 'world: display name of the rule or fact.' },
-        kind: { type: 'string', description: 'world: place|faction|power-system|item|history|rule.' },
+        kind: {
+          type: 'string',
+          enum: [...WORLD_KINDS],
+          description: 'world: place | faction | power-system | item | history | rule.',
+        },
         cost: { type: 'string', description: 'world: what the rule costs.' },
         limits: { type: 'string', description: 'world: what the rule forbids.' },
+        parent: {
+          type: 'string',
+          description: 'world: the id of the entry that contains this one (a region holds a city, a sect holds a hall). Makes the world layered rather than flat.',
+        },
+        level: {
+          type: 'integer',
+          description: 'world: which layer this fact belongs to (1 凡界/外门, 2 宗门/一城, 3 灵界/王庭 …); 0 未定.',
+        },
+        relations: {
+          type: 'string',
+          description: 'world: how this place/faction stands to the others (盟友/敌对/附庸). character: how this person stands to the others.',
+        },
         detail: {
           type: 'string',
           description:
@@ -1460,6 +1498,55 @@ export function registerTools(
             + '开头到结局, not as a list of turning points. It lands in the `## 叙事骨架` block of 全书大纲.md, and it is the '
             + 'first thing checked: beats and the 1/100 length target are only reported once the story reads whole. '
             + 'volume: this volume told the same way (本卷梗概).',
+        },
+        storyTime: {
+          type: 'string',
+          description:
+            'outline: 时间（传统六要素）— 故事发生在什么时代/时段、跨过多长时间、关键时间节点。Lands in `## 故事六要素` of 全书大纲.md.',
+        },
+        storyPlace: {
+          type: 'string',
+          description: 'outline: 地点 — 主要地图/场景，空间如何转换，哪张地图对应哪一卷。',
+        },
+        storyCause: {
+          type: 'string',
+          description: 'outline: 起因 — 故事为什么开始：谁要什么、什么事件打破平衡、主角为什么非动不可。',
+        },
+        storyProcess: {
+          type: 'string',
+          description: 'outline: 经过 — 冲突怎么升级：关键回合、转折、代价，每一卷把故事推到哪一步。',
+        },
+        storyResult: {
+          type: 'string',
+          description: 'outline: 结果 — 故事怎么收束：最终结局、谁付出什么、留下什么。',
+        },
+        cheatName: {
+          type: 'string',
+          description: 'cheat: 金手指名称 — 读者会记住的名字，一句话说清它是什么。',
+        },
+        cheatOwner: {
+          type: 'string',
+          description: 'cheat: 归属 — 它属于谁（人物 id 或姓名）；主角的金手指要指名主角。',
+        },
+        cheatRule: {
+          type: 'string',
+          description: 'cheat: 规则 — 怎么运转、能做什么、触发条件。',
+        },
+        cheatCost: {
+          type: 'string',
+          description: 'cheat: 代价 — 每次使用付出什么；代价要能逼出选择。',
+        },
+        cheatLimits: {
+          type: 'string',
+          description: 'cheat: 限制 — 它做不到什么、什么时候失灵。',
+        },
+        cheatGrowth: {
+          type: 'string',
+          description: 'cheat: 成长曲线 — 从初始形态到最终形态怎么升级，在哪些节点解锁什么。',
+        },
+        cheatReveal: {
+          type: 'string',
+          description: 'cheat: 首次亮相 — 读者第一次看到它的是哪一章。',
         },
         protagonistArc: {
           type: 'string',
@@ -1574,11 +1661,24 @@ export function registerTools(
         endHook: { type: 'string', description: 'volume: the hook that closes the volume.' },
         chapters: { type: 'array', items: { type: 'integer' }, description: 'volume: chapter range, inclusive.' },
         plotTask: { type: 'string', description: 'chapter: what this chapter must accomplish.' },
+        timeAnchor: {
+          type: 'string',
+          description:
+            'chapter: 时间锚点 — 本章故事发生在什么时候（故事内时间，如「第三日 黄昏」「三日后」「十年前」）。'
+            + 'Lands in the `## 时间` section of the contract; `novel_status detail="bible"` prints the timeline in chapter order.',
+        },
+        place: {
+          type: 'string',
+          description: 'chapter: 地点 — 本章主要发生在哪里；最好在世界观里登记为 place 条目，`novel_bible kind="world" worldKind="place"`.',
+        },
         emotionalPayoff: { type: 'string', description: 'chapter: what the reader gets emotionally.' },
         infoGap: { type: 'string', description: 'chapter: the information gap opened or closed.' },
         beats: { type: 'array', items: { type: 'string', enum: [...BEAT_KINDS] }, description: 'chapter: beats carried.' },
         hook: { type: 'string', description: 'chapter: the chapter-end hook.' },
-        volume: { type: 'integer', description: 'chapter: which volume it belongs to.' },
+        volume: {
+          type: 'integer',
+          description: 'chapter: which volume it belongs to. world: the volume/map where the fact first becomes available (0 = everywhere).',
+        },
         waive: {
           type: 'array',
           items: { type: 'string', enum: [...CONTRACT_FIELDS] },
@@ -1684,6 +1784,10 @@ export function registerTools(
                   ...(args.detail !== undefined && { detail: args.detail }),
                   ...(args.cost !== undefined && { cost: args.cost }),
                   ...(args.limits !== undefined && { limits: args.limits }),
+                  ...(args.parent !== undefined && { parent: args.parent }),
+                  ...(args.level !== undefined && { level: args.level }),
+                  ...(args.volume !== undefined && { volume: args.volume }),
+                  ...(args.relations !== undefined && { relations: args.relations }),
                 },
                 now,
               ),
@@ -1692,7 +1796,50 @@ export function registerTools(
             detail = `世界设定「${next.world[id]?.name ?? id}」已写入`
             const gap = worldGaps(next).find((entry) => entry.id === id)
             if (gap !== undefined) {
-              warnings.push(`该设定缺 ${gap.missing.join('、')}：力量体系必须写明代价与限制，否则无法生成冲突`)
+              warnings.push(
+                `该设定缺 ${gap.missing.join('、')}：`
+                + (gap.missing.some((field) => field === 'cost' || field === 'limits')
+                  ? '规则/力量体系必须写明代价与限制，否则无法生成冲突'
+                  : '地点/势力/物件/历史要写清它本身是什么'),
+              )
+            }
+            for (const issue of worldStructureGaps(next).filter((entry) => entry.id === id)) {
+              warnings.push(`世界观结构：${issue.name}（${issue.id}）${issue.problem}`)
+            }
+            break
+          }
+          case 'cheat': {
+            const patch: Partial<Record<CheatField, string>> = {
+              ...(args.cheatName !== undefined && { name: args.cheatName }),
+              ...(args.cheatOwner !== undefined && { owner: args.cheatOwner }),
+              ...(args.cheatRule !== undefined && { rule: args.cheatRule }),
+              ...(args.cheatCost !== undefined && { cost: args.cheatCost }),
+              ...(args.cheatLimits !== undefined && { limits: args.cheatLimits }),
+              ...(args.cheatGrowth !== undefined && { growth: args.cheatGrowth }),
+              ...(args.cheatReveal !== undefined && { firstReveal: args.cheatReveal }),
+            }
+            if (Object.keys(patch).length === 0) {
+              throw new NovelInputError(
+                'operation="cheat" needs at least one of cheatName / cheatOwner / cheatRule / cheatCost / cheatLimits / cheatGrowth / cheatReveal',
+              )
+            }
+            const next = await store.update((state) => updateCheat(state, patch, now))
+            const written = next.outline.cheat
+            detail = `金手指「${written.name || '（未命名）'}」已写入`
+            body.push('## 金手指', ...narrativeReport(CHEAT_PARTS, cheatValues(written)))
+            const gaps = cheatGaps(next.outline)
+            if (gaps.length > 0) {
+              warnings.push(
+                `金手指还缺 ${String(gaps.length)} 项：${gaps.map((gap) => SPINE_LABELS[gap.key]).join('、')}——`
+                + '没有代价与限制的金手指会让任何冲突失去张力',
+              )
+            }
+            if (written.owner.trim() !== '') {
+              const owners = Object.values(next.characters)
+              const known = owners.some((character) => character.id === normalizeId(written.owner) || character.name === written.owner)
+              if (!known) {
+                warnings.push(`金手指归属「${written.owner}」在人物设定里找不到：先 novel_bible kind="character" 登记，或改成已有的人物 id/姓名`)
+              }
             }
             break
           }
@@ -1715,6 +1862,22 @@ export function registerTools(
                   ...(args.conflictArcs !== undefined && { conflictArcs: args.conflictArcs }),
                   ...(args.costs !== undefined && { costs: args.costs }),
                   ...(args.gains !== undefined && { gains: args.gains }),
+                  ...(args.storyTime !== undefined
+                    || args.storyPlace !== undefined
+                    || args.storyCause !== undefined
+                    || args.storyProcess !== undefined
+                    || args.storyResult !== undefined
+                    ? {
+                        story: {
+                          ...state.outline.story,
+                          ...(args.storyTime !== undefined && { time: args.storyTime }),
+                          ...(args.storyPlace !== undefined && { place: args.storyPlace }),
+                          ...(args.storyCause !== undefined && { cause: args.storyCause }),
+                          ...(args.storyProcess !== undefined && { process: args.storyProcess }),
+                          ...(args.storyResult !== undefined && { result: args.storyResult }),
+                        },
+                      }
+                    : {}),
                   ...(args.styleTone !== undefined
                     || args.stylePerspective !== undefined
                     || args.styleRhythm !== undefined
@@ -1744,7 +1907,17 @@ export function registerTools(
               ),
             )
             detail = args.full === true ? '完整大纲已标记为确认' : '大纲已更新'
-            // 1. Narrative completeness first. The spine is what the beats and the
+            // 0. The traditional 六要素 come first: a story without a time, a place,
+            // a cause, a process and a result has no ground for the spine below it.
+            const six = sixElementRows(next)
+            body.push('## 故事六要素', ...six.map((row) => `- ${row.filled ? '✅' : '⬜'} ${row.label}：${row.note}`))
+            if (six.some((row) => !row.filled)) {
+              warnings.push(
+                `故事六要素还没写全：${six.filter((row) => !row.filled).map((row) => row.label).join('、')}——`
+                + '时间、地点、起因、经过、结果是正文的地基，先补进 `## 故事六要素`',
+              )
+            }
+            // 1. Narrative completeness next. The spine is what the beats and the
             // length target are supposed to be attached to, so it is reported
             // before either of them: a 20000-character skeleton with no story is
             // the failure this ordering exists to name.
@@ -1754,6 +1927,17 @@ export function registerTools(
               warnings.push(
                 `全书大纲的叙事骨架还缺 ${String(spine.length)} 项：`
                 + `${spine.map((gap) => gap.key).join('、')}——先讲完故事，再看爽点与字数`,
+              )
+            }
+            // 1b. The cheat, beside the cast it belongs to. Reported before the
+            // style because a device with no price is a story problem, not a voice
+            // problem.
+            body.push('## 金手指', ...narrativeReport(CHEAT_PARTS, cheatValues(next.outline.cheat)))
+            const cheat = cheatGaps(next.outline)
+            if (cheat.length > 0) {
+              warnings.push(
+                `金手指还缺 ${String(cheat.length)} 项：${cheat.map((gap) => SPINE_LABELS[gap.key]).join('、')}`
+                + '（novel_plan operation="cheat"）——规则、代价、限制、成长曲线写全，爽点才有代价可付',
               )
             }
             // 2. Then the style the story is told in. It is the prose gate, so it is
@@ -1907,6 +2091,8 @@ export function registerTools(
                   ...(args.number !== undefined && { number: args.number }),
                   ...(args.synopsis !== undefined && { synopsis: args.synopsis }),
                   ...(args.plotTask !== undefined && { plotTask: args.plotTask }),
+                  ...(args.timeAnchor !== undefined && { timeAnchor: args.timeAnchor }),
+                  ...(args.place !== undefined && { place: args.place }),
                   ...(args.conflict !== undefined && { conflict: args.conflict }),
                   ...(args.emotionalPayoff !== undefined && { emotionalPayoff: args.emotionalPayoff }),
                   ...(args.infoGap !== undefined && { infoGap: args.infoGap }),
@@ -1934,6 +2120,24 @@ export function registerTools(
                 `第 ${String(gaps[0].number)} 章契约缺：${gaps[0].missing.join('、')}`
                 + '——先把这一章要讲的故事写清，再看字数',
               )
+            }
+            // 1b. The traditional 六要素's 时间/地点 at chapter level. Reported
+            // beside the contract, never as part of it: a chapter planned before
+            // these existed is not "未完成", but every new one is asked.
+            if (chapter !== undefined) {
+              const space = spaceTimeGaps(chapter)
+              if (space.length > 0) {
+                warnings.push(
+                  `第 ${String(chapter.number)} 章缺时空锚点：${spaceTimeLabel(space)}——`
+                  + '补上 `timeAnchor`（故事内时间）与 `place`（地点），正文才知道场景站在哪',
+                )
+              } else {
+                body.push(
+                  '## 本章时空',
+                  `- 时间：${chapter.timeAnchor}`,
+                  `- 地点：${chapter.place}`,
+                )
+              }
             }
             // 2. Length last. The contract's targetWords is the finished length;
             // the draft this chapter is now written to is 125% of it. Print both
@@ -1995,7 +2199,7 @@ export function registerTools(
             }
             const chapter = args.number
             assertSkeletonAuthorised('novel_plan', current, '情绪节拍表')
-            await store.update((state) =>
+            const next = await store.update((state) =>
               upsertBeat(
                 state,
                 { chapter, kind: (args.beatKind ?? 'shuang') as NovelState['outline']['beats'][number]['kind'], note: args.note ?? '' },
@@ -2003,6 +2207,8 @@ export function registerTools(
               ),
             )
             detail = `第 ${String(chapter)} 章节拍已写入（${args.beatKind ?? 'shuang'}）`
+            for (const note of beatCadenceGaps(next)) warnings.push(`爽点节奏：${note}`)
+            for (const note of beatConflicts(next)) warnings.push(`节拍表与章节契约不一致：${note}`)
             break
           }
           case 'opening': {
@@ -2160,20 +2366,43 @@ export function registerTools(
         obsession: { type: 'string', description: 'character: the obsession that makes them act against interest.' },
         weakness: { type: 'string', description: 'character: the weakness an opponent can press.' },
         camp: { type: 'string', description: 'character: protagonist-camp | rival | neutral | …' },
+        relations: {
+          type: 'string',
+          description:
+            'character: 与主要人物的关系（盟友/宿敌/师徒/旧识/欠债）——同一场戏里两个人怎么站。'
+            + 'world: 这个地点/势力与其他势力的关系。',
+        },
         growthArc: { type: 'string', description: 'character: the arc across the novel.' },
         notes: { type: 'string', description: 'character: continuity notes. world: the entry kind.' },
         appendNotes: { type: 'boolean', description: 'character: append to existing notes instead of replacing them.' },
         detail: { type: 'string', description: 'world: the fact itself.' },
         cost: { type: 'string', description: 'world: what it costs.' },
         limits: { type: 'string', description: 'world: what it forbids.' },
-        worldKind: { type: 'string', description: 'world: place | faction | power-system | item | history | rule.' },
+        worldKind: {
+          type: 'string',
+          enum: [...WORLD_KINDS],
+          description: 'world: place | faction | power-system | item | history | rule.',
+        },
+        parent: {
+          type: 'string',
+          description: 'world: the id of the entry that contains this one; a dangling parent is reported by kind="review".',
+        },
+        level: {
+          type: 'integer',
+          description: 'world: 层级（1 凡界/外门、2 宗门/一城、3 灵界/王庭 …），0 未定。',
+        },
         note: { type: 'string', description: 'link: the promise as planted, in prose terms.' },
         linkKind: { type: 'string', description: 'link: foreshadow | mystery | hook | promise.' },
         plantedAt: { type: 'string', description: 'link: chapter id or number where it is planted.' },
         dueAt: { type: 'string', description: 'link: chapter id or number it must pay off by.' },
         payoff: { type: 'string', description: 'link: how it pays off.' },
         status: { type: 'string', enum: [...LINK_STATUSES], description: 'link: open | paid | abandoned.' },
-        volume: { type: 'integer', description: 'character: the volume/map they belong to (0 = unset), which makes 第 N 卷有哪些人 answerable. link: the volume the payoff belongs to.' },
+        volume: {
+          type: 'integer',
+          description:
+            'character: the volume/map they belong to (0 = unset), which makes 第 N 卷有哪些人 answerable. '
+            + 'world: the volume/map where this fact first becomes available (0 = everywhere). link: the volume the payoff belongs to.',
+        },
         remove: { type: 'boolean', description: 'link: delete this promise instead of writing it.' },
       },
       output: { schema: ENVELOPE_SCHEMA, render: renderTool },
@@ -2199,8 +2428,21 @@ export function registerTools(
           const byScope = (scope: CharacterScope): number =>
             Object.values(current.characters).filter((character) => characterScope(character) === scope).length
           body.push('## 设定复核')
-          body.push(`- 世界设定 ${String(Object.keys(current.world).length)} 条，缺代价/限制 ${String(world.length)} 条`)
+          body.push(`- 世界设定 ${String(Object.keys(current.world).length)} 条，缺要素 ${String(world.length)} 条`)
           for (const gap of world) body.push(`  - ${gap.name}（${gap.id}）缺 ${gap.missing.join('、')}`)
+          const structure = worldStructureGaps(current)
+          if (structure.length > 0) {
+            body.push(`- 世界观结构问题 ${String(structure.length)} 处（分层/父子/卷属）：`)
+            for (const issue of structure) body.push(`  - ${issue.name}（${issue.id}）：${issue.problem}`)
+          }
+          body.push(
+            `- 故事六要素：${sixElementRows(current).filter((row) => row.filled).length}/6 项已答`,
+          )
+          for (const row of sixElementRows(current).filter((entry) => !entry.filled)) {
+            body.push(`  - 缺 ${row.label}：${row.note}`)
+          }
+          const cheat = cheatGaps(current.outline)
+          body.push(`- 金手指：${cheat.length === 0 ? '已写全' : `缺 ${String(cheat.length)} 项（${cheat.map((gap) => SPINE_LABELS[gap.key]).join('、')}）`}`)
           body.push(
             `- 人物 ${String(Object.keys(current.characters).length)} 位（主要角色 ${String(byScope('main'))}、`
             + `配角 ${String(byScope('volume'))}、路人 ${String(byScope('cameo'))}），不够丰满 ${String(debt.length)} 位`,
@@ -2215,6 +2457,11 @@ export function registerTools(
             body.push(
               '  - 补法：novel_bible kind="character" id=… personality=… voice=…（性格底色与说话方式是「不够丰满」最常缺的两项）',
             )
+          }
+          const relationGaps = castRelationGaps(current)
+          if (relationGaps.length > 0) {
+            body.push(`- 主要角色未写人物关系 ${String(relationGaps.length)} 位（不欠账，但同场戏会失据）：`)
+            for (const gap of relationGaps) body.push(`  - ${gap.name}（${gap.id}）缺 relations`)
           }
           for (const character of Object.values(current.characters)) {
             if (!unknownScope(character)) continue
@@ -2261,6 +2508,7 @@ export function registerTools(
                 ...(args.obsession !== undefined && { obsession: args.obsession }),
                 ...(args.weakness !== undefined && { weakness: args.weakness }),
                 ...(args.camp !== undefined && { camp: args.camp }),
+                ...(args.relations !== undefined && { relations: args.relations }),
                 ...(args.growthArc !== undefined && { growthArc: args.growthArc }),
                 ...(args.notes !== undefined && { notes: args.notes }),
                 ...(args.appendNotes !== undefined && { appendNotes: args.appendNotes }),
@@ -2311,6 +2559,10 @@ export function registerTools(
                 ...(args.detail !== undefined && { detail: args.detail }),
                 ...(args.cost !== undefined && { cost: args.cost }),
                 ...(args.limits !== undefined && { limits: args.limits }),
+                ...(args.parent !== undefined && { parent: args.parent }),
+                ...(args.level !== undefined && { level: args.level }),
+                ...(args.volume !== undefined && { volume: args.volume }),
+                ...(args.relations !== undefined && { relations: args.relations }),
                 ...(args.worldKind !== undefined && { kind: args.worldKind }),
               },
               now,
@@ -2319,7 +2571,17 @@ export function registerTools(
           const id = normalizeId(args.id) || normalizeId(args.name) || ''
           detail = `世界设定「${next.world[id]?.name ?? id}」已写入（共 ${String(Object.keys(next.world).length)} 条）`
           const gap = worldGaps(next).find((entry) => entry.id === id)
-          if (gap !== undefined) warnings.push(`该设定缺 ${gap.missing.join('、')}：只写能力不写代价与限制，无法生成冲突`)
+          if (gap !== undefined) {
+            warnings.push(
+              `该设定缺 ${gap.missing.join('、')}：`
+              + (gap.missing.some((field) => field === 'cost' || field === 'limits')
+                ? '规则/力量体系必须写明代价与限制，否则无法生成冲突'
+                : '地点/势力/物件/历史要写清它本身是什么'),
+            )
+          }
+          for (const issue of worldStructureGaps(next).filter((entry) => entry.id === id)) {
+            warnings.push(`世界观结构：${issue.name}（${issue.id}）${issue.problem}`)
+          }
         } else if (args.remove === true) {
           if (args.id === undefined) throw new NovelInputError('kind="link" with remove needs an `id`')
           const id = args.id
@@ -2963,6 +3225,11 @@ export function registerTools(
           }
         }
         if (report.unplanned.length > 0) body.push('', `细纲本身没写：${report.unplanned.join('、')}`)
+        if (report.spaceTimeMissing.length > 0) {
+          body.push('', `缺时空锚点：${spaceTimeLabel(report.spaceTimeMissing)}（novel_plan operation="chapter" 补 timeAnchor / place）`)
+        } else {
+          body.push('', `本章时空：${written.timeAnchor} · ${written.place}`)
+        }
         pushLengthReport(body, written)
         pushStyleHints(body, written.body, next.outline.style.taboos)
         if (args.status === 'final') {
@@ -2977,6 +3244,12 @@ export function registerTools(
         }
         if (report.missed.length > 0) {
           warnings.push(`本次未兑现 ${String(report.missed.length)} 项契约：${report.missed.join('、')}`)
+        }
+        if (report.spaceTimeMissing.length > 0) {
+          warnings.push(
+            `第 ${String(written.number)} 章缺时空锚点：${spaceTimeLabel(report.spaceTimeMissing)}`
+            + '——正文写完了，这一章发生的时间和地点还没有写进细纲',
+          )
         }
         // Writing a chapter can push a promise past its due chapter; the SOP
         // closes promises at volume end, so the writer learns about it now.
@@ -3074,11 +3347,44 @@ export function registerTools(
               body.push(`- 第 ${String(volume)} 卷：${(byVolume.get(volume) ?? []).join('、')}`)
             }
           }
-          body.push('', '## 世界设定')
+          body.push('', '## 时间线（按章）')
+          const timeline = Object.values(state.chapters).sort((a, b) => a.number - b.number)
+          if (timeline.length === 0) body.push('- （还没有章节）')
+          for (const chapter of timeline) {
+            const when = chapter.timeAnchor.trim() === '' ? '时间未记' : chapter.timeAnchor
+            const where = chapter.place.trim() === '' ? '地点未记' : chapter.place
+            body.push(`- 第 ${String(chapter.number)} 章：${when} · ${where}`)
+          }
+          const spaceDebt = spaceTimeDebt(state)
+          if (spaceDebt.length > 0) {
+            body.push(
+              `- 缺时空锚点 ${String(spaceDebt.length)} 章：`
+              + spaceDebt.map((entry) => `第 ${String(entry.number)} 章（${spaceTimeLabel(entry.missing)}）`).join('；'),
+            )
+          }
+          body.push('', '## 世界设定（按类型/层级）')
+          const worldByKind = new Map<string, Array<(typeof state.world)[string]>>()
           for (const entry of Object.values(state.world)) {
-            body.push(`- [${entry.kind}] ${entry.name}（${entry.id}）：${entry.detail}`)
-            if (entry.cost !== '') body.push(`  代价：${entry.cost}`)
-            if (entry.limits !== '') body.push(`  限制：${entry.limits}`)
+            const kind = entry.kind === '' ? 'note' : entry.kind
+            worldByKind.set(kind, [...(worldByKind.get(kind) ?? []), entry])
+          }
+          for (const [kind, entries] of [...worldByKind.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+            const label = (WORLD_KIND_LABELS as Record<string, string>)[kind] ?? kind
+            body.push(`### ${label}（${kind}）`)
+            for (const entry of entries.sort((a, b) => a.level - b.level || a.id.localeCompare(b.id))) {
+              const layer = entry.level > 0 ? `L${String(entry.level)}` : 'L?'
+              const parent = entry.parent === '' ? '' : ` · 上级 ${entry.parent}`
+              const volume = entry.volume > 0 ? ` · 第 ${String(entry.volume)} 卷起` : ''
+              body.push(`- [${layer}] ${entry.name}（${entry.id}）${parent}${volume}：${entry.detail}`)
+              if (entry.cost !== '') body.push(`  代价：${entry.cost}`)
+              if (entry.limits !== '') body.push(`  限制：${entry.limits}`)
+              if (entry.relations !== '') body.push(`  关系：${entry.relations}`)
+            }
+          }
+          const structure = worldStructureGaps(state)
+          if (structure.length > 0) {
+            body.push('', '### 结构问题')
+            for (const issue of structure) body.push(`- ${issue.name}（${issue.id}）：${issue.problem}`)
           }
           body.push('', '## 承诺（伏笔/悬念）')
           for (const link of Object.values(state.links)) {
@@ -3128,11 +3434,24 @@ export function registerTools(
             // Narrative completeness comes before the beats and the volumes: the
             // dashboard should show the story's own debts first, because every
             // other plan layer hangs off them.
+            '## 故事六要素',
+            ...sixElementRows(state).map((row) => `- ${row.filled ? '✅' : '⬜'} ${row.label}：${row.note}`),
+            '',
+            '## 金手指',
+            ...narrativeReport(CHEAT_PARTS, cheatValues(state.outline.cheat)),
+            '',
+            // Narrative completeness comes before the beats and the volumes: the
+            // dashboard should show the story's own debts first, because every
+            // other plan layer hangs off them.
             '## 叙事完整性（全书）',
             ...narrativeReport(OUTLINE_SPINE_PARTS, outlineSpineValues(state.outline)),
           )
           const payoffNotes = outlinePayoffGaps(state.outline)
           if (payoffNotes.length > 0) body.push('', '## 爽点与爆点欠账', ...payoffNotes.map((note) => `- ${note}`))
+          const cadence = beatCadenceGaps(state)
+          if (cadence.length > 0) body.push('', '## 节奏欠账', ...cadence.map((note) => `- ${note}`))
+          const conflicts = beatConflicts(state)
+          if (conflicts.length > 0) body.push('', '## 节拍与契约不一致', ...conflicts.map((note) => `- ${note}`))
           if (state.outline.acts.length > 0) {
             body.push('', '三幕：', ...state.outline.acts.map((act, index) => `${String(index + 1)}. ${act}`))
           }
@@ -3160,6 +3479,12 @@ export function registerTools(
           const chapter = resolveChapter(state, args.chapterId)
           body.push(`## 第 ${String(chapter.number)} 章「${chapter.title || chapter.id}」（${chapter.status}）`)
           for (const row of contractRows(chapter)) body.push(`- ${row.field}：${row.text || '（未写）'}`)
+          const space = spaceTimeGaps(chapter)
+          body.push(
+            `- 时间：${chapter.timeAnchor || '（未写）'}`,
+            `- 地点：${chapter.place || '（未写）'}`,
+          )
+          if (space.length > 0) body.push(`- 缺时空锚点：${spaceTimeLabel(space)}（novel_plan operation="chapter"）`)
           body.push('', analyzeDelivery(chapter).summary)
           pushLengthReport(body, chapter)
           pushStyleHints(body, chapter.body, state.outline.style.taboos)
@@ -3200,8 +3525,25 @@ export function registerTools(
           const cameos = Object.values(state.characters).filter((character) => characterScope(character) === 'cameo')
           const volumeGaps = state.outline.volumes.map((volume) => ({ volume, gaps: volumeSpineGaps(volume) }))
           const volumeDebt = volumeGaps.reduce((total, entry) => total + entry.gaps.length, 0)
+          const six = sixElementRows(state)
+          const cheatDebt = cheatGaps(state.outline)
+          const spaceDebt = spaceTimeDebt(state)
           body.push(
             '## 叙事完整性',
+            `- 故事六要素：${String(six.filter((row) => row.filled).length)}/6`
+              + (six.some((row) => !row.filled)
+                ? `，缺 ${six.filter((row) => !row.filled).map((row) => row.label).join('、')}（novel_plan operation="outline"）`
+                : '，已写全'),
+            cheatDebt.length === 0
+              ? '- 金手指：已写全（名称/归属/规则/代价/限制/成长曲线/首次亮相）'
+              : `- 金手指缺 ${String(cheatDebt.length)} 项：${cheatDebt.map((gap) => SPINE_LABELS[gap.key]).join('、')}`
+                + '（novel_plan operation="cheat"）',
+            spaceDebt.length === 0
+              ? '- 章节时空锚点：每章都写了时间与地点'
+              : `- 缺时空锚点 ${String(spaceDebt.length)} 章：`
+                + spaceDebt.slice(0, 8).map((entry) => `第 ${String(entry.number)} 章（${spaceTimeLabel(entry.missing)}）`).join('；')
+                + (spaceDebt.length > 8 ? ' …' : '')
+                + '（novel_plan operation="chapter"）',
             spineGaps.length === 0 && volumeDebt === 0
               ? '- 全书大纲与分卷大纲的叙事骨架都已写全'
               : `- 全书大纲缺 ${String(spineGaps.length)}/8 项`

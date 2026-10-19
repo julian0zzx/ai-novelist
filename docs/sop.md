@@ -1,4 +1,4 @@
-# 爆款网文创作全流程 SOP 3.8
+# 爆款网文创作全流程 SOP 3.9
 
 > 本版基于 3.0 的一次结构化审计修订。核心流程与原则未变；修订集中在**可执行性**上：
 > 把"应该记住的事"变成"必须记录的数据"，把"看起来像建议的规则"变成"能算出裁决的规则"。
@@ -211,7 +211,7 @@
 
 | 层 | ① 叙事完整性 | ② 写作风格 | ③ 爽点与爆点 | ④ 体量 |
 |---|---|---|---|---|
-| 全书大纲 | `synopsis` 故事梗概、`protagonistArc` 主角成长线、`supportArcs` 伙伴成长线、`antagonistArc` 反派成长线、`factionShift` 阵营演变、`conflictArcs` 对抗副本、`costs` 失去了什么、`gains` 获得了什么 | `tone` 文风基调、`perspective` 人称与视角、`rhythm` 句式与节奏、`diction` 遣词用句、`dialogue` 对话与描写、`emotion` 情绪与爽点落点、`taboos` 负面清单 | 情绪节拍表（每 3 章小爽点 / 每 10 章大爽点）+ 每卷阶段性高潮与卷末爆点 | ≈ 总字数 ÷ 100 |
+| 全书大纲 | `synopsis` 故事梗概、`protagonistArc` 主角成长线、`supportArcs` 伙伴成长线、`antagonistArc` 反派成长线、`factionShift` 阵营演变、`conflictArcs` 对抗副本、`costs` 失去了什么、`gains` 获得了什么（另加 `## 故事六要素` 五项与 `## 金手指` 七项，见 §1.7） | `tone` 文风基调、`perspective` 人称与视角、`rhythm` 句式与节奏、`diction` 遣词用句、`dialogue` 对话与描写、`emotion` 情绪与爽点落点、`taboos` 负面清单 | 情绪节拍表（每 3 章小爽点 / 每 10 章大爽点）+ 每卷阶段性高潮与卷末爆点 | ≈ 总字数 ÷ 100 |
 | 分卷大纲 | `synopsis` 本卷梗概、`protagonistArc`、`antagonistArc`、`factionShift`、`mainConflict`、`costs`、`gains` | （语感在全书写一次；分卷只管这一卷的节奏） | 独立目标、独立矛盾、阶段性高潮、卷末钩子、卷内节奏 | ≈ 本卷字数 ÷ 50（每卷一文件） |
 | 章节大纲 | `keyBeat` 关键转折（谁的成长/哪条线动了）、`price` 代价与收获 | （正文按全书《写作风格》写） | 剧情任务、冲突、情绪回报、信息差、节拍、章末钩子 | 细纲正文 ≈ 单章字数 ÷ 5；成稿 -5%/+15% |
 
@@ -263,6 +263,39 @@
 第 1 章只是样本，看不出节奏，而那时作者能做的只有"接受或整章重写"。写作风格前移到大纲层之后，
 第 1 章是**照着一版作者看过的语感**写的，黄金三章之后的复核才是在问"像不像那一版、要不要调"——
 而不是在问"你要不要接受这个声音"。
+
+### 1.7 两套「六要素」（3.9 新增）
+
+**传统六要素——时间、地点、人物、起因、经过、结果——落在三个地方：**
+
+1. `全书大纲.md` 的 `## 故事六要素`：时间 / 地点 / 起因 / 经过 / 结果各一个 `###` 小标题；
+   **人物不重复存**，读自 `人物设定.md`，所以 `sixElementRows` 报的是六项（五存一推导）。
+   `storyElementGaps` 逐项报缺，`novel_plan operation="outline"` 的参数是
+   `storyTime` / `storyPlace` / `storyCause` / `storyProcess` / `storyResult`。
+2. 章节契约的 `## 时间` 与 `## 地点`：每章的**故事内**时间锚点与主要地点。它们**不是**八个契约字段之一，
+   所以旧章节不会因为多出两项突然"细纲未完成"；`spaceTimeGaps` 逐章点名，`novel_status detail="bible"`
+   按章打印时间线，章节卡片显示「缺时间/地点」。
+3. 世界观的地点条目：`parent` / `level` / `volume` 让"第 N 卷有哪些地点、哪张地图在上一层"可查，
+   `novel_status detail="bible"` 按类型与层级分组打印。
+
+检查是**软拦**：`storyElementGaps` / `sixElementRows` 报出缺项，`novel_plan operation="outline"` 先报六要素、
+再报叙事骨架；`novel_write` 对缺时空锚点的章节报 warning，但不拒绝落笔。
+
+**网文六要素——人设、金手指、钩子期待感、分层世界观、情绪爽点、节奏可读性：**
+
+| 要素 | 数据落点 | 检查 |
+|---|---|---|
+| 人设 | `Character` 三档 spine；新增 `relations`（与主要人物的关系） | `castGaps` / `castDebt` 按档点名；`castRelationGaps` 点名未写关系的主要角色（**不计欠账**） |
+| 金手指 | `全书大纲.md` 的 `## 金手指`：名称 / 归属 / 规则 / 代价 / 限制 / 成长曲线 / 首次亮相 | `cheatGaps` 逐项报缺；归属不在人物设定里会 warning；`novel_plan operation="cheat"` 写入 |
+| 钩子期待感 | 章节 `hook`、`infoGap`、卷 `endHook`、`StoryLink` 台账 | 契约必填 + 逾期回收检查（3.1 起） |
+| 分层世界观 | 世界条目的 `parent` / `level` / `volume` / `relations`；`kind` 六类 | `worldStructureGaps` 报悬空 parent、自指、未知 kind；`worldGaps` 只对 rule/power-system 要代价与限制 |
+| 情绪爽点 | `BeatSlot` 节拍表、章节 `beats`、`emotionalPayoff`、`shuangPoints`、卷 `climax` | `beatCadenceGaps` 报「>3 章没有节拍」与「卷末无节拍」；`beatConflicts` 报节拍表与章节契约不一致 |
+| 节奏可读性 | 初稿 125% / 成稿 -5%+15%、段落/对话/句首/对举/负面清单统计、新增超长句与平均句长 | `novel_write` 每次返回；`novel_review operation="ai-flavor"` 做判断 |
+
+**为什么要有这一条。** 3.8 之前，人物、钩子、爽点、节奏都有字段，而时间、地点、起因、经过、结果只能写在
+自由文本里，金手指只在竞品拆解里有字段，世界观只有 `kind` 标签——于是"补设定"补出来的是花名册和百科，
+不是能生成场景的骨架。3.9 把这十二项都变成**有名字的字段 + 有名字的检查**：写没写、缺哪项、在哪一层补，
+都由工具报出来，判断仍归作者。
 
 ---
 
@@ -692,3 +725,4 @@ C21–C23 是 3.4 相对 3.3 的变更；C24 是 3.5 相对 3.4 的变更；C25�
 | C29 | **人物按档位欠账（3.8）**：`Character.scope` = `main`（主角/反派/核心伙伴，全 spine）/ `volume`（一张地图或一卷内反复出现、或有台词的配角：role/goal/personality/voice）/ `cameo`（一次性路人：`description`「他是谁」+ `firstAppearance`「首次出场章」）。`castGaps` 按档判欠项并带上 `scope`，`castDebt` 只算非路人——看板卡片的 `complete`、人设层 `discuss`/`confirm` 的提醒、`novel_status` 的「人物丰满度」与运行时上下文都用 `castDebt`，`kind="review"` 仍逐条报路人登记缺项（另立一条，不叫欠账）；`novel_bible kind="character"` 新增 `scope`/`volume`/`firstAppearance`/`exit` 四个参数，并在同名两人时警告；`detail="bible"` 按档分组、另给「按卷/地图查人」（卷号取自 `volume`，缺省由 `firstAppearance` 的章号在章节表里推出）。**缺省不迁移**：不写 `scope` 时按 `role` 判（主角型 → main，其余 → volume），与旧版要求完全一致 | 只在一个地图里出现的路人（单章、几章或一卷）是常态，而旧规则要求**每个** `Character` 都有性格与说话方式：模型于是给每个龙套编性格口癖，「人物设定」从人设档变成花名册，主角埋在里面；看板的 `complete` 要求 `castDebt.length === 0`，加一个路人卡片就永远绿不了，唯一变绿的办法是给一次性角色编小传——正是 `castGaps` 注释自己警告的 filler。路人真正需要的是**一致性**（名字不撞、在哪出现过、死没死），不是深度；而"会不会再出现 / 开不开口"才是该分档的轴，不是"重不重要" |
 | C27 | **去 AI 化从「可数症状」扩到「可数 + 可判」两层**：`styleObservations` 新增**对举句计数**（「不是 A，是 B」「是 A，不是 B」「不是 A，而是 B」「与其说 A，不如说 B」，同一处只计一次，报告里引用两处原文）与**负面清单命中**（把《写作风格》`styleTaboos` 拆成短语逐条比对）；`AI_FLAVOR_DIMENSIONS` 新增「对举句」维度并点名这些句式；`buildAiFlavorRequest` 与 `buildRewriteRequest` 都带上这本书的《写作风格》七要素与负面清单，机械层已数到的症状也一并交给评审（rubric 版本 1 → 2） | 原书的失败很具体：前三章满是「是 X，不是 Y」而四项机械统计一条都数不到它（它既不是长段落，也不是句首重复——句首各不相同），八条 rubric 里也没有这一类；而《写作风格》里的负面清单写完之后，除了检查它非空，没有任何一处再读它。判断类工具不拿到这本书自己的文风基准，就只能按训练数据的平均口味打分 |
 | C28 | **去 AI 化成为硬关卡（关卡 C）**：黄金三章成稿后，`reviews` 台账里至少要有一次 `ai-flavor` 记录，否则 `novel_write` **拒绝**写第 4 章及以后；`confirmationStanding.deAi` 报出「做过没有／最近一次审的哪章／黄金三章还差哪几章」，`proseGate`、阶段机 blocker、运行时上下文、`novel_status` 与看板同步报出；只查了一部分黄金三章不算违规，但会被点名 | 第 23 步此前只有一句"按需调用 `novel_review`"：模型不调就永远没有诊断，一本书可以从第 1 章到第 40 章带着同一种 AI 腔，而第 21b 步问用户的又只是一句很宽的"文风要不要调"。与 `novel_assess` 相反——那个按需评估在 SOP 里明写"唯一的失败方式是没人再问"，并因此强制留下下次约定；去 AI 化没有任何收据。这是**收据检查而不是质量检查**：判断"有没有变好"仍是作者的事，判断"有没有被出示过诊断"是工具的纪律 |
+| C30 | **两套六要素补全（3.9）**：传统六要素的时间/地点/起因/经过/结果成为 `全书大纲.md` 的 `## 故事六要素` 五个具名字段（人物仍由人物设定承担，`sixElementRows` 推导为第六项），章节契约新增 `## 时间` 与 `## 地点` 两个**非契约**锚点（`spaceTimeGaps` 逐章点名，不使旧章节算欠账）；金手指成为 `## 金手指` 七字段（名称/归属/规则/代价/限制/成长曲线/首次亮相），由 `novel_plan operation="cheat"` 写入；世界观条目新增 `parent`/`level`/`volume`/`relations`，`worldStructureGaps` 报悬空父子与未知 kind，`worldGaps` 只对 rule/power-system 要代价与限制；人设新增 `relations`；`beatCadenceGaps` 报 >3 章空档与卷末无节拍，`beatConflicts` 报节拍表与章节契约不一致；可读性统计新增超长句与平均句长 | 审计发现：传统六要素里只有人物是一等公民，时间/地点/因果只能写进自由文本；金手指只在竞品拆解里有字段，工具文案却承诺"规则、限制与成长曲线"；世界观只有 `kind` 标签，"分层"无从表达；爽点节拍表与章节契约是两套数据，互不校验。这些缺口让"补设定"补出花名册与百科，而不是能生成场景的骨架——3.9 把十二项都变成有名字的字段与有名字的检查 |

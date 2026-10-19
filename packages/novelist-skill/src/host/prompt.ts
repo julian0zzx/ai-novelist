@@ -28,7 +28,7 @@ import {
   assessReading,
   assessStage,
   castDebt,
-  castGaps,
+  cheatGaps,
   confirmationStanding,
   describeWritingPlan,
   emptyWriting,
@@ -36,6 +36,9 @@ import {
   outlineStyleGaps,
   progressOf,
   phaseForStage,
+  sixElementRows,
+  spaceTimeDebt,
+  SPINE_LABELS,
   stageLabel,
   styleGateReached,
   writingPlanGaps,
@@ -155,6 +158,18 @@ export interface NovelSnapshot {
    * one voice.
    */
   readonly thinCast: readonly string[]
+  /**
+   * The traditional 六要素 the outline has not answered, 人物 included.
+   *
+   * Advisory like `thinCast`: the elements are the ground a chapter is written
+   * on, and a model that plans chapters without them is planning scenes with no
+   * time, no place and no causal chain.
+   */
+  readonly storyGaps: readonly string[]
+  /** 金手指 fields the outline has not answered. */
+  readonly cheatGaps: readonly string[]
+  /** Chapters whose contract states no time anchor or place. */
+  readonly spaceTimeChapters: readonly number[]
   /** The checkpoints still open, in the SOP's words. */
   readonly confirmationGaps: readonly string[]
   /** Reading position of the last planned chapter. */
@@ -249,6 +264,9 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
         deAiUnreviewed: standing.deAi.unreviewed,
         styleGaps: outlineStyleGaps(state.outline).map((gap) => gap.key),
         thinCast: castDebt(state).map((gap) => `${gap.name}（缺 ${gap.missing.join('、')}）`),
+        storyGaps: sixElementRows(state).filter((row) => !row.filled).map((row) => row.label),
+        cheatGaps: cheatGaps(state.outline).map((gap) => SPINE_LABELS[gap.key]),
+        spaceTimeChapters: spaceTimeDebt(state).map((entry) => entry.number),
         confirmationGaps: standing.blockers,
         lastNumber: last?.number ?? 0,
         lastTitle: last?.title ?? '',
@@ -293,6 +311,9 @@ export function createSnapshotCache(store: NovelStore, now: () => number = Date.
           styleDue: false,
           styleGaps: [],
           thinCast: [],
+          storyGaps: [],
+          cheatGaps: [],
+          spaceTimeChapters: [],
           confirmationGaps: [],
           lastNumber: 0,
           lastTitle: '',
@@ -547,6 +568,28 @@ export function renderWorkspaceContext(input: WorkspaceContextInput): string {
           `Characters that are still thin (a name and a goal, no 性格 or 说话方式): ${snapshot.thinCast.join('；')}. `
           + 'Fill personality and voice with novel_bible kind="character" before they carry a scene — two of them in one '
           + 'dialogue read as one person wearing two names.',
+        )
+      }
+      if (snapshot.storyGaps.length > 0) {
+        lines.push(
+          `The traditional 六要素 are not answered yet: ${snapshot.storyGaps.join('、')}. `
+          + 'Write them with novel_plan operation="outline" (storyTime=… storyPlace=… storyCause=… storyProcess=… '
+          + 'storyResult=…); 人物 comes from the cast. A chapter planned without a time, a place and a cause has no '
+          + 'ground to stand on.',
+        )
+      }
+      if (snapshot.cheatGaps.length > 0) {
+        lines.push(
+          `The 金手指 is still missing ${snapshot.cheatGaps.join('、')}: write it with novel_plan operation="cheat" `
+          + '(name, owner, rule, cost, limits, growth curve, first reveal). A cheat with no price or ceiling makes every '
+          + 'conflict collapse.',
+        )
+      }
+      if (snapshot.spaceTimeChapters.length > 0) {
+        lines.push(
+          `Chapters with no 时空锚点 (${snapshot.spaceTimeChapters.slice(0, 8).map((number) => `第 ${String(number)} 章`).join('、')}`
+          + `${snapshot.spaceTimeChapters.length > 8 ? ' …' : ''}): add \`timeAnchor\` and \`place\` to their contracts `
+          + 'with novel_plan operation="chapter" — the 时间/地点 half of the traditional 六要素.',
         )
       }
     }

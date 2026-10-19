@@ -59,7 +59,7 @@ re-read after the agent writes.
 
 ## The SOP this implements
 
-The workflow is [`docs/sop.md`](docs/sop.md) — 爆款网文创作全流程 SOP 3.5, whose closed loop
+The workflow is [`docs/sop.md`](docs/sop.md) — 爆款网文创作全流程 SOP 3.9, whose closed loop
 is **假设 → 验证 → 放大 → 复盘 → 复用**: form a hypothesis from a competitor study and a
 memorable point, put the opening package in front of real readers, record a human go/no-go on
 it, build the full skeleton only after a `go`, iterate while serializing, then turn the
@@ -221,7 +221,7 @@ number alone (`分卷大纲/第1卷.md`, `章节大纲/第1卷.md`): a retitle n
 chapter 341 of a 1000-chapter book touches one file instead of a 1000-row table. The whole-book part
 that is left — the opening checklist and an index of the per-volume files — stays in `章节大纲.md`.
 
-**Every outline layer is checked story first, payoffs second, length last** (SOP 3.5 §1.5). Each
+**Every outline layer is checked story first, payoffs second, length last** (SOP 3.9 §1.5). Each
 layer names its narrative elements as fields, every empty one is reported, and the word-count line
 is not printed until they are — an outline that filled every category and hit its length target but
 cannot tell the whole story is reported as *no synopsis*, not as on target.
@@ -350,7 +350,7 @@ plugin and the browser half:
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.1.0.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.2.0.tgz
 ```
 
 The tarball carries the built `lib/`, so a target machine needs only Node and DSH — no

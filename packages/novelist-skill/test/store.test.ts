@@ -399,6 +399,7 @@ describe('NovelStore migration', () => {
             obsession: '断剑不离手',
             weakness: '受不得激',
             camp: 'protagonist-camp',
+            relations: '',
             growthArc: '外门→执剑',
             notes: '',
           },

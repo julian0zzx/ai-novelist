@@ -72,6 +72,7 @@ const zh = {
   'board.words': '字',
   'board.noHook': '缺章末钩子',
   'board.contractGaps': '细纲未答',
+  'board.spaceTimeGaps': '缺时间/地点',
   'board.stage': '阶段',
   'board.blockers': '进入下一阶段还缺',
   'board.cast': '人物',
@@ -117,6 +118,12 @@ const zh = {
   'doc.outline.label': '全书大纲',
   'doc.outline.detail': '故事梗概、主角/伙伴/反派成长线、阵营演变、对抗副本、得失，以及三幕与完整骨架',
   'doc.outline.next': 'novel_plan operation="outline" 先把故事讲完整，再与用户确认这一层',
+  'doc.story.label': '故事六要素',
+  'doc.story.detail': '时间、地点、人物、起因、经过、结果：前五项写在全书大纲的「故事六要素」，人物来自人物设定',
+  'doc.story.next': 'novel_plan operation="outline" 的 storyTime / storyPlace / storyCause / storyProcess / storyResult 参数；人物用 novel_bible kind="character"',
+  'doc.cheat.label': '金手指',
+  'doc.cheat.detail': '名称、归属、规则、代价、限制、成长曲线、首次亮相：没有代价与限制的金手指会让任何冲突失去张力',
+  'doc.cheat.next': 'novel_plan operation="cheat"（cheatName / cheatOwner / cheatRule / cheatCost / cheatLimits / cheatGrowth / cheatReveal）',
   'doc.style.label': '写作风格',
   'doc.style.detail': '文风基调、人称与视角、句式与节奏、遣词用句、对话与描写、情绪落点、负面清单',
   'doc.style.next': 'novel_plan operation="outline" 的七个 style* 参数：写全之前 novel_write 拒绝写正文',
@@ -180,6 +187,7 @@ const en: Record<KanbanKey, string> = {
   'board.words': 'words',
   'board.noHook': 'no chapter hook',
   'board.contractGaps': 'contract gaps',
+  'board.spaceTimeGaps': 'missing time/place',
   'board.stage': 'Stage',
   'board.blockers': 'Before the next stage',
   'board.cast': 'Cast',
@@ -225,6 +233,12 @@ const en: Record<KanbanKey, string> = {
   'doc.outline.label': 'Whole-book outline',
   'doc.outline.detail': 'The story, the protagonist/companion/antagonist arcs, the factions, each confrontation and its cost, plus acts and the full skeleton',
   'doc.outline.next': 'novel_plan operation="outline": tell the story whole, then confirm the layer',
+  'doc.story.label': 'Six story elements',
+  'doc.story.detail': 'Time, place, characters, cause, process, result — five live in the outline’s 故事六要素 block, characters come from the cast',
+  'doc.story.next': 'the storyTime / storyPlace / storyCause / storyProcess / storyResult parameters of novel_plan operation="outline"; characters via novel_bible kind="character"',
+  'doc.cheat.label': 'Golden finger',
+  'doc.cheat.detail': 'Name, owner, rule, cost, limits, growth curve, first reveal — a cheat with no price or ceiling makes every conflict collapse',
+  'doc.cheat.next': 'novel_plan operation="cheat" (cheatName / cheatOwner / cheatRule / cheatCost / cheatLimits / cheatGrowth / cheatReveal)',
   'doc.style.label': 'Writing style',
   'doc.style.detail': 'Tone, person and viewpoint, rhythm, diction, dialogue and description, emotional landing, negative list',
   'doc.style.next': 'the seven style* parameters of novel_plan operation="outline"; novel_write refuses prose until all seven are written',
@@ -585,7 +599,7 @@ function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode 
         </span>
         {!card.written && <span style={STYLE.warn}>{t('board.unwritten')}</span>}
       </div>
-      {(card.beats.length > 0 || card.missing.length > 0 || !card.hasHook) && (
+      {(card.beats.length > 0 || card.missing.length > 0 || card.spaceTimeMissing.length > 0 || !card.hasHook) && (
         <div style={STYLE.cardRow}>
           {card.beats.map((beat) => (
             <span key={beat} style={STYLE.beat}>
@@ -593,6 +607,11 @@ function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode 
             </span>
           ))}
           {!card.hasHook && <span style={STYLE.warn}>{t('board.noHook')}</span>}
+          {card.spaceTimeMissing.length > 0 && (
+            <span style={STYLE.warn}>
+              {t('board.spaceTimeGaps')} {card.spaceTimeMissing.join('/')}
+            </span>
+          )}
           {card.missing.length > 0 && (
             <span style={STYLE.warn}>
               {t('board.contractGaps')} {String(card.missing.length)}

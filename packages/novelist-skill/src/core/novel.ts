@@ -18,6 +18,7 @@ import { DEFAULT_STORAGE_LAYOUT, LEGACY_VOLUME_FILE, chapterPaths, chapterPlanPa
 import {
   CHAPTER_STATUSES,
   CHARACTER_SCOPES,
+  CHEAT_FIELDS,
   COMPETITOR_TARGET,
   CONFIRMATION_KINDS,
   CONFIRMATION_MIN_ROUNDS,
@@ -28,6 +29,7 @@ import {
   REVIEW_SEVERITIES,
   SETTINGS_LAYERS,
   SPINE_LABELS,
+  STORY_ELEMENT_FIELDS,
   styleParamName,
   STYLE_GATE_CHAPTER,
   chapterNumberOf,
@@ -36,6 +38,7 @@ import {
   type ChapterStatus,
   type Character,
   type CharacterScope,
+  type CheatField,
   type Competitor,
   type Confirmation,
   type ConfirmationKind,
@@ -44,6 +47,7 @@ import {
   type DeAiStanding,
   type DiscussionRound,
   type Evaluation,
+  type GoldenFinger,
   type Iteration,
   type LaunchDecision,
   type MetricBaselines,
@@ -69,6 +73,7 @@ import {
   type StageAssessment,
   type StorageIndex,
   type StorageLayout,
+  type StoryElementField,
   type StoryLink,
   type VolumePlan,
   type WorldEntry,
@@ -376,6 +381,7 @@ export function emptyCharacter(): Character {
     obsession: '',
     weakness: '',
     camp: '',
+    relations: '',
     growthArc: '',
     notes: '',
   }
@@ -429,6 +435,18 @@ export function emptyOutlineStyle(): Readonly<Record<OutlineStyleField, string>>
   return style
 }
 
+/** An all-empty 故事六要素 block (the five stored elements; 人物 is the cast). */
+export function emptyStoryElements(): Readonly<Record<StoryElementField, string>> {
+  const story = {} as Record<StoryElementField, string>
+  for (const field of STORY_ELEMENT_FIELDS) story[field] = ''
+  return story
+}
+
+/** A 金手指 with nothing decided: the block exists, but every field is empty. */
+export function emptyGoldenFinger(): GoldenFinger {
+  return { name: '', owner: '', rule: '', cost: '', limits: '', growth: '', firstReveal: '' }
+}
+
 /** An outline with no decisions in it. */
 export function emptyOutline(): Outline {
   return {
@@ -442,6 +460,8 @@ export function emptyOutline(): Outline {
     conflictArcs: '',
     costs: '',
     gains: '',
+    story: emptyStoryElements(),
+    cheat: emptyGoldenFinger(),
     style: emptyOutlineStyle(),
     acts: [],
     minimal: '',
@@ -463,7 +483,7 @@ export function defaultOpeningChecks(): Outline['opening'] {
     { key: 'chapter-1-hook', requirement: '第 1 章章末强钩子', done: false, note: '' },
     { key: 'chapter-2-golden-finger', requirement: '第 2 章展示金手指/核心矛盾/主角目标', done: false, note: '' },
     { key: 'chapter-3-payoff', requirement: '第 3 章小爽点 + 更大期待', done: false, note: '' },
-    { key: 'first-10-goal-rival', requirement: '前 10 章交代目标、对手、金手指规则、地图势力初显', done: false, note: '' },
+    { key: 'first-10-goal-rival', requirement: '前 10 章交代目标、对手、金手指规则与代价、地图势力初显', done: false, note: '' },
     { key: 'first-10-climax', requirement: '前 10 章出现第一次小高潮', done: false, note: '' },
     { key: 'first-30k-unit', requirement: '前 3 万字完成第一个完整情绪单元', done: false, note: '' },
   ]
@@ -763,6 +783,7 @@ function readCharacter(id: string, value: Record<string, unknown>): Character {
     obsession: readString(value, 'obsession', ''),
     weakness: readString(value, 'weakness', ''),
     camp: readString(value, 'camp', ''),
+    relations: readString(value, 'relations', ''),
     growthArc: readString(value, 'growthArc', ''),
     notes: readString(value, 'notes', ''),
   }
@@ -783,6 +804,10 @@ function readWorldEntry(id: string, value: Record<string, unknown>): WorldEntry 
     detail: readString(value, 'detail', ''),
     cost: readString(value, 'cost', ''),
     limits: readString(value, 'limits', ''),
+    parent: readString(value, 'parent', ''),
+    level: readNumber(value, 'level', 0),
+    volume: readNumber(value, 'volume', 0),
+    relations: readString(value, 'relations', ''),
   }
 }
 
@@ -887,6 +912,40 @@ function readStyle(value: unknown): Outline['style'] {
 }
 
 /**
+ * Read the 故事六要素 block.
+ *
+ * @param value - the raw `story` field.
+ * @returns the five stored elements, empty where absent.
+ */
+function readStory(value: unknown): Outline['story'] {
+  const story = { ...emptyStoryElements() } as Record<StoryElementField, string>
+  if (isRecord(value)) {
+    for (const field of STORY_ELEMENT_FIELDS) story[field] = readString(value, field, '')
+  }
+  return story
+}
+
+/**
+ * Read the 金手指 block.
+ *
+ * @param value - the raw `cheat` field.
+ * @returns the cheat, empty where absent.
+ */
+function readCheat(value: unknown): GoldenFinger {
+  const cheat = emptyGoldenFinger()
+  if (!isRecord(value)) return cheat
+  return {
+    name: readString(value, 'name', ''),
+    owner: readString(value, 'owner', ''),
+    rule: readString(value, 'rule', ''),
+    cost: readString(value, 'cost', ''),
+    limits: readString(value, 'limits', ''),
+    growth: readString(value, 'growth', ''),
+    firstReveal: readString(value, 'firstReveal', ''),
+  }
+}
+
+/**
  * Read the outline.
  *
  * @param value - the raw `outline` field.
@@ -906,6 +965,8 @@ function readOutline(value: unknown): Outline {
     conflictArcs: readString(value, 'conflictArcs', ''),
     costs: readString(value, 'costs', ''),
     gains: readString(value, 'gains', ''),
+    story: readStory(value['story']),
+    cheat: readCheat(value['cheat']),
     style: readStyle(value['style']),
     acts: readStringArray(value, 'acts'),
     minimal: readString(value, 'minimal', ''),
@@ -947,6 +1008,8 @@ function readChapter(id: string, value: Record<string, unknown>): Chapter {
     // A version-1 draft carried its whole plan in `synopsis`; keep it as the
     // chapter task so the upgrade does not empty the only plan that existed.
     plotTask: plotTask !== '' ? plotTask : synopsis,
+    timeAnchor: readString(value, 'timeAnchor', ''),
+    place: readString(value, 'place', ''),
     conflict: readString(value, 'conflict', ''),
     emotionalPayoff: readString(value, 'emotionalPayoff', ''),
     infoGap: readString(value, 'infoGap', ''),
@@ -2679,6 +2742,8 @@ export function upsertChapter(
     updatedAt: now(),
     volume: patch.volume ?? existing?.volume ?? 0,
     plotTask: patch.plotTask ?? existing?.plotTask ?? '',
+    timeAnchor: patch.timeAnchor ?? existing?.timeAnchor ?? '',
+    place: patch.place ?? existing?.place ?? '',
     conflict: patch.conflict ?? existing?.conflict ?? '',
     emotionalPayoff: patch.emotionalPayoff ?? existing?.emotionalPayoff ?? '',
     infoGap: patch.infoGap ?? existing?.infoGap ?? '',
@@ -2753,6 +2818,7 @@ export function upsertCharacter(
     obsession: patch.obsession ?? existing?.obsession ?? '',
     weakness: patch.weakness ?? existing?.weakness ?? '',
     camp: patch.camp ?? existing?.camp ?? '',
+    relations: patch.relations ?? existing?.relations ?? '',
     growthArc: patch.growthArc ?? existing?.growthArc ?? '',
     notes,
   }
@@ -2784,6 +2850,10 @@ export function upsertWorld(
     detail: patch.detail ?? existing?.detail ?? '',
     cost: patch.cost ?? existing?.cost ?? '',
     limits: patch.limits ?? existing?.limits ?? '',
+    parent: patch.parent ?? existing?.parent ?? '',
+    level: patch.level ?? existing?.level ?? 0,
+    volume: patch.volume ?? existing?.volume ?? 0,
+    relations: patch.relations ?? existing?.relations ?? '',
   }
   return { ...state, world: { ...state.world, [id]: entry }, updatedAt: now() }
 }
@@ -2861,6 +2931,30 @@ export function removeLink(state: NovelState, id: string, now: Clock = systemClo
  */
 export function updateOutline(state: NovelState, patch: Partial<Outline>, now: Clock = systemClock): NovelState {
   return { ...state, outline: { ...state.outline, ...stripUndefined(patch) }, updatedAt: now() }
+}
+
+/**
+ * Replace the 金手指 block, keeping every field the patch does not name.
+ *
+ * A separate mutator rather than a nested `updateOutline` call at each call site,
+ * because the block is written field by field over several calls — a partial
+ * cheat write must not erase the fields already answered.
+ *
+ * @param state - the state to derive from.
+ * @param patch - cheat fields to set.
+ * @param now - timestamp for `updatedAt`.
+ * @returns a new state.
+ */
+export function updateCheat(
+  state: NovelState,
+  patch: Partial<Record<CheatField, string>>,
+  now: Clock = systemClock,
+): NovelState {
+  const cheat: GoldenFinger = {
+    ...state.outline.cheat,
+    ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+  }
+  return { ...state, outline: { ...state.outline, cheat }, updatedAt: now() }
 }
 
 /**

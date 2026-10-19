@@ -169,6 +169,32 @@ export const CONTRACT_FIELDS = [
 /** One entry of {@link CONTRACT_FIELDS}. */
 export type ContractField = (typeof CONTRACT_FIELDS)[number]
 
+/**
+ * The two 时空锚点 a chapter contract carries beside the eight story contracts.
+ *
+ * They are deliberately **not** in {@link CONTRACT_FIELDS}: the eight contract
+ * fields are the prose's binding promises, and every chapter planned before these
+ * existed would become "未完成" overnight. The anchors are checked by
+ * {@link spaceTimeGaps} and reported by `novel_plan chapter` / `novel_write`
+ * instead, so a 300-chapter project keeps its contract completeness while every
+ * new chapter is asked when and where it happens.
+ *
+ * Traditional narrative asks for 时间、地点、人物、起因、经过、结果. 人物 is the cast,
+ * and 起因/经过/结果 are the story's own spine; time and place are the two that a
+ * scene cannot be written without, which is why they live beside the chapter
+ * contract rather than inside the outline only.
+ */
+export const SPACE_TIME_FIELDS = ['timeAnchor', 'place'] as const
+
+/** One entry of {@link SPACE_TIME_FIELDS}. */
+export type SpaceTimeField = (typeof SPACE_TIME_FIELDS)[number]
+
+/** What the two anchors are called wherever a tool or the board reports them. */
+export const SPACE_TIME_LABELS: Readonly<Record<SpaceTimeField, string>> = {
+  timeAnchor: '时间',
+  place: '地点',
+}
+
 /** What a chapter's two narrative fields are called, for the tools. */
 export const CONTRACT_FIELD_LABELS: Readonly<Record<ContractField, string>> = {
   plotTask: '剧情任务',
@@ -204,12 +230,108 @@ export const VOLUME_SPINE_FIELDS = [
 export type VolumeSpineField = (typeof VOLUME_SPINE_FIELDS)[number]
 
 /**
+ * The six elements of narrative, in the order a reader meets them.
+ *
+ * 时间、地点、人物、起因、经过、结果. Five are stored on the outline as
+ * {@link STORY_ELEMENT_FIELDS}; 人物 is deliberately *not* duplicated here — the cast
+ * file already owns every person, and a second home would drift. The reported
+ * list is {@link SIX_ELEMENT_ORDER}, where 人物 is derived from the cast.
+ */
+export const SIX_ELEMENT_ORDER = ['time', 'place', 'characters', 'cause', 'process', 'result'] as const
+
+/** One entry of {@link SIX_ELEMENT_ORDER}. */
+export type SixElementKey = (typeof SIX_ELEMENT_ORDER)[number]
+
+/** The six elements as the author reads them. */
+export const SIX_ELEMENT_LABELS: Readonly<Record<SixElementKey, string>> = {
+  time: '时间',
+  place: '地点',
+  characters: '人物',
+  cause: '起因',
+  process: '经过',
+  result: '结果',
+}
+
+/**
+ * The five story elements the whole-book outline stores.
+ *
+ * 人物 is the cast, so it is not stored a second time; every other element is a
+ * named field of `全书大纲.md`'s `## 故事六要素` block. This is what turns "时间/地点
+ * 没地方写" into a gap the tools can name.
+ */
+export const STORY_ELEMENT_FIELDS = ['time', 'place', 'cause', 'process', 'result'] as const
+
+/** One entry of {@link STORY_ELEMENT_FIELDS}. */
+export type StoryElementField = (typeof STORY_ELEMENT_FIELDS)[number]
+
+/** What each stored story element is called. */
+export const STORY_ELEMENT_LABELS: Readonly<Record<StoryElementField, string>> = {
+  time: SIX_ELEMENT_LABELS.time,
+  place: SIX_ELEMENT_LABELS.place,
+  cause: SIX_ELEMENT_LABELS.cause,
+  process: SIX_ELEMENT_LABELS.process,
+  result: SIX_ELEMENT_LABELS.result,
+}
+
+/**
+ * The fields of the protagonist's 金手指, in report order.
+ *
+ * A cheat is not a one-line label. The SOP asks for its 规则、限制、成长曲线
+ * (step 5), and a cheat whose price and ceiling are unstated is the same failure
+ * as a power system without a cost: it can win any scene it is asked to win.
+ * `owner` names the character it belongs to, `firstReveal` the chapter a reader
+ * first sees it — both were previously only prose inside a setting entry.
+ */
+export const CHEAT_FIELDS = ['name', 'owner', 'rule', 'cost', 'limits', 'growth', 'firstReveal'] as const
+
+/** One entry of {@link CHEAT_FIELDS}. */
+export type CheatField = (typeof CHEAT_FIELDS)[number]
+
+/** What each cheat field is called wherever it is reported. */
+export const CHEAT_LABELS: Readonly<Record<CheatField, string>> = {
+  name: '金手指名称',
+  owner: '归属',
+  rule: '规则',
+  cost: '代价',
+  limits: '限制',
+  growth: '成长曲线',
+  firstReveal: '首次亮相',
+}
+
+/**
+ * The protagonist's edge, with the price and ceiling that make it a story device.
+ *
+ * Stored in `全书大纲.md`'s `## 金手指` block rather than in `novel.json`, for the
+ * same reason the competitor study is a file: the author has to be able to read
+ * and edit it. A cheat that exists only in the metadata is a cheat the author
+ * cannot correct.
+ */
+export interface GoldenFinger {
+  /** The name a reader will learn, for example `断剑认主`. */
+  readonly name: string
+  /** The character it belongs to: a character id or the display name. */
+  readonly owner: string
+  /** How it works, stated precisely enough to be contradicted. */
+  readonly rule: string
+  /** What using it costs. */
+  readonly cost: string
+  /** What it cannot do. */
+  readonly limits: string
+  /** How it grows across the book: first form, unlock nodes, final form. */
+  readonly growth: string
+  /** The chapter it first appears in (a chapter id or number). */
+  readonly firstReveal: string
+}
+
+/**
  * How one narrative-spine element is labelled, wherever it is reported.
  *
  * One table for both layers: the same element must read the same in the volume
  * gap list and in the whole-book gap list, or the two lists stop being comparable.
  */
-export const SPINE_LABELS: Readonly<Record<OutlineSpineField | VolumeSpineField | OutlineStyleField, string>> = {
+export const SPINE_LABELS: Readonly<
+  Record<OutlineSpineField | VolumeSpineField | OutlineStyleField | StoryElementField | CheatField, string>
+> = {
   synopsis: '故事梗概',
   protagonistArc: '主角成长线',
   supportArcs: '伙伴成长线',
@@ -226,6 +348,18 @@ export const SPINE_LABELS: Readonly<Record<OutlineSpineField | VolumeSpineField 
   dialogue: '对话与描写',
   emotion: '情绪与爽点落点',
   taboos: '负面清单',
+  time: '时间',
+  place: '地点',
+  cause: '起因',
+  process: '经过',
+  result: '结果',
+  name: '金手指名称',
+  owner: '归属',
+  rule: '规则',
+  cost: '代价',
+  limits: '限制',
+  growth: '成长曲线',
+  firstReveal: '首次亮相',
 }
 
 /** One narrative element of a planning layer, with the requirement it answers. */
@@ -277,6 +411,61 @@ export const OUTLINE_SPINE_PARTS: readonly SpinePart<OutlineSpineField>[] = [
   { field: 'conflictArcs', heading: '对抗副本', requirement: '每一场对抗怎么打、奇遇在哪、结果与代价是什么' },
   { field: 'costs', heading: '失去了什么', requirement: '主角方失去了什么，逐项写清' },
   { field: 'gains', heading: '获得了什么', requirement: '主角方获得了什么，逐项写清' },
+]
+
+/**
+ * The six elements of narrative as an ordered checklist.
+ *
+ * The headings are the `###` subsections of `全书大纲.md`'s `## 故事六要素` block.
+ * 人物 is not one of the stored parts — it is read from the cast file — but it is
+ * carried in {@link SIX_ELEMENT_ORDER}, so the report still answers the whole
+ * question a reader asks of a story.
+ */
+export const STORY_ELEMENT_PARTS: readonly SpinePart<StoryElementField>[] = [
+  {
+    field: 'time',
+    heading: '时间',
+    requirement: '故事发生在什么时代/时段、跨过多长时间、关键时间节点（哪一年、第几日、多少年过去）',
+  },
+  {
+    field: 'place',
+    heading: '地点',
+    requirement: '故事主要发生在哪些地方，空间如何转换（城/山门/秘境/位面），哪一张地图对应哪一卷',
+  },
+  {
+    field: 'cause',
+    heading: '起因',
+    requirement: '故事为什么开始：谁要什么、什么事件打破平衡、主角为什么非动不可',
+  },
+  {
+    field: 'process',
+    heading: '经过',
+    requirement: '冲突怎么升级：关键回合、转折、代价，以及每一卷把故事推到哪一步',
+  },
+  {
+    field: 'result',
+    heading: '结果',
+    requirement: '故事怎么收束：最终结局、谁付出什么、留下什么，与开篇的欲望是否对上',
+  },
+]
+
+/**
+ * The 金手指 block as an ordered checklist.
+ *
+ * The headings are the `###` subsections of `全书大纲.md`'s `## 金手指` block. The
+ * order is the order the questions have to be answered in: what it is, whose it
+ * is, how it works, what it costs, what it cannot do, how it grows, when the
+ * reader first sees it. A cheat with no 代价 or 限制 is reported as a gap, exactly
+ * like a power system without one.
+ */
+export const CHEAT_PARTS: readonly SpinePart<CheatField>[] = [
+  { field: 'name', heading: '名称', requirement: '读者会记住的名字，一句话说清它是什么' },
+  { field: 'owner', heading: '归属', requirement: '它属于谁（人物 id 或姓名）；主角的金手指要指名主角' },
+  { field: 'rule', heading: '规则', requirement: '它怎么运转、能做什么、触发条件是什么，写到能被后文违反的程度' },
+  { field: 'cost', heading: '代价', requirement: '每次使用付出什么（寿命、记忆、资源、关系），代价要能逼出选择' },
+  { field: 'limits', heading: '限制', requirement: '它做不到什么、什么时候失灵；没有限制的金手指会让任何冲突失去张力' },
+  { field: 'growth', heading: '成长曲线', requirement: '从初始形态到最终形态怎么升级，在哪些节点解锁什么' },
+  { field: 'firstReveal', heading: '首次亮相', requirement: '读者第一次看到它的是哪一章；开篇清单会对照这一项' },
 ]
 
 /**
@@ -374,7 +563,7 @@ export const VOLUME_SPINE_PARTS: readonly SpinePart<VolumeSpineField>[] = [
 /** One narrative-spine element that is still empty, with where it is written. */
 export interface SpineGap {
   /** Which element. */
-  readonly key: OutlineSpineField | VolumeSpineField | OutlineStyleField
+  readonly key: OutlineSpineField | VolumeSpineField | OutlineStyleField | StoryElementField | CheatField
   /** What the element has to answer. */
   readonly requirement: string
   /** The tool call that fills it. */
@@ -786,6 +975,16 @@ export interface Character {
   readonly weakness: string
   /** Which side they are on, for example `protagonist-camp`, `rival`, `neutral`. */
   readonly camp: string
+  /**
+   * How this character stands to the others: ally, enemy, 师徒, 旧识, debt.
+   *
+   * A free-text relation line rather than a relation graph because it is what the
+   * prose needs when two people share a scene: the same character can be a rival
+   * in one volume and an ally in the next, and a stale edge table would say the
+   * older thing. Reported in the bible and the cast review, but deliberately not
+   * a debt check — a walk-on with no relations is normal.
+   */
+  readonly relations: string
   /** Arc across the novel, one line per stage when known. */
   readonly growthArc: string
   /** Free-form continuity notes; append-only by convention. */
@@ -821,11 +1020,34 @@ export const SCOPE_LABELS: Readonly<Record<CharacterScope, string>> = {
   cameo: '路人（一次性）',
 }
 
+/**
+ * The kinds of fact the world file can hold.
+ *
+ * The set is closed so a typo (`power_system`, `place `) is reported rather than
+ * silently becoming a seventh kind nobody groups by. `note` is the legacy default
+ * a hand-written entry gets when it states no kind; it is treated as a rule for
+ * the cost/limits check, because that is what the SOP asks a rule for.
+ */
+export const WORLD_KINDS = ['place', 'faction', 'power-system', 'item', 'history', 'rule'] as const
+
+/** One entry of {@link WORLD_KINDS}. */
+export type WorldKind = (typeof WORLD_KINDS)[number]
+
+/** What each world kind is called in the author's language. */
+export const WORLD_KIND_LABELS: Readonly<Record<WorldKind, string>> = {
+  place: '地点',
+  faction: '势力',
+  'power-system': '力量体系',
+  item: '物件',
+  history: '历史',
+  rule: '规则',
+}
+
 /** A setting fact the novel must keep consistent. */
 export interface WorldEntry {
   /** Stable slug for the entry, for example `sect-qingyun`. */
   readonly id: string
-  /** Kind of fact: `place`, `faction`, `power-system`, `item`, `history`, `rule`. */
+  /** Kind of fact: one of {@link WORLD_KINDS}; `note` when a legacy entry states none. */
   readonly kind: string
   /** Entry name as it appears in prose. */
   readonly name: string
@@ -834,11 +1056,44 @@ export interface WorldEntry {
   /**
    * What this rule costs or forbids. The SOP insists a power system is defined
    * by its price and limits, not its abilities; an entry without this is flagged
-   * in the world review.
+   * in the world review. Only rule-shaped entries (rule, power-system, legacy
+   * `note`) are held to it — a place or a historical event has no price to pay.
    */
   readonly cost: string
   /** What it cannot do. */
   readonly limits: string
+  /**
+   * The entry that contains this one: a region holds a city, a sect holds a hall.
+   *
+   * This is what makes the world **layered** rather than a flat list. `parent`
+   * names another entry id; a dangling reference is reported by
+   * `worldStructureGaps`, because a hierarchy nobody can resolve is worse than a
+   * flat one.
+   */
+  readonly parent: string
+  /**
+   * Which level of the world this fact belongs to: 1 凡界/外门, 2 宗门/一城,
+   * 3 灵界/王庭, and so on; 0 means unset.
+   *
+   * The number is the author's scale, not a fixed ontology — what matters is that
+   * a reader can tell 低武 from 高武 and that a volume can name the layer it opens.
+   */
+  readonly level: number
+  /**
+   * The volume/map where this fact first becomes available; 0 means everywhere.
+   *
+   * A 秘境 that only exists from volume 3 belongs to volume 3; without this field
+   * "第 5 卷有哪些地点" is unanswerable even though the place is written down.
+   */
+  readonly volume: number
+  /**
+   * How this faction/place stands to the others, in the author's words.
+   *
+   * Free text rather than an edge table for the same reason character relations
+   * are: the stance changes across volumes, and the file the author edits should
+   * carry the current answer. The bible review groups these lines by kind.
+   */
+  readonly relations: string
 }
 
 /**
@@ -1097,6 +1352,20 @@ export interface Outline {
   /** What the protagonist side gains across the book, named. */
   readonly gains: string
   /**
+   * The five stored elements of the traditional 六要素, one named field each.
+   *
+   * 人物 is not here: it is the cast. The other five are the `## 故事六要素` block of
+   * `全书大纲.md`, and {@link storyElementGaps} reports them. They are the answer to
+   * "这个故事的时空与因果骨架是什么", which the narrative spine alone cannot give:
+   * a spine can be complete while never saying when or where anything happens.
+   */
+  readonly story: Readonly<Record<StoryElementField, string>>
+  /**
+   * The protagonist's 金手指, with its price, ceiling, growth curve and reveal
+   * chapter. The `## 金手指` block of `全书大纲.md`.
+   */
+  readonly cheat: GoldenFinger
+  /**
    * The book's 写作风格, one named element per entry.
    *
    * Part of this layer rather than a checkpoint of its own, because the voice has
@@ -1146,6 +1415,23 @@ export interface Chapter {
   readonly volume: number
   /** What this chapter must accomplish. */
   readonly plotTask: string
+  /**
+   * When this chapter happens, in story time: `第三日 黄昏`, `三日后`, `十年前`.
+   *
+   * A free-text anchor rather than a timestamp because a 200-chapter book has a
+   * fictional calendar, not a Gregorian one. It is what lets
+   * `novel_status detail="bible"` print a timeline in chapter order, and what
+   * makes a flashback visible as a choice rather than as a continuity error.
+   */
+  readonly timeAnchor: string
+  /**
+   * Where this chapter mainly happens: a place name, ideally one registered as a
+   * `place` entry in 世界观设定.md.
+   *
+   * The chapter's share of 地点. The world file owns the map; this is where the
+   * chapter stands on it, and `spaceTimeGaps` names the chapters that never say.
+   */
+  readonly place: string
   /** The conflict that carries the chapter. */
   readonly conflict: string
   /** What the reader gets emotionally. */

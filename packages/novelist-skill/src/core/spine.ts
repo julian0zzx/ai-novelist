@@ -18,16 +18,21 @@
  */
 
 import {
+  CHEAT_PARTS,
   OUTLINE_SPINE_PARTS,
   OUTLINE_STYLE_PARTS,
   SPINE_LABELS,
+  STORY_ELEMENT_PARTS,
   styleParamName,
   VOLUME_SPINE_PARTS,
+  type CheatField,
+  type GoldenFinger,
   type Outline,
   type OutlineSpineField,
   type OutlineStyleField,
   type SpineGap,
   type SpinePart,
+  type StoryElementField,
   type VolumePlan,
   type VolumeSpineField,
 } from './types.ts'
@@ -51,6 +56,52 @@ export function outlineSpineGaps(outline: Outline): SpineGap[] {
     requirement: part.requirement,
     fill: `novel_plan operation="outline" ${part.field}=…`,
   }))
+}
+
+/**
+ * The five stored 六要素 the whole-book outline has not answered yet.
+ *
+ * 人物 is not here: it is the cast, and {@link castGaps} already reports it. These
+ * five are the traditional elements the narrative spine cannot express — when and
+ * where the story happens, why it starts, how it escalates, and how it ends.
+ *
+ * @param outline - the whole-book outline.
+ * @returns the unanswered elements, in reading order.
+ */
+export function storyElementGaps(outline: Outline): SpineGap[] {
+  return STORY_ELEMENT_PARTS.filter((part) => outline.story[part.field].trim() === '').map((part) => ({
+    key: part.field,
+    requirement: part.requirement,
+    fill: `novel_plan operation="outline" ${storyParamName(part.field)}=…`,
+  }))
+}
+
+/**
+ * The 金手指 fields the outline has not answered yet.
+ *
+ * Reported beside the story elements and before the style block: a cheat with no
+ * cost or limit is a scene-winning device with nothing to stop it, which is the
+ * same failure as a power system without a price.
+ *
+ * @param outline - the whole-book outline.
+ * @returns the unanswered fields, in report order.
+ */
+export function cheatGaps(outline: Outline): SpineGap[] {
+  return CHEAT_PARTS.filter((part) => outline.cheat[part.field].trim() === '').map((part) => ({
+    key: part.field,
+    requirement: part.requirement,
+    fill: `novel_plan operation="cheat" ${part.field}=…`,
+  }))
+}
+
+/**
+ * The `novel_plan operation="outline"` parameter that carries one story element.
+ *
+ * @param field - the element.
+ * @returns the parameter name, for example `storyTime`.
+ */
+export function storyParamName(field: StoryElementField): string {
+  return `story${field[0]?.toUpperCase() ?? ''}${field.slice(1)}`
 }
 
 /**
@@ -156,6 +207,26 @@ export function outlineSpineValues(outline: Outline): Readonly<Record<OutlineSpi
     costs: outline.costs,
     gains: outline.gains,
   }
+}
+
+/**
+ * The 故事六要素 block's current values, keyed for {@link narrativeReport}.
+ *
+ * @param outline - the whole-book outline.
+ * @returns one entry per stored element.
+ */
+export function storyElementValues(outline: Outline): Readonly<Record<StoryElementField, string>> {
+  return outline.story
+}
+
+/**
+ * The 金手指 block's current values, keyed for {@link narrativeReport}.
+ *
+ * @param cheat - the cheat record.
+ * @returns one entry per cheat field.
+ */
+export function cheatValues(cheat: GoldenFinger): Readonly<Record<CheatField, string>> {
+  return cheat
 }
 
 /**

@@ -12,9 +12,10 @@
  *
  * - {@link KanbanBoard.documents} — the **planning artefacts** the SOP produces
  *   before and around the prose: 立意与核心设定、竞品拆解、候选书名、世界观、人物设定、
- *   全书大纲、写作风格、分卷大纲、爽点节拍、开篇工程、上线决策、连载数据、完本复盘. A
- *   project can be full of these and hold no chapter at all, which is exactly the
- *   state the four chapter columns used to render as an empty board.
+ *   故事六要素、金手指、全书大纲、写作风格、分卷大纲、爽点节拍、开篇工程、上线决策、
+ *   连载数据、完本复盘. A project can be full of these and hold no chapter at all,
+ *   which is exactly the state the four chapter columns used to render as an empty
+ *   board.
  * - {@link KanbanBoard.columns} — the chapters, by lifecycle status.
  *
  * Document order is the SOP's own production order, so the row reads left to
@@ -31,16 +32,28 @@
 
 import {
   CHAPTER_STATUSES,
+  CHEAT_PARTS,
   COMPETITOR_TARGET,
   NAMING_MIN_CANDIDATES,
   OUTLINE_SPINE_PARTS,
   OUTLINE_STYLE_PARTS,
+  SPACE_TIME_LABELS,
   SPINE_LABELS,
 } from '../core/types.ts'
 import type { Chapter, ChapterStatus, NovelState, SettingsLayerStanding } from '../core/types.ts'
-import { castDebt, draftTargetWords, lengthStageFor, missingContract, missingPitchFields, worldGaps } from '../core/plan.ts'
+import {
+  castDebt,
+  draftTargetWords,
+  lengthStageFor,
+  missingContract,
+  missingPitchFields,
+  sixElementRows,
+  spaceTimeGaps,
+  worldGaps,
+  worldStructureGaps,
+} from '../core/plan.ts'
 import { assessStage, characterScope, confirmationStanding, progressOf, styleGateReached } from '../core/novel.ts'
-import { outlineSpineGaps, outlineStyleGaps, volumeSpineGaps } from '../core/spine.ts'
+import { cheatGaps, outlineSpineGaps, outlineStyleGaps, volumeSpineGaps } from '../core/spine.ts'
 
 /** One chapter as the board shows it; every field is a fact about the state. */
 export interface BoardCard {
@@ -70,6 +83,8 @@ export interface BoardCard {
   readonly hasHook: boolean
   /** Contract fields neither answered nor waived. */
   readonly missing: readonly string[]
+  /** Time/place anchors the contract has not answered. */
+  readonly spaceTimeMissing: readonly string[]
   /** Contract fields the last write actually delivered. */
   readonly delivered: readonly string[]
   /** The chapter's one-line synopsis, for the card's tooltip. */
@@ -265,6 +280,10 @@ function documentsOf(
   const cameos = cast.length - cast.filter((character) => characterScope(character) === 'cameo').length
   const outlineGaps = outlineSpineGaps(state.outline)
   const styleGaps = outlineStyleGaps(state.outline)
+  const storyRows = sixElementRows(state)
+  const storyMissing = storyRows.filter((row) => !row.filled)
+  const cheatDebt = cheatGaps(state.outline)
+  const worldStructure = worldStructureGaps(state)
   const volumes = state.outline.volumes
   const volumeDebt = volumes.filter((volume) => volumeSpineGaps(volume).length > 0)
   const opening = state.outline.opening
@@ -324,7 +343,7 @@ function documentsOf(
     {
       id: 'world',
       state: cardState({
-        complete: world.length > 0 && worldDebt.length === 0,
+        complete: world.length > 0 && worldDebt.length === 0 && worldStructure.length === 0,
         started: world.length > 0,
         needsSignOff: true,
         signedOff: layer('world')?.confirmed === true,
@@ -332,7 +351,10 @@ function documentsOf(
       done: world.length,
       total: 0,
       gates: '',
-      gaps: worldDebt.map((gap) => gap.name),
+      gaps: [
+        ...worldDebt.map((gap) => gap.name),
+        ...worldStructure.map((gap) => `${gap.name}（${gap.problem}）`),
+      ],
     },
     {
       id: 'cast',
@@ -369,6 +391,37 @@ function documentsOf(
       total: 1,
       gates: standing.deAi.gatesProse ? 'prose' : '',
       gaps: standing.deAi.unreviewed.map((number) => `第 ${String(number)} 章`),
+    },
+    // 故事六要素 — the traditional frame the outline owns. 人物 is derived from the
+    // cast, so the card counts six even though only five are stored in the outline.
+    {
+      id: 'story',
+      state: cardState({
+        complete: storyMissing.length === 0,
+        started: storyRows.some((row) => row.filled),
+        needsSignOff: false,
+        signedOff: false,
+      }),
+      done: storyRows.length - storyMissing.length,
+      total: storyRows.length,
+      gates: '',
+      gaps: storyMissing.map((row) => row.label),
+    },
+    // 金手指 — the cheat with its price, ceiling and growth curve. A card of its
+    // own because the 全书大纲 card's spine count says nothing about it, and a
+    // cheat nobody wrote down is the first thing a 爽点 chapter discovers.
+    {
+      id: 'cheat',
+      state: cardState({
+        complete: cheatDebt.length === 0,
+        started: state.outline.cheat.name.trim() !== '' || cheatDebt.length < CHEAT_PARTS.length,
+        needsSignOff: false,
+        signedOff: false,
+      }),
+      done: CHEAT_PARTS.length - cheatDebt.length,
+      total: CHEAT_PARTS.length,
+      gates: '',
+      gaps: cheatDebt.map((gap) => SPINE_LABELS[gap.key]),
     },
     // 全书大纲 — complete when its narrative spine reads whole. Its sign-off is the
     // layer's, and the 写作风格 beside it is a card of its own because a voice that
@@ -573,6 +626,7 @@ function cardOf(chapter: Chapter): BoardCard {
     beats: chapter.beats,
     hasHook: chapter.hook.trim() !== '',
     missing: missingContract(chapter),
+    spaceTimeMissing: spaceTimeGaps(chapter).map((field) => SPACE_TIME_LABELS[field]),
     delivered: chapter.delivered,
     synopsis: chapter.synopsis,
   }

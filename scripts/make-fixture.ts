@@ -19,7 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { decomposeContent } from '../packages/novelist-skill/src/core/content.ts'
 import { hashContent } from '../packages/novelist-skill/src/core/markdown.ts'
 import { emptyNovel, serializeMetadata } from '../packages/novelist-skill/src/core/novel.ts'
-import { DEFAULT_STORAGE_LAYOUT, chapterPaths } from '../packages/novelist-skill/src/core/paths.ts'
+import { DEFAULT_STORAGE_LAYOUT, chapterPaths, chapterPlanPath, volumePath } from '../packages/novelist-skill/src/core/paths.ts'
 import { metadataOf } from '../packages/novelist-skill/src/core/novel.ts'
 import type { Chapter, ChapterStatus, NovelState, StoryLink } from '../packages/novelist-skill/src/core/types.ts'
 
@@ -79,6 +79,10 @@ function fixture(): NovelState {
       updatedAt: '2026-02-0' + String(Math.min(9, entry.number)) + 'T10:00:00.000Z',
       volume: entry.volume,
       plotTask: entry.partial === true ? '' : '推进主线：拿到下一段航线的许可。',
+      timeAnchor: `第${String(entry.number)}日 黄昏`,
+      place: entry.number % 2 === 0 ? '潮汐钟塔' : '第七码头',
+      keyBeat: entry.partial === true ? '' : '阿沅第一次决定替别人偿债',
+      price: entry.partial === true ? '' : '她把母亲的一个称呼抵给了潮汐钟',
       conflict: entry.partial === true ? '' : '引潮人议会的沉默与主角的急迫相撞。',
       emotionalPayoff: entry.partial === true ? '' : '读者获得一次小而确定的胜利。',
       infoGap: entry.partial === true ? '' : '母亲的名字为什么被从沉船名单上抹掉。',
@@ -146,22 +150,38 @@ function fixture(): NovelState {
       takeaway: '可复用的开篇结构',
     })),
     characters: {
-      ayuan: { id: 'ayuan', name: '阿沅', role: 'protagonist', description: '十七岁，引潮学徒', goal: '找回母亲的名字', fear: '忘记母亲的脸', obsession: '每天去第七码头等退潮', weakness: '不肯借别人的时间', camp: 'protagonist-camp', growthArc: '从惜时到敢于偿债', notes: '' },
-      yan: { id: 'yan', name: '砚叔', role: 'mentor', description: '老引潮人，左手是铜的', goal: '守住潮汐钟', fear: '钟停', obsession: '记账', weakness: '旧伤', camp: 'neutral', growthArc: '从隐瞒到交底', notes: '' },
+      ayuan: { id: 'ayuan', name: '阿沅', role: 'protagonist', scope: 'main', volume: 1, firstAppearance: '第1章', exit: '', description: '十七岁，引潮学徒', personality: '惜时、嘴硬、对沉船名单近乎偏执', voice: '短句，先问价再开口', goal: '找回母亲的名字', fear: '忘记母亲的脸', obsession: '每天去第七码头等退潮', weakness: '不肯借别人的时间', camp: 'protagonist-camp', relations: '砚叔是唯一肯教她记账的人；议会对她半信半疑', growthArc: '从惜时到敢于偿债', notes: '' },
+      yan: { id: 'yan', name: '砚叔', role: 'mentor', scope: 'volume', volume: 1, firstAppearance: '第2章', exit: '', description: '老引潮人，左手是铜的', personality: '守规矩，嘴上刻薄，记账时心软', voice: '一句话只留前半句，后半句让人自己接', goal: '守住潮汐钟', fear: '钟停', obsession: '记账', weakness: '旧伤', camp: 'neutral', relations: '阿沅的师父；与议会有旧账', growthArc: '从隐瞒到交底', notes: '' },
     },
     world: {
-      'tide-clock': { id: 'tide-clock', kind: 'rule', name: '潮汐钟', detail: '每一次涨潮，港口结算一次时间。', cost: '借来的时间以记忆偿付', limits: '不能借未来，只能借已经过去的' },
-      'seventh-pier': { id: 'seventh-pier', kind: 'place', name: '第七码头', detail: '沉船名单的公示处。', cost: '', limits: '' },
+      'tide-clock': { id: 'tide-clock', kind: 'rule', name: '潮汐钟', detail: '每一次涨潮，港口结算一次时间。', cost: '借来的时间以记忆偿付', limits: '不能借未来，只能借已经过去的', parent: '', level: 2, volume: 1, relations: '由引潮人议会看守' },
+      'seventh-pier': { id: 'seventh-pier', kind: 'place', name: '第七码头', detail: '沉船名单的公示处。', cost: '', limits: '', parent: '', level: 1, volume: 1, relations: '议会管辖，实际由砚叔记账' },
     },
     links,
     writing: { ...base.writing, language: 'zh-CN', pov: 'third-limited', volumes: 3, totalChapters: 120, targetWords: 300000, chapterPlanWindow: 10, openingGateChapters: [3, 10], stockTargetChapters: 5, chapterPlanCeiling: 20, updateRhythm: 'daily-2' },
     outline: {
       ...base.outline,
       logline: '一个只能借时间的少女，在每天沉没一次的港口里赎回母亲的名字。',
+      story: {
+        time: '大潮历十七年秋，故事跨三个潮汐周期',
+        place: '每天沉没一次的港口；第七码头、潮汐钟塔、旧锚链',
+        cause: '母亲的名字被从沉船名单抹去，阿沅要把它写回来',
+        process: '借时间→代价显形→议会沉默→旧锚链下的铜牌',
+        result: '阿沅赎回名字，却把自己的一个称呼抵给了钟',
+      },
+      cheat: {
+        name: '借来的时间',
+        owner: 'ayuan',
+        rule: '阿沅能在涨潮时借用已过去的时间，处理一件已经发生的事',
+        cost: '每借一次，以一段记忆偿付',
+        limits: '不能借未来；不能改变已经结算的账',
+        growth: '第一卷只能借一炷香；第二卷能借一整夜；终卷学会把账转给别人',
+        firstReveal: '第2章',
+      },
       acts: ['第一幕：赊账', '第二幕：偿债', '第三幕：改账'],
       minimal: '她借时间 → 代价显形 → 她选择偿债。',
       volumes: [
-        { number: 1, title: '赊来的潮水', goal: '立住规则与人物', conflict: '议会沉默', climax: '航标亮起', endHook: '第八码头的名字', chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+        { number: 1, title: '赊来的潮水', detail: '第1–3章赊账；第4–6章代价显形；第7–9章旧锚链下的铜牌。', goal: '立住规则与人物', conflict: '议会沉默', climax: '航标亮起', endHook: '第八码头的名字', synopsis: '阿沅借来第一段时间，查母亲的名字。', protagonistArc: '从惜时到肯为别人赊账', antagonistArc: '议会从沉默到派人盯梢', factionShift: '引潮人内部出现替阿沅说话的人', mainConflict: '借时间的代价与议会的封口', costs: '她抵掉了母亲的一个称呼', gains: '旧锚链下的第一块铜牌', chapters: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
       ],
       beats: [
         { chapter: 1, kind: 'shuang', note: '开局小胜' },
@@ -195,8 +215,14 @@ async function main(root: string): Promise<void> {
     [layout.outlineFile]: parts.outline,
     [layout.castFile]: parts.cast,
     [layout.worldFile]: parts.world,
-    [layout.volumeFile]: parts.volumes,
-    [layout.chapterPlanFile]: parts.chapterPlan,
+    [layout.competitorFile]: parts.competitors,
+    [layout.chapterPlanFile]: parts.chapterPlan.wholeBook,
+  }
+  for (const [number, text] of Object.entries(parts.volumes)) {
+    files[volumePath(Number(number), layout)] = text
+  }
+  for (const [volume, text] of Object.entries(parts.chapterPlan.volumes)) {
+    files[parts.chapterPlan.paths[volume] ?? chapterPlanPath(Number(volume), layout)] = text
   }
 
   const chapters: Record<string, { number: number; title: string; bodyFile: string; outlineFile: string; bodyHash: string; outlineHash: string }> = {}
@@ -223,8 +249,23 @@ async function main(root: string): Promise<void> {
     outlineFile: layout.outlineFile,
     castFile: layout.castFile,
     worldFile: layout.worldFile,
-    volumeFile: layout.volumeFile,
+    volumeDir: layout.volumeDir,
     chapterPlanFile: layout.chapterPlanFile,
+    chapterPlanDir: layout.chapterPlanDir,
+    competitorFile: layout.competitorFile,
+    volumes: Object.fromEntries(
+      Object.keys(parts.volumes).map((number) => [number, {
+        number: Number(number),
+        file: volumePath(Number(number), layout),
+        hash: hashes[volumePath(Number(number), layout)] ?? '',
+      }]),
+    ),
+    chapterPlans: Object.fromEntries(
+      Object.keys(parts.chapterPlan.volumes).map((volume) => {
+        const file = parts.chapterPlan.paths[volume] ?? chapterPlanPath(Number(volume), layout)
+        return [volume, { volume: Number(volume), file, hash: hashes[file] ?? '' }]
+      }),
+    ),
     chapters,
     files: hashes,
   }

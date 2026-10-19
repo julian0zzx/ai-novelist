@@ -23,23 +23,29 @@
 import {
   BEAT_KINDS,
   CHAPTER_STATUSES,
+  CHEAT_PARTS,
   CONTRACT_FIELDS,
   OUTLINE_SPINE_PARTS,
   OUTLINE_STYLE_PARTS,
+  STORY_ELEMENT_PARTS,
   VOLUME_SPINE_PARTS,
   type BeatSlot,
   type Chapter,
   type ChapterStatus,
   type Character,
   type CharacterScope,
+  type CheatField,
   type Competitor,
   type ContractField,
+  type GoldenFinger,
   type NovelState,
   type Outline,
   type OutlineSpineField,
   type OutlineStyleField,
   type SpinePart,
   type StorageIndex,
+  type StoryElementField,
+  type SpaceTimeField,
   type VolumePlan,
   type VolumeSpineField,
   type WorldEntry,
@@ -72,7 +78,17 @@ import {
   type YamlScalar,
   type YamlValue,
 } from './markdown.ts'
-import { characterScope, countWords, emptyIndex, emptyOutline, normalizeId, planVolumesOf, slugify } from './novel.ts'
+import {
+  characterScope,
+  countWords,
+  emptyGoldenFinger,
+  emptyIndex,
+  emptyOutline,
+  emptyStoryElements,
+  normalizeId,
+  planVolumesOf,
+  slugify,
+} from './novel.ts'
 import {
   DEFAULT_STORAGE_LAYOUT,
   UNASSIGNED_VOLUME_FILE,
@@ -103,13 +119,29 @@ export const CONTRACT_SECTIONS: Readonly<Record<ContractField, string>> = {
 }
 
 /**
+ * The two 时空锚点 section names, beside the contract rather than inside it.
+ *
+ * Kept as their own table because {@link CONTRACT_SECTIONS} is typed by
+ * `ContractField`, and the anchors are deliberately not contract fields: they are
+ * reported by `spaceTimeGaps`, never waived, and never counted as "契约未完成".
+ */
+export const SPACE_TIME_SECTIONS: Readonly<Record<SpaceTimeField, string>> = {
+  timeAnchor: '时间',
+  place: '地点',
+}
+
+/**
  * The `##` headings a chapter contract file carries, in file order.
  *
  * The two narrative sections come first: a reader checking a contract wants
  * "what happens and what it costs" before the machinery of how it is dressed.
+ * Time and place follow the task, because a scene is "what, when, where" before
+ * it is "how it is dressed".
  */
 export const CONTRACT_SECTION_ORDER: readonly string[] = [
   '剧情任务',
+  '时间',
+  '地点',
   '关键转折',
   '代价与收获',
   '冲突',
@@ -140,6 +172,10 @@ export const CHAPTER_PLAN_SECTIONS = {
 export interface OutlineFileContent {
   /** One-sentence story. */
   readonly logline: string
+  /** The traditional 六要素, as the file's `## 故事六要素` block. */
+  readonly story: Readonly<Record<StoryElementField, string>>
+  /** The 金手指, as the file's `## 金手指` block. */
+  readonly cheat: GoldenFinger
   /** The narrative spine, `synopsis` included, as the file's `## 叙事骨架` block. */
   readonly spine: Readonly<Record<OutlineSpineField, string>>
   /** The 写作风格 block, as the file's `## 写作风格` block. */
@@ -160,13 +196,15 @@ export interface OutlineFileContent {
  * The whole-book narrative spine lives inside {@link OUTLINE_SECTIONS.spine} as
  * `###` subsections — one file, one `##` block — and the 写作风格 block is built
  * the same way, because both are lists of named elements rather than one body of
- * prose. A volume's spine is `###` subsections of its own volume entry (see
- * {@link parseVolumeFile}), because a second `##` inside a volume entry would read
- * as the next volume.
+ * prose. The same holds for the 故事六要素 and 金手指 blocks. A volume's spine is
+ * `###` subsections of its own volume entry (see {@link parseVolumeFile}), because
+ * a second `##` inside a volume entry would read as the next volume.
  */
 export const OUTLINE_SECTIONS = {
   logline: '一句话',
+  story: '故事六要素',
   spine: '叙事骨架',
+  cheat: '金手指',
   style: '写作风格',
   full: '完整大纲',
   acts: '三幕',
@@ -188,10 +226,14 @@ export function parseOutlineFile(raw: string, where: string): OutlineFileContent
   // a missing section yields all-empty values, and an element the author renamed
   // reads as empty rather than as a silent pass (the gap checks report it with
   // the heading they wanted).
+  const storySections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.story)?.body ?? '').subsections
   const spineSections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.spine)?.body ?? '').subsections
+  const cheatSections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.cheat)?.body ?? '').subsections
   const styleSections = splitSubsections(findSection(sections, OUTLINE_SECTIONS.style)?.body ?? '').subsections
   return {
     logline: sectionText(sections, OUTLINE_SECTIONS.logline),
+    story: spineOf(STORY_ELEMENT_PARTS, storySections),
+    cheat: cheatOf(cheatSections),
     spine: spineOf(OUTLINE_SPINE_PARTS, spineSections),
     style: spineOf(OUTLINE_STYLE_PARTS, styleSections),
     fullOutline: sectionText(sections, OUTLINE_SECTIONS.full),
@@ -199,6 +241,17 @@ export function parseOutlineFile(raw: string, where: string): OutlineFileContent
     minimal: sectionText(sections, OUTLINE_SECTIONS.minimal),
     fullOutlineDone: frontBool(front, 'fullOutlineDone', false),
   }
+}
+
+/**
+ * Read the 金手指 block out of its `###` subsections.
+ *
+ * @param sections - the `###` subsections to read.
+ * @returns the cheat, empty where a heading is absent.
+ */
+function cheatOf(sections: readonly MdSection[]): GoldenFinger {
+  const parts = spineOf(CHEAT_PARTS, sections)
+  return { ...emptyGoldenFinger(), ...parts }
 }
 
 /**
@@ -246,7 +299,9 @@ export function renderOutlineFile(outline: OutlineFileContent): string {
   // unrelated edit rewrite the whole outline.
   return renderDocument({ fullOutlineDone: outline.fullOutlineDone }, '全书大纲', [
     renderSection(OUTLINE_SECTIONS.logline, outline.logline),
+    renderSection(OUTLINE_SECTIONS.story, renderSpine(STORY_ELEMENT_PARTS, outline.story)),
     renderSection(OUTLINE_SECTIONS.spine, renderSpine(OUTLINE_SPINE_PARTS, outline.spine)),
+    renderSection(OUTLINE_SECTIONS.cheat, renderSpine(CHEAT_PARTS, outline.cheat)),
     renderSection(OUTLINE_SECTIONS.style, renderSpine(OUTLINE_STYLE_PARTS, outline.style)),
     renderSection(OUTLINE_SECTIONS.full, outline.fullOutline),
     renderListSection(OUTLINE_SECTIONS.acts, outline.acts),
@@ -304,6 +359,7 @@ export function parseCastFile(raw: string, where: string): Record<string, Charac
       obsession: frontString(entry.fields, 'obsession', ''),
       weakness: frontString(entry.fields, 'weakness', ''),
       camp: frontString(entry.fields, 'camp', ''),
+      relations: frontString(entry.fields, 'relations', ''),
       growthArc: frontString(entry.fields, 'growthArc', ''),
       notes: frontString(entry.fields, 'notes', ''),
     }
@@ -351,6 +407,7 @@ export function renderCastFile(characters: Readonly<Record<string, Character>>):
           obsession: character.obsession,
           weakness: character.weakness,
           camp: character.camp,
+          relations: character.relations,
           growthArc: character.growthArc,
           notes: character.notes,
         }),
@@ -526,6 +583,10 @@ export function parseWorldFile(raw: string, where: string): Record<string, World
       // by `worldGaps`, which cannot fire if the codec silently drops the keys.
       cost: frontString(entry.fields, 'cost', ''),
       limits: frontString(entry.fields, 'limits', ''),
+      parent: frontString(entry.fields, 'parent', ''),
+      level: frontNumber(entry.fields, 'level', 0),
+      volume: frontNumber(entry.fields, 'volume', 0),
+      relations: frontString(entry.fields, 'relations', ''),
     }
   }
   return world
@@ -549,6 +610,10 @@ export function renderWorldFile(world: Readonly<Record<string, WorldEntry>>): st
           name: entry.name,
           cost: entry.cost,
           limits: entry.limits,
+          parent: entry.parent,
+          level: entry.level > 0 ? entry.level : undefined,
+          volume: entry.volume > 0 ? entry.volume : undefined,
+          relations: entry.relations,
         }),
         entry.detail,
       ),
@@ -1059,6 +1124,10 @@ export interface ChapterFileContent {
   readonly targetWords: number
   /** The contract sections. */
   readonly plotTask: string
+  /** Story-time anchor for the chapter. */
+  readonly timeAnchor: string
+  /** Place the chapter mainly happens in. */
+  readonly place: string
   /** The conflict that carries the chapter. */
   readonly conflict: string
   /** What the reader gets emotionally. */
@@ -1126,6 +1195,8 @@ export function parseChapterOutlineFile(raw: string, where: string, bodyFile: st
     updatedAt: frontString(frontmatter, 'updatedAt', ''),
     targetWords: frontNumber(frontmatter, 'targetWords', 0),
     plotTask: sectionText(sections, CONTRACT_SECTIONS.plotTask),
+    timeAnchor: sectionText(sections, SPACE_TIME_SECTIONS.timeAnchor),
+    place: sectionText(sections, SPACE_TIME_SECTIONS.place),
     conflict: sectionText(sections, CONTRACT_SECTIONS.conflict),
     emotionalPayoff: sectionText(sections, CONTRACT_SECTIONS.emotionalPayoff),
     infoGap: sectionText(sections, CONTRACT_SECTIONS.infoGap),
@@ -1159,6 +1230,8 @@ export function parseChapterBodyFile(raw: string, where: string, bodyFile: strin
     updatedAt: frontString(frontmatter, 'updatedAt', ''),
     targetWords: 0,
     plotTask: '',
+    timeAnchor: '',
+    place: '',
     conflict: '',
     emotionalPayoff: '',
     infoGap: '',
@@ -1223,6 +1296,10 @@ function chapterFieldOf(chapter: Chapter, section: string): string {
   switch (section) {
     case CONTRACT_SECTIONS.plotTask:
       return chapter.plotTask
+    case SPACE_TIME_SECTIONS.timeAnchor:
+      return chapter.timeAnchor
+    case SPACE_TIME_SECTIONS.place:
+      return chapter.place
     case CONTRACT_SECTIONS.keyBeat:
       return chapter.keyBeat
     case CONTRACT_SECTIONS.price:
@@ -1317,6 +1394,8 @@ export function decomposeContent(state: NovelState, updatedAt: string): {
   return {
     outline: renderOutlineFile({
       logline: state.outline.logline,
+      story: state.outline.story,
+      cheat: state.outline.cheat,
       spine: {
         synopsis: state.outline.synopsis,
         protagonistArc: state.outline.protagonistArc,
@@ -1404,6 +1483,8 @@ export function composeContent(
     outlineFile === undefined
       ? {
           logline: '',
+          story: emptyStoryElements(),
+          cheat: emptyGoldenFinger(),
           spine: emptySpine(),
           style: emptyStyle(),
           fullOutline: '',
@@ -1418,6 +1499,8 @@ export function composeContent(
   const outline: Outline = {
     ...emptyOutline(),
     logline: outlineText.logline,
+    story: outlineText.story,
+    cheat: outlineText.cheat,
     ...outlineText.spine,
     style: outlineText.style,
     fullOutline: outlineText.fullOutline,
@@ -1634,6 +1717,8 @@ function composeChapters(
       updatedAt: bodyPart?.updatedAt ?? outlinePart?.updatedAt ?? '',
       volume: planRow?.volume ?? outlinePart?.volume ?? 0,
       plotTask: outlinePart?.plotTask ?? '',
+      timeAnchor: outlinePart?.timeAnchor ?? '',
+      place: outlinePart?.place ?? '',
       conflict: outlinePart?.conflict ?? '',
       emotionalPayoff: outlinePart?.emotionalPayoff ?? '',
       infoGap: outlinePart?.infoGap ?? '',
