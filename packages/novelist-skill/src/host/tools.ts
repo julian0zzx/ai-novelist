@@ -89,6 +89,7 @@ import {
   buildRetroRequest,
   buildRetrospective,
   buildRewriteRequest,
+  buildSubmissionPackage,
   buildTemplate,
   calibrationAge,
   castDebt,
@@ -165,7 +166,9 @@ import {
   upsertWorld,
   unknownScope,
   CHARACTER_SCOPES,
+  CRAFT_SHEETS,
   SCOPE_LABELS,
+  craftSheet,
   verdictFromAssessments,
   volumeLengthNote,
   volumeSpineGaps,
@@ -214,6 +217,9 @@ import type { SessionRef, WorkspaceViews } from './views.ts'
 
 /** Default export destination for the rendered manuscript. */
 export const DEFAULT_MANUSCRIPT_PATH = '.novel/manuscript.md'
+
+/** Default destination for the submission package. */
+export const DEFAULT_SUBMISSION_PATH = '.novel/submission.md'
 
 /** Default directory for exported structural templates. */
 export const DEFAULT_TEMPLATE_PATH = '.novel/templates'
@@ -3286,10 +3292,18 @@ export function registerTools(
       parameters: {
         detail: {
           type: 'string',
-          enum: ['dashboard', 'bible', 'plan', 'chapter'],
-          description: 'dashboard (default) | bible | plan | chapter.',
+          enum: ['dashboard', 'bible', 'plan', 'chapter', 'craft'],
+          description: 'dashboard (default) | bible | plan | chapter | craft.',
         },
         chapterId: { type: 'string', description: 'detail="chapter": the chapter to return.' },
+        topic: {
+          type: 'string',
+          description:
+            'detail="craft": the writing-craft sheet to return — '
+            + `${CRAFT_SHEETS.map((sheet) => sheet.topic).join(' | ')}. `
+            + 'Omit it to list the sheets with a one-line summary each. These are the "how it should read" '
+            + 'half of the SOP: opening hooks, payoff rhythm, platform pacing, naming, voice, submission.',
+        },
       },
       output: { schema: ENVELOPE_SCHEMA, render: renderTool },
       execute: async (args, exec) => {
@@ -3301,6 +3315,38 @@ export function registerTools(
         }
         const body: string[] = []
         const detail = args.detail ?? 'dashboard'
+
+        if (detail === 'craft') {
+          // The craft sheets are the *how it should read* half of the SOP. They
+          // are served here rather than through a tenth tool because this is the
+          // tool a model already reaches for when it asks "what now": the answer
+          // can be a checklist as well as a stage.
+          const requested = args.topic?.trim() ?? ''
+          if (requested === '') {
+            body.push(
+              '## 写作知识库',
+              '按当前问题选一张表；`novel_status detail="craft" topic=<topic>` 取全文。',
+            )
+            for (const sheet of CRAFT_SHEETS) {
+              body.push(`- **${sheet.topic}** — ${sheet.title}：${sheet.summary}`)
+            }
+          } else {
+            const sheet = craftSheet(requested)
+            if (sheet === undefined) {
+              throw new NovelInputError(
+                `unknown craft topic "${requested}"; available: ${CRAFT_SHEETS.map((entry) => entry.topic).join(', ')}`,
+              )
+            }
+            body.push(sheet.body)
+          }
+          return {
+            ok: true,
+            operation: 'craft',
+            detail: requested === '' ? '写作知识库 · 索引' : `写作知识库 · ${requested}`,
+            ...envelope(state),
+            body,
+          }
+        }
 
         if (detail === 'bible') {
           // Tiered, because the answer to "who is in this book" is three
@@ -3688,10 +3734,10 @@ export function registerTools(
         operation: {
           type: 'string',
           required: true,
-          enum: ['export', 'retro', 'asset', 'lesson', 'template'],
-          description: 'export | retro | asset | lesson | template.',
+          enum: ['export', 'submission', 'retro', 'asset', 'lesson', 'template'],
+          description: 'export | submission | retro | asset | lesson | template.',
         },
-        path: { type: 'string', description: 'export/template: destination relative to the workspace root.' },
+        path: { type: 'string', description: 'export/submission/template: destination relative to the workspace root.' },
         includeContract: { type: 'boolean', description: 'export: include each chapter\'s task and hook as a blockquote.' },
         dataSummary: { type: 'string', description: 'retro: override the derived completion summary.' },
         highlights: { type: 'array', items: { type: 'string' }, description: 'retro: what worked.' },
@@ -3729,6 +3775,27 @@ export function registerTools(
             ok: true,
             operation: 'export',
             detail: `成稿已导出：${path}`,
+            ...envelope(current, warnings),
+            body,
+          }
+        }
+
+        if (args.operation === 'submission') {
+          // The package is assembled, not invented: the blurb slot is left for the
+          // author, and the checklist reports the project's own state so a missing
+          // hook or a short chapter is visible before an editor sees it.
+          const destination = args.path ?? DEFAULT_SUBMISSION_PATH
+          const path = await store.writeDerived(destination, buildSubmissionPackage(current, now))
+          const written = Object.values(current.chapters).filter((chapter) => chapter.body.trim() !== '').length
+          body.push(
+            `投稿包已生成：${path}`,
+            `已写 ${String(written)} 章；投稿包不代写简介，只汇编作品信息、前三章体检、自查表与投稿记录。`,
+            '下一步：`novel_status detail="craft" topic="submission"` 逐项过一遍。',
+          )
+          return {
+            ok: true,
+            operation: 'submission',
+            detail: `投稿包已生成：${path}`,
             ...envelope(current, warnings),
             body,
           }

@@ -37,8 +37,8 @@ voice the author never got to steer.
 | `novel_bible` | 一/四/六 | Cast, world facts, and reader promises: `character`, `world`, `link`, `review`. A `link` is a promise with a planting point, a due chapter, a payoff and a status; open promises past their due chapter are reported. |
 | `novel_write` | 五 连载 | One chapter's prose plus the delivery report: `write`, `read`, `check`. **The one hard-gating tool in the pipeline**: it refuses to write while the user has not signed the settings off, while the 写作风格 block of the 全书大纲 is not written out (`styleTone` … `styleTaboos`), and — once the golden three chapters have prose — while the user has not reviewed the voice **and** while no 去 AI 化 diagnosis has ever been recorded (第 4 章 onward); the refusal names the calls that open the gate. That refusal is the point: everywhere else the SOP reports a disagreement and lets the call stand, and that is precisely how a model produced four chapters without the author ever being asked. The **first draft is written to 125% of the chapter target** — 去 AI 化 and hand-editing delete a large share of a draft — and the finished chapter is then held to **-5%/+15%** (an asymmetric window: coming in under the promised length is the real failure, so the shortfall is capped at 5%); the tool picks the gate the chapter's status implies and prints both windows. Send the prose with `delivered=[…]` and it reports which planned fields the draft reached, which it missed, and which were never planned. Every write and check also returns the 去 AI 化 statistics — paragraph length, dialogue density, repeated sentence openings, the **对举句 count** (「不是 A，是 B」 and its variants, with two quoted hits) and any phrase of the book's own 负面清单 that appears — because those are the tells a counter can find and the ones a judge most often misses. The tool reports symptoms and never edits the prose, so a revision is yours to make and re-send. |
 | `novel_assess` | 五 按需 | **Not a phase, and it gates nothing.** The on-demand investment evaluation — started when the author asks whether the book is still worth continuing. `record` (one hand-transcribed reading → the rules it fires, each with an action *and* a scope; it also accepts `baselines` to re-calibrate the medians on the spot), `iterate` (write the decision into the ledger), `evaluate` (the session: compares the reading against the calibrated medians, automatically back-fills every open change against it, and returns a verdict — 继续投入 / 换变量后继续 / 切书止损), `outcome` (the manual override: close one named change against one named reading, for the cases the automatic back-fill cannot infer), `history`, `rules`. A non-passing evaluation must say where to fall back to and what would end the book, and every evaluation must leave an appointment for the next one; a reading whose metrics all lack a median earns no verdict at all. |
-| `novel_status` | 全流程 | The dashboard, entirely derived from the project — no second ledger to maintain: `dashboard` (default), `bible`, `plan`, `chapter`. |
-| `novel_repo` | 六 复盘 | The closing phase: `export` (Markdown manuscript), `retro`, `asset`, `lesson`, `template`. |
+| `novel_status` | 全流程 | The dashboard, entirely derived from the project — no second ledger to maintain: `dashboard` (default), `bible`, `plan`, `chapter`, and `craft` (one writing-craft sheet: `platforms` / `hooks` / `payoffs` / `naming` / `voice` / `submission`, or the index of them). |
+| `novel_repo` | 六 复盘 | The closing phase: `export` (Markdown manuscript), `submission` (the package an editor asks for — work information, blurb slots, the first three chapters' contracts and hooks, a pre-submission checklist and a submission log; it does not write the blurb), `retro`, `asset`, `lesson`, `template`. |
 | `novel_review` | 五/六 判断 | **The model-backed tool.** `ai-flavor` diagnoses one chapter against a versioned 去 AI 化 rubric **and against this book's own 写作风格 and 负面清单**, with the mechanically counted symptoms handed in so it judges rather than re-counts (and, with `rewrite=true`, proposes a rewritten draft as a file — never written into the chapter); `opening` reviews the gate chapters against the SOP opening checklist; `competitor` dismantles pasted competitor text into a record `novel_plan` can take; `retro` reads the project's own numbers and proposes reusable/avoid-this lessons. Every call records the provider, the model and the prompt version, and writes its transcript to `.novel/reviews/`. Nothing a model writes enters the ledger unless you pass `save=true`. |
 
 **A `novelState` service** — the single, conflict-checked write path every tool and
@@ -56,6 +56,19 @@ session's workspace holds a `.novel/novel.json`, and a workspace without one kee
 the Chat and Trajectory tabs it always had. It reads the project through the same codec the
 host writes with, so it can lag the files but never disagree with them; press *重新读取* to
 re-read after the agent writes.
+
+### Writing craft (the "how it should read" half)
+
+The SOP is good at deciding *what* must be planned and *what counts as a debt*. It cannot
+teach *how a hook lands, how a payoff is staged, or which sentence reads like a machine*.
+That knowledge lives in [`docs/craft/`](docs/craft/README.md) — six authored sheets
+(platform pacing, hooks, payoffs, naming, voice, submission) — and is available at runtime
+without opening a file: `novel_status detail="craft"` lists them, and
+`novel_status detail="craft" topic="hooks"` returns the sheet. The same Markdown is copied into
+the skill distribution under `references/craft/`, so a skill-only install reads the same text.
+The sheets deliberately do **not** hard-code platform thresholds: they give the judgement and
+tell you to check the platform's current announcement, because a stale "签约门槛" is worse than
+none.
 
 ## The SOP this implements
 
@@ -211,6 +224,7 @@ novel-workspace/
     novel.json            # metadata + index (schemaVersion: 5)
     novel.v2.backup.json  # only after a migration; never overwritten
     manuscript.md         # written by novel_repo operation="export"
+    submission.md         # written by novel_repo operation="submission"
     templates/            # written by novel_repo operation="template"
     reviews/              # model transcripts and rewritten drafts
 ```
@@ -236,14 +250,18 @@ Writes go content-files-first and metadata-last, so the index may point at older
 the length of one write but never at a file that does not exist. A failed write reports which
 files landed and which did not.
 
-The document is `schemaVersion: 4`. Older documents are migrated automatically on read and
+The document is `schemaVersion: 5`. Older documents are migrated automatically on read and
 never lost. A version-1 document keeps its premise, cast, world facts and chapters (the old
 chapter `synopsis` becomes that chapter's task, and everything the SOP needs that version 1
 did not model starts empty, so the project simply lands in the phase its data supports). A
 version-2 document is backed up to `.novel/novel.v2.backup.json` before its content is written
 out as files. A version-3 document has its single `分卷大纲.md` split into one file per volume
-and the collection deleted — new files first, collection last. An unsupported version is
-refused rather than guessed at.
+and the collection deleted. A version-4 document has the whole chapter plan in one file: the
+store splits the chapter and rhythm tables into `章节大纲/第N卷.md` by each row's `卷` column,
+leaves the opening checklist and a per-volume index in `章节大纲.md`, and reruns idempotently
+if interrupted. New files are written first and the old collection is removed last, so an
+interrupted migration reruns on the next read. An unsupported version is refused rather than
+guessed at.
 
 ### How a workspace becomes a novel workspace
 
@@ -325,7 +343,9 @@ works if the user asks for it explicitly.
 the `provider`/`model` named on the call itself (both, or the call is refused rather than
 silently falling back), then the configured `reviewProvider`/`reviewModel`, then whatever
 model the session is using. With no route at all the tool is not registered, so a profile
-without a model keeps eight working tools instead of nine broken ones.
+without a model keeps the eight bookkeeping tools instead of nine broken ones — but prose
+itself, and the 去 AI 化 receipt the pipeline asks for before chapter 4, still need a model:
+a profile with no route is a good place to plan a book, not to write one.
 
 `reviewReasoningEffort` defaults to `off` for a reason worth knowing: a route that supports
 reasoning applies its own default (high, for DeepSeek) when the caller asks for nothing, and
@@ -350,7 +370,7 @@ plugin and the browser half:
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.2.0.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.0.tgz
 ```
 
 The tarball carries the built `lib/`, so a target machine needs only Node and DSH — no
@@ -370,9 +390,10 @@ registry, no network install, no build step.
 ### 2. SKILL distribution — `dist/skill/ai-novelist/`
 
 A portable Agent Skill bundle: `SKILL.md` with the frontmatter DSH's filesystem provider
-parses and a table of all nine tools, `references/` with the workflow, the tool reference
-and the generated thresholds, `scripts/` with the installer, and `tools/` carrying the same
-package as distribution 1.
+parses and a table of all nine tools, `references/` with the workflow, the tool reference,
+the generated thresholds and the six writing-craft sheets, `scripts/` with the installer,
+and `tools/` carrying the same package as distribution 1. Both distributions carry the
+AGPL-3.0 `LICENSE`.
 
 ```sh
 node dist/skill/ai-novelist/scripts/setup.mjs --profile web
@@ -399,8 +420,9 @@ pnpm run build        # tsc (host) + tsdown (browser bundle)
 pnpm run dist         # build, then produce dist/dsh-plugin and dist/skill
 pnpm test             # vitest: the SOP pipeline end to end, plus the store,
                       # workspace, prompt, board and bundle specs
+pnpm run craft        # regenerate src/core/craft.generated.ts from docs/craft/
 pnpm run fixture /tmp/ain-fixture
-                      # write a sample schema-3 novel project (chapters in all
+                      # write a sample schema-5 novel project (chapters in all
                       # four columns) to look at the surfaces by hand
 ```
 
@@ -409,9 +431,11 @@ session **in the fixture directory** — the tab is part of the session's view r
 appears for the sessions whose workspace holds a novel project and nowhere else.
 
 [`docs/sop.md`](docs/sop.md) is the workflow the tools implement — the authoritative list
-of phases, fields and thresholds. [`docs/architecture.md`](docs/architecture.md) explains
+of phases, fields and thresholds. [`docs/craft/`](docs/craft/README.md) carries the
+writing-craft sheets; edit the Markdown and run `pnpm run craft`, which both embeds it for
+`novel_status detail="craft"` and leaves the file the pack step copies into the skill. [`docs/architecture.md`](docs/architecture.md) explains
 how the plugin is put together and why; it is the file to read before changing anything.
 
 ## License
 
-AGPL-3.0
+AGPL-3.0-only

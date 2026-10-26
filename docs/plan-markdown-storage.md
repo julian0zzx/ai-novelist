@@ -49,6 +49,8 @@
 <workspace 根>/
 ├── .novel/
 │   ├── novel.json                    # 元数据 + 索引（§4）
+│   ├── submission.md                 # 投稿包（novel_repo operation="submission"）
+│   ├── manuscript.md                 # 成稿（novel_repo operation="export"）
 │   └── reviews/review-<n>-<kind>.md  # 模型评审记录（现状不变）
 ├── 全书大纲.md
 ├── 人物设定.md

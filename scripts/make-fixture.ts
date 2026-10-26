@@ -1,5 +1,5 @@
 /**
- * Write a realistic schema-3 novel project, for looking at the board by hand.
+ * Write a realistic schema-5 novel project, for looking at the board by hand.
  *
  * The Kanban view reads a project through the same core codec the host writes
  * with, so a fixture that is not what the store would have written is a fixture

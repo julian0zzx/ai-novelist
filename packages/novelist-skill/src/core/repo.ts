@@ -12,6 +12,7 @@
  */
 
 import { progressOf } from './novel.ts'
+import { missingContract } from './plan.ts'
 import type {
   Chapter,
   IpAsset,
@@ -241,3 +242,128 @@ export function lessonPrompts(): string[] {
 
 /** A chapter with prose, for scene extraction. */
 export type WrittenChapter = Chapter
+
+/**
+ * Build the submission package: the material a platform's editor actually asks
+ * for, assembled from what the project already holds.
+ *
+ * It deliberately does **not** write the blurb or the one-line pitch. Those are
+ * authorial prose, and a tool that invents them produces exactly the confident
+ * garbage this project exists to avoid: it assembles the facts (length, tags,
+ * the three opening chapters, the promises each one makes) and leaves the
+ * sentences to the author, with a slot for each.
+ *
+ * @param state - the project to package.
+ * @param now - timestamp for the header.
+ * @returns the Markdown document.
+ */
+export function buildSubmissionPackage(state: NovelState, now: () => string): string {
+  const active = state.naming.find((candidate) => candidate.active) ?? state.naming[0]
+  const title = active?.title || state.meta.title || '（未定书名）'
+  const progress = progressOf(state)
+  const chapters = Object.values(state.chapters).sort((left, right) => left.number - right.number)
+  const opening = chapters.slice(0, 3)
+  const written = chapters.filter((chapter) => chapter.body.trim() !== '')
+  const tags = (active?.tags.length ?? 0) > 0 ? active?.tags.join('、') : state.platform.genres.join('、')
+  const target = state.writing.targetWords > 0 ? `${String(state.writing.targetWords)} 字` : '（未定）'
+  const chapterTarget = state.writing.chapterWords > 0 ? `${String(state.writing.chapterWords)} 字` : '（未定）'
+  const modeLabel = state.platform.mode === 'paid' ? '付费' : state.platform.mode === 'free' ? '免费' : '（未填）'
+  const audienceLabel =
+    state.platform.audience === 'male' ? '男频' : state.platform.audience === 'female' ? '女频' : '通用'
+
+  const lines: string[] = [
+    `# 《${title}》投稿包`,
+    '',
+    `> 生成于 ${now()}；由项目数据自动汇编，不代写简介与卖点。改成你自己的话再投。`,
+    '',
+    '## 一、作品信息',
+    '',
+    `- 书名：${title}`,
+    `- 平台：${state.platform.name || '（未填）'}`,
+    `- 模式：${modeLabel}｜频道：${audienceLabel}`,
+    `- 题材：${state.platform.genres.join('、') || '（未填）'}`,
+    `- 目标读者：${state.platform.readers || '（未填）'}`,
+    `- 篇幅：目标 ${target}｜单章 ${chapterTarget}｜已写 ${String(written.length)} 章 / ${String(progress.totalWords)} 字`,
+    `- 标签：${tags || '（未记录）'}`,
+    '',
+    '## 二、简介',
+    '',
+    '### 一句话版（30 字内）',
+    '',
+    '（作者写：身份 + 困境 + 他决定做什么。生成器不代写。）',
+    '',
+    '### 一段版（100–150 字）',
+    '',
+    active?.blurb.trim() === '' || active === undefined
+      ? '（还没有候选简介：`novel_plan operation="naming"` 先准备 3–5 组书名/简介/标签。）'
+      : active.blurb,
+    '',
+    `> 候选卖点：${state.pitch.memorablePoint || '（未写）'}`,
+    '',
+    '### 三章版素材（由前三章细纲汇编，需改写成简介）',
+    '',
+  ]
+
+  if (opening.length === 0) {
+    lines.push('（还没有章节细纲。）')
+  } else {
+    for (const chapter of opening) {
+      lines.push(
+        `- 第 ${String(chapter.number)} 章「${chapter.title || '—'}」：${chapter.plotTask || '（细纲未写）'}`,
+        `  - 章末钩：${chapter.hook || '（未写）'}`,
+      )
+    }
+  }
+
+  lines.push(
+    '',
+    '## 三、前三章体检',
+    '',
+    '| 章 | 标题 | 字数 | 章末钩 | 细纲完整 |',
+    '|---|---|---|---|---|',
+  )
+  for (const chapter of opening) {
+    const missing = missingContract(chapter)
+    lines.push(
+      `| ${String(chapter.number)} | ${chapter.title || '—'} | ${String(chapter.wordCount)} | `
+      + `${chapter.hook.trim() === '' ? '❌ 缺' : '✅'} | ${missing.length === 0 ? '✅' : `❌ 缺 ${missing.join('/')}`} |`,
+    )
+  }
+  if (opening.length === 0) lines.push('| — | — | — | — | — |')
+
+  const noHook = written.filter((chapter) => chapter.hook.trim() === '').length
+  const short = state.writing.chapterWords > 0
+    ? written.filter((chapter) => chapter.wordCount < state.writing.chapterWords * 0.85).length
+    : 0
+  lines.push(
+    '',
+    '## 四、投稿前自查',
+    '',
+    `- [ ] 字数达到平台当期门槛（当前 ${String(progress.totalWords)} 字；以官方公告为准）`,
+    '- [ ] 更新节奏稳定，断更风险已评估',
+    `- [ ] 前三章每章都有章末钩（有正文但无钩 ${String(noHook)} 章）`,
+    `- [ ] 单章长度贴近目标（低于目标 85% 的有 ${String(short)} 章）`,
+    '- [ ] 书名含题材词 + 身份/能力 + 冲突/爽点',
+    '- [ ] 简介三版都能独立成立，最后一句是钩子不是总结',
+    '- [ ] 标签 3–5 个，与内容一致，不互相矛盾',
+    '- [ ] 敏感内容按平台后台/当期规范自查（色情、暴力、政治、宗教、未成年、现实人物、侵权）',
+    '- [ ] 错别字：的地得 / 在再 / 做作 / 账帐 / 即既',
+    '- [ ] 投稿材料齐全（表单/邮件要求的文件、字数统计、联系方式）',
+    '',
+    '> 自查表来自 `docs/craft/submission.md`；工具只汇总状态，不替你判断内容是否合规。',
+    '',
+    '## 五、投稿记录',
+    '',
+    '| 日期 | 平台 | 字数 | 结果 | 拒因/反馈（照抄原话） | 下一步 |',
+    '|---|---|---|---|---|---|',
+    '| | | | | | |',
+    '',
+    '## 六、下一步',
+    '',
+    '- 按 `novel_status detail="craft" topic="submission"` 逐项过一遍；',
+    '- 前三章问题用 `novel_review operation="opening"` 复查；',
+    '- 被拒先看题材/字数/开篇，不要先改文笔。',
+    '',
+  )
+  return lines.join('\n')
+}

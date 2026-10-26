@@ -1,9 +1,9 @@
 {
   "name": "@ai-novelist/novelist-skill",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Host half of the AI Web Novel Composer DSH plugin: novel-project domain core, ctx.fs store, and model-facing composition tools",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {

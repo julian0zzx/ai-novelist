@@ -28,8 +28,8 @@
 | `novel_bible` | 一/四/六 | 人物、世界设定与对读者的承诺：`character`、`world`、`link`、`review`。`link` 是一条带埋点、目标回收章、回收方式与状态的承诺；已到回收章仍未回收的会被报出。 |
 | `novel_write` | 五 连载 | 单章正文与兑现回报：`write`、`read`、`check`。**流程里唯一的硬门禁工具**：用户未确认立意时拒绝写正文；《写作风格》七要素（`styleTone`…`styleTaboos`）没写全时也拒绝——第 1 章要有写下来的语感基准；黄金三章已有正文而用户未复核文风、**或从未留下过一次去 AI 化诊断**时，拒绝写第 4 章及以后。拒绝信息里写明打开关卡要用的调用。这个"拒绝"正是重点：别处软拦只报告分歧、仍让调用通过，而"模型写完四章、作者一次没被问过"恰恰就是这样发生的。**初稿按目标字数的 125% 写**（去 AI 化与手改会成段删减），成稿再落回 **-5%/+15%**（欠字比超字严重，下限只给 5%）；工具按章节状态选口径核对，并打印两道长度线。发正文时带上 `delivered=[…]`，它会报出细纲哪些字段已兑现、哪些未兑现、哪些细纲本身没写。每次 `write` 与 `check` 还会附上**去 AI 化统计**——段落长度、对话密度、重复句式，以及**对举句计数**（「不是 X，是 Y」及其变体，附两处原文引用）和**负面清单命中**（本书自己写下的禁用写法，逐条比对）：这几项恰是计数器能抓、而模型评审最容易漏掉的 AI 味。工具只报症状、从不改写正文，改写由你完成后重新发一遍。 |
 | `novel_assess` | 五 按需 | **不是阶段，也不拦任何东西。** 按需的投入评估——作者问「这本书还值不值得写下去」时才启动。`record`（手工抄录一次读数，并报出触发的规则，每条规则都带动作**与范围**；同时可传 `baselines` 就地重新校准中位）、`iterate`（把决定写入台账）、`evaluate`（正式评估：拿读数与校准中位比对，顺带自动回填此前所有未结调整的结果，给出裁决——继续投入 / 换变量后继续 / 切书止损）、`outcome`（手动结项：指定某个读数结掉某次调整，用于自动回填推断不到的情况）、`history`、`rules`。不通过的评估必须写明回退目标与放弃条件，每次评估都必须留下下次评估的约定；全部指标都没有可比中位时，它不给裁决。 |
-| `novel_status` | 全流程 | 看板，全部由项目状态派生，不需要维护第二张表：`dashboard`（默认）、`bible`、`plan`、`chapter`。 |
-| `novel_repo` | 六 复盘 | 收尾阶段：`export`（Markdown 成稿）、`retro`、`asset`、`lesson`、`template`。 |
+| `novel_status` | 全流程 | 看板，全部由项目状态派生，不需要维护第二张表：`dashboard`（默认）、`bible`、`plan`、`chapter`，以及 `craft`（取一张写作知识表：`platforms` / `hooks` / `payoffs` / `naming` / `voice` / `submission`，省略 topic 则列出索引）。 |
+| `novel_repo` | 六 复盘 | 收尾阶段：`export`（Markdown 成稿）、`submission`（投稿包：作品信息、简介位、前三章细纲与章末钩、投稿前自查表、投稿记录；不代写简介）、`retro`、`asset`、`lesson`、`template`。 |
 | `novel_review` | 五/六 判断 | **唯一由模型驱动的工具。** `ai-flavor` 按版本化的去 AI 化 rubric 诊断单章，**并对照这本书自己的《写作风格》与负面清单**；机械统计已数到的症状一并交给它判断，它不必重复计数（加 `rewrite=true` 会额外产出改写稿，但只落成旁挂文件，绝不写进章节）；`opening` 用 SOP 开篇清单体检门禁章；`competitor` 把粘进来的竞品原文拆成 `novel_plan` 能接收的结构；`retro` 读项目自己的数据，提出可复用与要避开的经验。每次调用都记录 provider、model 与提示词版本，并把完整对话写到 `.novel/reviews/`。**模型写的内容除非你显式 `save=true`，不会进台账。** |
 
 **一个 `novelState` 服务**——所有工具与界面共用的、带冲突检查的唯一写入通道，按会话解析。
@@ -41,6 +41,14 @@
 | **看板** | 会话的视图标签行，紧邻 Chat 与 Trajectory | 一眼看全项目，分两半。上半是**过程文档**：按 SOP 产出顺序各一张卡（立意与核心设定 / 竞品拆解 / 候选书名 / 世界观设定 / 人物设定 / 全书大纲 / 写作风格 / 分卷大纲 / 爽点节拍表 / 开篇工程清单 / 上线决策 / 连载数据 / 完本复盘），每张显示它有没有开始、已经写到什么程度（立意五项、竞品本数、候选组数、人物条目、大纲骨架项数、文风项数、卷数、节拍数、清单项数）、**逐项点名**还欠什么，以及它卡在哪个关卡上（`卡住正文` = 写正文前必须写掉的，`go 之后才做` = 上线决策授权后才投入的）。下半是**章节看板**：四列就是章节生命周期——待写 / 写作中 / 已修订 / 已完成；每张卡片带章节号、标题、所属分卷、字数（未定稿的列按**初稿目标 = 成稿 ×125%** 比，已修订/已完成列按成稿目标比）、节拍，以及细纲还欠什么（缺章末钩子、未答字段）。看板上方是 SOP 阶段与进入下一阶段还缺什么、已写章数、总字数、人物、世界观、未兑现伏笔、候选书名，以及**设定五层（立意 / 世界观 / 人设 / 全书大纲 / 分卷大纲）与文风**逐层的确认状态。 |
 
 看板**只在有小说项目的 workspace 里出现**：当会话所在的 workspace 存在 `.novel/novel.json` 时才会加上这个标签页，没有项目的工作区仍旧只有 Chat 与 Trajectory 两个标签页。它用与 host 写入完全相同的编解码器读取项目，因此只可能滞后于文件，不会与文件不一致；agent 写入后点「重新读取」即可刷新。
+
+### 写作知识（「读起来该像什么」的那一半）
+
+SOP 擅长规定**该规划什么、什么算欠账**，但它教不了**钩子怎么落、爽点怎么排、哪句话一眼像 AI**。这部分放在
+[`docs/craft/`](docs/craft/README.md)：六张原创知识表（平台节奏、钩子、爽点、起名、文风、投稿），并且不必开文件就能取到——
+`novel_status detail="craft"` 列出索引，`novel_status detail="craft" topic="hooks"` 返回正文；同一份 Markdown 在打包时
+复制进 skill 的 `references/craft/`。这些表**故意不写死平台门槛**：给判断方法，并提醒你核对平台当期公告，因为一条过期的
+「签约字数」比没有更糟。
 
 ## 这套工具实现的 SOP
 
@@ -181,6 +189,7 @@ novel-workspace/
     novel.json            # 元数据 + 索引（schemaVersion: 5）
     novel.v2.backup.json  # 只在迁移后出现，永不覆盖
     manuscript.md         # 由 novel_repo operation="export" 写出
+    submission.md         # 由 novel_repo operation="submission" 写出
     templates/            # 由 novel_repo operation="template" 写出
     reviews/              # 模型评审记录与改写稿
 ```
@@ -278,7 +287,7 @@ rm -rf <那个目录>/.novel
 `novel_review` 是唯一需要模型的工具，路由按此顺序解析：调用参数里的 `provider`/`model`
 （**两项必须同时给**，只给一项会被明确拒绝，而不是静默回落）→ 配置的
 `reviewProvider`/`reviewModel` → 当前会话正在用的模型。三者都没有时它**不注册**，
-于是一个没有模型的环境仍然是八个可用工具，而不是九个坏工具。
+于是一个没有模型的环境仍然有八个可用于规划与记账的工具，而不是九个坏工具——但正文本身、以及第 4 章之前必须留下的那次去 AI 化诊断，仍然需要模型：没有模型的环境适合规划一本书，不适合写一本书。
 
 `reviewReasoningEffort` 默认 `off`，原因值得知道：支持推理的路由在调用方不指定时会套用自己的
 默认等级（DeepSeek 是 `high`），而推理 tokens 与正文**共用** `reviewMaxTokens` 这一个上限。
@@ -303,7 +312,7 @@ rm -rf <那个目录>/.novel
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.2.0.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.0.tgz
 ```
 
 tarball 里带着构建好的 `lib/`，所以目标机器只需要 Node 和 DSH——不用连仓库、不用联网安装、
@@ -319,8 +328,8 @@ tarball 里带着构建好的 `lib/`，所以目标机器只需要 Node 和 DSH�
 ### 二、SKILL 标准分发包 —— `dist/skill/ai-novelist/`
 
 一个可移植的 Agent Skill 目录包：`SKILL.md` 带 DSH 文件系统 provider 会解析的 frontmatter 与
-**全部九个工具的清单表**，`references/` 放工作流、工具参考与由代码生成的阈值，`scripts/` 放安装
-脚本，`tools/` 放与分发包一相同的那个包。
+**全部九个工具的清单表**，`references/` 放工作流、工具参考、由代码生成的阈值与六张写作知识表，
+`scripts/` 放安装脚本，`tools/` 放与分发包一相同的那个包。两个分发包都带 AGPL-3.0 的 `LICENSE`。
 
 ```sh
 node dist/skill/ai-novelist/scripts/setup.mjs --profile web
@@ -344,8 +353,9 @@ pnpm run build        # tsc（host）+ tsdown（浏览器产物）
 pnpm run dist         # 构建，然后产出 dist/dsh-plugin 与 dist/skill
 pnpm test             # vitest：SOP 全流程端到端，外加存储、工作区、提示词、
                       # 看板投影与浏览器产物的用例
+pnpm run craft        # 从 docs/craft/ 重新生成 src/core/craft.generated.ts
 pnpm run fixture /tmp/ain-fixture
-                      # 生成一个示例 schema-3 小说项目（四列都有章节），
+                      # 生成一个示例 schema-5 小说项目（四列都有章节），
                       # 供手工查看界面
 ```
 
@@ -353,9 +363,11 @@ pnpm run fixture /tmp/ain-fixture
 ——看板是会话视图行的一部分，所以它只会在 workspace 里确实有小说项目的会话中出现。
 
 [`docs/sop.md`](docs/sop.md) 是工具所实现的工作流本体——阶段、字段与阈值的权威清单。
+[`docs/craft/`](docs/craft/README.md) 是写作知识库：改 Markdown 后跑 `pnpm run craft`，
+它既生成 `novel_status detail="craft"` 用的模块，也留下打包时复制进 skill 的原文件。
 动手改之前请先读 [`docs/architecture.md`](docs/architecture.md)：它讲了这个插件是怎么搭起来的、
 以及为什么这么搭。
 
 ## 许可证
 
-AGPL-3.0
+AGPL-3.0-only

@@ -81,6 +81,19 @@ async function sop() {
   return specPromise
 }
 
+/** The built craft module, loaded once from the same `lib/` the distributions ship. */
+let craftSpecPromise
+
+/**
+ * Load the built craft sheets, caching the import.
+ *
+ * @returns the `core/craft.generated.js` module namespace.
+ */
+async function craftSpec() {
+  craftSpecPromise ??= import(pathToFileURL(join(HOST_DIR, 'lib', 'core', 'craft.generated.js')).href)
+  return craftSpecPromise
+}
+
 /**
  * Render one tool's operations cell.
  *
@@ -214,7 +227,7 @@ async function packPluginDistribution(version) {
       bundleManifest.description
       + ' — the bundle and the plugin in one package, so a single tarball installs the nine tools with it.',
     type: 'module',
-    license: bundleManifest.license ?? 'MIT',
+    license: bundleManifest.license ?? 'AGPL-3.0-only',
     main: './lib/index.js',
     types: './lib/index.d.ts',
     exports: {
@@ -227,7 +240,7 @@ async function packPluginDistribution(version) {
       './core': { types: './lib/types/core/index.d.ts', default: './lib/core/index.js' },
       './package.json': './package.json',
     },
-    files: ['lib', 'src', 'cordis.patch.yml', 'INSTALL.md', 'README.md'],
+    files: ['lib', 'src', 'cordis.patch.yml', 'INSTALL.md', 'README.md', 'LICENSE'],
     dsh: {
       // The bundle half: what makes DSH append this package to the profile.
       bundle: { patch: './cordis.patch.yml' },
@@ -256,6 +269,7 @@ async function packPluginDistribution(version) {
   await cp(join(HOST_DIR, 'lib'), join(stage, 'lib'), { recursive: true })
   await cp(join(HOST_DIR, 'src'), join(stage, 'src'), { recursive: true })
   await cp(join(HOST_DIR, 'README.md'), join(stage, 'README.md'))
+  await cp(join(ROOT, 'LICENSE'), join(stage, 'LICENSE'))
   await writeFile(join(stage, 'INSTALL.md'), await installNotes(version), 'utf8')
 
   const tarball = join(outDir, `ai-novelist-${version}.tgz`)
@@ -411,7 +425,11 @@ The workflow they implement is the 爆款网文创作全流程 SOP ${SOP_VERSION
  */
 async function skillDocument(version) {
   const { SOP_VERSION, TOOL_ORDER, SOP_PHASES } = await sop()
+  const { CRAFT_SHEETS } = await craftSpec()
   const rows = await toolTableRows()
+  const craftRows = CRAFT_SHEETS.map(
+    (sheet) => `| \`${sheet.topic}\` | ${sheet.title} | ${sheet.summary} |`,
+  ).join('\n')
   const phaseIndex = SOP_PHASES.map(
     (phase) =>
       `| ${phase.ordinal} | ${phase.title} | ${phase.goal} | \`${phase.reference}\` |`,
@@ -420,7 +438,7 @@ async function skillDocument(version) {
 name: ai-novelist
 description: Plan, validate, write, and iterate a Chinese web novel (网文) with the 爆款网文 SOP — a gated pipeline from premise and competitor study through validation, serialization, metrics-driven iteration, and retrospective. Use when the user wants to start, continue, validate, or troubleshoot a web novel, or asks about 追读/首订/开篇/大纲/伏笔 for one.
 whenToUse: The user mentions a web novel, 网文, 追读/首订/三章读完, 开篇, 细纲, 伏笔, or asks to continue a novel project in this workspace.
-license: MIT
+license: AGPL-3.0-only
 metadata:
   version: ${version}
   sop: ${SOP_VERSION}
@@ -437,8 +455,8 @@ buys a second opinion on it.
 Two checkpoints belong to the **user**, and \`novel_confirm\` is where they are
 recorded: the settings sign-off (premise, cast, world, length, tone — discussed
 over at least two recorded rounds) must exist **before** the first chapter, and the
-voice sign-off comes after chapter 1 and before chapter 2. \`novel_write\` refuses
-prose while either gate is shut. An inspiration is the start of a conversation, not
+voice review comes after the golden three chapters (第 1–3 章) and before chapter 4.
+\`novel_write\` refuses prose while either gate is shut. An inspiration is the start of a conversation, not
 a licence to produce chapters.
 
 The pipeline advances on what has been planned and written. Phase three ends in a
@@ -460,6 +478,22 @@ ${phaseIndex}
 
 \`references/sop.md\` is the whole document, kept for search. Do not read it end to
 end; it is the same text the six phase files are cut from.
+
+## Writing craft: how it should read
+
+The SOP decides what must be planned. It cannot teach how a hook lands or which
+sentence reads like a machine. Those sheets live in \`references/craft/\`, and the
+same text is available through \`novel_status detail="craft"\`:
+
+| topic | sheet | what it answers |
+|---|---|---|
+${craftRows}
+
+Read the one sheet that matches the current problem — opening (\`hooks\` +
+\`platforms\`), a chapter that feels flat (\`payoffs\`), a draft that sounds like AI
+(\`voice\`), naming/submission (\`naming\`, \`submission\`). They are checklists, not
+platform law: every platform fact must be re-checked against the current official
+announcement before submission.
 
 ## The nine tools
 
@@ -595,12 +629,15 @@ reported rather than silently accepted.
   shared result envelope.
 - \`references/thresholds.md\` — the metric keys, the default multipliers, and the
   exact conditions under which each iteration rule fires.
+- \`references/craft/\` — the six writing-craft sheets (platforms, hooks, payoffs,
+  naming, voice, submission). Read the one for the current problem; they are also
+  served by \`novel_status detail="craft"\`.
 
 ## What these tools will not do
 
 - They do not measure anything. 点击率, 追读, 留存 and 首订 come from the platform
   or from readers; you record them, the tool compares them.
-- The seven computing tools do not judge prose. The 去 AI 化 statistics report
+- The eight computing tools do not judge prose. The 去 AI 化 statistics report
   countable symptoms (paragraph length, dialogue density, repeated sentence
   openings) and nothing more. \`novel_review\` does judge — that is its whole job —
   but its output is advice recorded as advice, and it never lands in the ledgers
@@ -729,6 +766,7 @@ async function packSkillDistribution(version) {
     'src',
   ])
   await writeFile(join(target, 'SKILL.md'), await skillDocument(version), 'utf8')
+  await cp(join(ROOT, 'LICENSE'), join(target, 'LICENSE'))
 
   await mkdir(join(target, 'references'), { recursive: true })
   const sopSource = await readFile(join(ROOT, 'docs', 'sop.md'), 'utf8')
@@ -737,6 +775,7 @@ async function packSkillDistribution(version) {
   await writePhaseReferences(sopSource, join(target, 'references'))
   await writeFile(join(target, 'references', 'tools.md'), await toolsReference(), 'utf8')
   await writeFile(join(target, 'references', 'thresholds.md'), await thresholdsReference(), 'utf8')
+  await cp(join(ROOT, 'docs', 'craft'), join(target, 'references', 'craft'), { recursive: true })
 
   await mkdir(join(target, 'scripts'), { recursive: true })
   await writeFile(join(target, 'scripts', 'setup.mjs'), setupScript(), 'utf8')

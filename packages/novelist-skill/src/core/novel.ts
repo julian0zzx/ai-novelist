@@ -2148,7 +2148,9 @@ export function proseGate(state: NovelState, chapterNumber: number): ProseGate {
       `黄金三章（第 1–${String(STYLE_GATE_CHAPTER)} 章）已经成稿，但还没有做过一次去 AI 化诊断：`
       + '去 AI 化是 SOP 第 23 步，不是可选项——先对成稿跑 novel_review operation="ai-flavor"（逐章更准），'
       + '拿到「原文引用 + 为什么像 AI + 怎么改」，你自己改完再让用户读稿复核文风；'
-      + '没有这一步，AI 味会带着写完整本书',
+      + '没有这一步，AI 味会带着写完整本书'
+      + '（novel_review 需要一条可用的模型路由；它没有注册时先配好 reviewProvider/reviewModel，'
+      + '或让会话使用一个可用模型——没有模型的 profile 只能规划，写不了正文）',
     )
     next.push('novel_review operation="ai-flavor" chapterId=…（黄金三章逐章诊断；加 rewrite=true 会另给一份改写提案）')
     next.push('按诊断改完把整章重新 novel_write 覆盖，再 novel_confirm operation="discuss"/"confirm" kind="style"')

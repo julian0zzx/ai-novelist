@@ -218,8 +218,9 @@ export function apply(ctx: Context, config: ComposerConfig): void {
   registerWorkspacePrompt(ctx, views)
 
   // The eight tools compute; `novel_review` asks a model. It is mounted only
-  // where an `llm` service exists, so a profile without one keeps a fully usable
-  // composer instead of a tool that can only fail.
+  // where an `llm` service exists. A profile without one keeps the eight
+  // bookkeeping tools — planning and ledgers still work, but prose and the
+  // de-AI receipt before chapter 4 need a model anyway.
   //
   // The injection is a *trigger*, not the mounting context: a service context
   // exposes the injected dependency and nothing else, so the tool is registered
@@ -269,7 +270,7 @@ function modeVerdict(mode: WorkspaceMode, detected: WorkspaceVerdict): Workspace
 export { NovelStore, NOVEL_RELATIVE_PATH, NOVEL_SERVICE_NAME } from './host/store.ts'
 export { createProjectResolver } from './host/resolver.ts'
 export type { ProjectResolver, ProjectsView, WorkspaceRef } from './host/resolver.ts'
-export { DEFAULT_MANUSCRIPT_PATH, DEFAULT_REVIEW_PATH, DEFAULT_TEMPLATE_PATH, registerReviewTool, registerTools } from './host/tools.ts'
+export { DEFAULT_MANUSCRIPT_PATH, DEFAULT_REVIEW_PATH, DEFAULT_SUBMISSION_PATH, DEFAULT_TEMPLATE_PATH, registerReviewTool, registerTools } from './host/tools.ts'
 export { NovelReviewError, resolveRoute, runReview } from './host/llm.ts'
 export {
   DEFAULT_REVIEW_REASONING_EFFORT,

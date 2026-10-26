@@ -90,7 +90,8 @@ src/core/          pure domain — no I/O, no clock, no Cordis
   metrics.ts         baselines → thresholds → verdicts → iteration rules → the evaluation hint
   write.ts           the delivery report: did the prose pay for the plan? (plus the 去 AI 化 statistics)
   review.ts          the model-backed rubrics, their request framing, and the tolerant reply parser
-  repo.ts            retrospective, assets, and the structural template
+  repo.ts            retrospective, assets, the structural template, and the submission package
+  craft.generated.ts the writing-craft sheets, generated from docs/craft/*.md
   workspace.ts       novel | fresh | plain, from a directory listing
 src/host/          the deployment surface
   store.ts           one project's ctx.fs access: containment, version guard, write queue
@@ -149,7 +150,7 @@ import the other to spell a filename.
 - **Containment.** Every path is derived from the workspace root, never supplied by the
   model, and `contain()` decides containment with path arithmetic rather than a string
   prefix — a prefix test would accept a sibling directory whose name merely starts with the
-  root's. Derived output (`novel_repo operation="export"` and `operation="template"`) goes
+  root's. Derived output (`novel_repo operation="export"`, `operation="submission"` and `operation="template"`) goes
   through the same `contain()`.
 - **The metadata document is atomic; the content files are not.** `novel.json` still moves
   in a single `replaceIfVersion` under the version token read. Content is written **first**
@@ -249,8 +250,8 @@ reminder is warranted, and this module only acts on it.
 | `novel_bible` | 一/四/六 | `character` · `world` · `link` · `review` |
 | `novel_write` | 五 连载 | `write` · `read` · `check` — prose, the contract-delivery report, and the automatic 去 AI 化 statistics |
 | `novel_assess` | 五 按需 | `record` · `iterate` · `evaluate` · `outcome` · `history` · `rules` — the on-demand investment evaluation; it owns no phase and gates nothing |
-| `novel_status` | 全流程 | `dashboard` (default) · `bible` · `plan` · `chapter` |
-| `novel_repo` | 六 复盘 | `export` · `retro` · `asset` · `lesson` · `template` |
+| `novel_status` | 全流程 | `dashboard` (default) · `bible` · `plan` · `chapter` · `craft` (topic) |
+| `novel_repo` | 六 复盘 | `export` · `submission` · `retro` · `asset` · `lesson` · `template` |
 | `novel_review` | 五/六 判断 | **model-backed** — `ai-flavor` · `opening` · `competitor` · `retro` |
 
 Design rules the tools follow:
@@ -985,7 +986,7 @@ when this was written, and `pnpm test` prints the current count). It covers:
   (`packages/novelist-bundle/test/patch.test.ts`).
 
 There is also a fixture generator for looking at the surfaces by hand:
-`pnpm run fixture <dir>` writes a schema-3 project with chapters in all four columns, an
+`pnpm run fixture <dir>` writes a schema-5 project with chapters in all four columns, an
 open promise, a cast, and a world file. It goes through `decomposeContent` and
 `metadataOf` — the same functions the store writes with — so what it produces is what a
 real project looks like on disk, not an approximation of one.

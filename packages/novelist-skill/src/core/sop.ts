@@ -363,9 +363,9 @@ export const TOOL_SURFACE = {
   novel_status: {
     name: "novel_status",
     phase: "全流程",
-    operations: ["dashboard", "bible", "plan", "chapter"],
+    operations: ["dashboard", "bible", "plan", "chapter", "craft"],
     selector: "detail",
-    purpose: "the derived SOP dashboard",
+    purpose: "the derived SOP dashboard, plus the writing-craft sheets",
     summary:
         'The SOP dashboard, entirely derived from the project — nothing here is a second ledger you maintain by hand. '
         + 'Reports the stage, what the next phase still needs, the two author checkpoints (设定确认 / 文风复核), chapter and '
@@ -374,17 +374,22 @@ export const TOOL_SURFACE = {
         + 'against its thresholds, and iterations still waiting for an outcome. '
         + 'detail="dashboard" (default) is the operating view; "bible" returns cast, world and promises; "plan" returns '
         + 'pitch, outline, volumes, beats, opening checklist and naming candidates; "chapter" with a chapterId returns one '
-        + 'chapter\'s contract, delivery report, the 去 AI 化 statistics and the prose.',
+        + 'chapter\'s contract, delivery report, the 去 AI 化 statistics and the prose; "craft" returns one writing-craft '
+        + 'sheet (topic=platforms|hooks|payoffs|naming|voice|submission) or the index of them, for the "how it should read" '
+        + 'questions the SOP\'s fields assume but cannot teach.',
   },
   novel_repo: {
     name: "novel_repo",
     phase: "六 复盘",
-    operations: ["export", "retro", "asset", "lesson", "template"],
+    operations: ["export", "submission", "retro", "asset", "lesson", "template"],
     selector: "operation",
-    purpose: "retrospective, IP assets, reusable templates, manuscript export",
+    purpose: "retrospective, IP assets, reusable templates, manuscript and submission export",
     summary:
-        'The SOP closing phase: manuscript export, retrospective, IP assets, and reusable templates. '
+        'The SOP closing phase: manuscript and submission export, retrospective, IP assets, and reusable templates. '
         + 'operation="export" renders the whole novel to Markdown beside the project. '
+        + 'operation="submission" assembles the package an editor asks for — work information, blurb slots, the first '
+        + 'three chapters\' contracts and hooks, a pre-submission checklist and a submission log — from the project data; '
+        + 'it does not write the blurb. '
         + 'operation="retro" writes the completion retrospective (highlights, problems) and derives the data summary, the '
         + 'IP asset list, and a structural template from the project data. '
         + 'operation="lesson" adds one reusable or avoid-this lesson; operation="asset" adds one IP-ready asset. '
