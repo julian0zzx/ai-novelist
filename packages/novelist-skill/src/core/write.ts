@@ -216,6 +216,95 @@ const CONTRAST_REPEAT_FLOOR = 2
 /** How many offending fragments the report quotes back, per report. */
 const CONTRAST_QUOTES = 2
 
+/** The window a per-thousand rate is measured over. */
+const RATE_WINDOW = 1000
+
+/**
+ * The Chinese simile markers — the words a draft reaches for when it wants a
+ * sentence to sound literary.
+ *
+ * 「像」 is guarded with a look-behind because the same character sits inside
+ * 图像 / 想象 / 影像 / 录像 / 偶像 / 雕像 / 塑像 — counting those as similes would
+ * report a density problem on a chapter that has none. The bare 「似」 is not a
+ * marker on its own: 似乎 / 相似 / 类似 are ordinary words, so only the bound forms
+ * (似的 / 好似 / 恰似 …) are listed.
+ *
+ * A simile is not an error. Three in one paragraph, or four in a thousand
+ * characters, is the point where comparisons stop carrying an image and start
+ * carrying the writer's nervousness — the same threshold the craft sheets use.
+ */
+const SIMILE_MARKERS = /(?<![图想影录偶雕像塑画])像|宛如|仿佛|如同|好似|犹如|恍若|恰似|似的/gu
+
+/** How many similes in one paragraph read as a pile-up rather than a comparison. */
+const SIMILE_PILE_UP = 3
+
+/** 经验值: more than this many similes per thousand characters is clutter. */
+const SIMILE_RATE_CEILING = 3
+
+/**
+ * The words that carry intensity instead of showing it.
+ *
+ * 非常 / 极其 / 瞬间 / 顿时 are the adverbs a model reaches for when a sentence
+ * needs to feel bigger without doing any work: they raise the volume and leave the
+ * picture empty. Counted rather than judged — a chapter may legitimately be loud.
+ */
+const INTENSIFIERS = /非常|极其|极度|无比|异常|格外|分外|十分|瞬间|顿时|立刻|猛地|猛然|骤然|刹那|一瞬/gu
+
+/** 经验值: more than this many intensifiers per thousand characters. */
+const INTENSIFIER_RATE_CEILING = 3
+
+/**
+ * The stock phrases that recur across drafts, whatever the book.
+ *
+ * `styleObservations` also checks the author's own 负面清单; this list is the
+ * generic floor underneath it, taken from the same symptoms the craft sheets name
+ * — the pupil-contraction and cold-sweat reactions, and the summary sentences that
+ * tell the reader what to feel. Repeating one of these twice in a chapter is the
+ * moment a personal tic becomes a machine tic, so the floor is two, not three.
+ * Ordinary connectives (然而 / 与此同时) are deliberately absent: they occur in
+ * human prose at a rate where counting them would only create noise.
+ */
+export const STOCK_PHRASES: readonly string[] = [
+  '瞳孔一缩',
+  '瞳孔骤缩',
+  '嘴角勾起',
+  '嘴角微微上扬',
+  '心中一凛',
+  '心头一震',
+  '倒吸一口凉气',
+  '冷汗直流',
+  '眼中闪过一抹',
+  '眼中闪过一丝',
+  '不自觉地',
+  '不由自主',
+  '命运的齿轮',
+  '一切才刚刚开始',
+  '他不知道的是',
+  '五味杂陈',
+  '若有所思',
+]
+
+/** How many times one stock phrase has to recur before the report names it. */
+const STOCK_REPEAT_FLOOR = 2
+
+/** A paragraph needs this many sentences before "all the same length" means anything. */
+const EVEN_PARAGRAPH_FLOOR = 4
+
+/** Longest ÷ shortest below this reads as "every sentence is the same size". */
+const EVEN_RATIO = 2
+
+/** How many even paragraphs before the report calls the chapter flat. */
+const EVEN_PARAGRAPH_SCAN = 2
+
+/** A sentence this short is the 碎句 that gives a paragraph its rhythm. */
+const SHORT_SENTENCE = 8
+
+/** Below this share of short sentences, a chapter reads as one even wall. */
+const SHORT_SENTENCE_SHARE = 0.05
+
+/** A chapter needs this many sentences before "no short sentences" is worth saying. */
+const SHORT_SENTENCE_FLOOR = 20
+
 /**
  * The contrast frames a body uses, by label, largest count first.
  *
@@ -250,10 +339,12 @@ export function contrastFrames(body: string): { readonly label: string; readonly
  * A short, mechanical style check for the SOP's 去 AI 化 step.
  *
  * Reports countable symptoms — paragraph length, dialogue density, repeated
- * sentence openings, the contrast frame, and the author's own forbidden phrases —
- * rather than pretending to judge voice. The author decides what to do with the
- * numbers. Everything reported here is a *number with a quote*, so a writer can
- * act on it without a second call; nothing here calls prose good or bad.
+ * sentence openings, sentence-length swing, simile pile-up and density, intensifier
+ * density, repeated stock phrases, the contrast frame, and the author's own
+ * forbidden phrases — rather than pretending to judge voice. The author decides
+ * what to do with the numbers. Everything reported here is a *number with a
+ * quote*, so a writer can act on it without a second call; nothing here calls prose
+ * good or bad.
  *
  * @param body - the chapter prose.
  * @param taboos - the book's 负面清单, split into phrases; entries found in the
@@ -263,7 +354,11 @@ export function contrastFrames(body: string): { readonly label: string; readonly
 export function styleObservations(body: string, taboos: readonly string[] = []): string[] {
   if (body.trim() === '') return []
   const paragraphs = body.split(/\n\s*\n/u).filter((part) => part.trim() !== '')
-  const sentences = body.split(/[。！？!?…]+/u).filter((part) => part.trim() !== '')
+  // Chinese terminators, or the ASCII ones an English draft uses. Without the
+  // ASCII half an 出海 chapter reads as one enormous sentence, and every sentence
+  // statistic below becomes meaningless on exactly the drafts that need them.
+  // The look-behind keeps "3.5" and "Mr." out of it where a space is missing.
+  const sentences = body.split(/[。！？!?…]+|(?<=[.!?])\s+/u).filter((part) => part.trim() !== '')
   const observations: string[] = []
   if (paragraphs.length > 0) {
     const long = paragraphs.filter((paragraph) => countWords(paragraph) > 220).length
@@ -295,6 +390,67 @@ export function styleObservations(body: string, taboos: readonly string[] = []):
     if (averageSentence > 40) {
       observations.push(`平均句长 ${String(Math.round(averageSentence))} 字，偏书面；网文语感多用 15–30 字的短句推进`)
     }
+  }
+  // Four more symptoms, in the order a reader feels them: too many comparisons,
+  // no sentence ever short, every sentence the same size, the same stock reaction
+  // twice. Each is a count with its 经验值 attached, so the author can argue with
+  // the number instead of guessing at the impression.
+  const characters = countWords(body)
+  const similes = [...body.matchAll(SIMILE_MARKERS)].length
+  const piled = paragraphs.filter((part) => [...part.matchAll(SIMILE_MARKERS)].length >= SIMILE_PILE_UP).length
+  if (piled > 0) {
+    observations.push(
+      `有 ${String(piled)} 段出现 ${String(SIMILE_PILE_UP)} 处以上比喻词，比喻连用会显得堆砌，一段留一个最准的`,
+    )
+  }
+  // Density on a fragment is not a density: a 100-character snippet with one
+  // simile would read as 10 per thousand and mean nothing.
+  if (characters >= 300) {
+    const simileRate = (similes * RATE_WINDOW) / characters
+    if (simileRate > SIMILE_RATE_CEILING) {
+      observations.push(
+        `比喻 ${String(similes)} 处（约 ${simileRate.toFixed(1)} 处/千字），高于经验值 `
+        + `${String(SIMILE_RATE_CEILING)} 处/千字，删掉一半只留最准的那个`,
+      )
+    }
+  }
+  const even = paragraphs.filter((part) => {
+    const lengths = part.split(/[。！？!?…]+/u).map((sentence) => countWords(sentence)).filter((length) => length > 0)
+    if (lengths.length < EVEN_PARAGRAPH_FLOOR) return false
+    const shortest = Math.min(...lengths)
+    const longest = Math.max(...lengths)
+    return shortest > 0 && longest / shortest < EVEN_RATIO
+  }).length
+  if (even >= EVEN_PARAGRAPH_SCAN) {
+    observations.push(
+      `有 ${String(even)} 段句长几乎等长（最长不到最短的 ${String(EVEN_RATIO)} 倍），节奏偏平，拆一句短的出来`,
+    )
+  }
+  const short = sentences.filter((sentence) => countWords(sentence) <= SHORT_SENTENCE).length
+  if (sentences.length >= SHORT_SENTENCE_FLOOR && short / sentences.length < SHORT_SENTENCE_SHARE) {
+    observations.push(
+      `全章 ${String(sentences.length)} 句里只有 ${String(short)} 句在 ${String(SHORT_SENTENCE)} 字以内，缺少碎句节奏`,
+    )
+  }
+  if (characters >= 300) {
+    const intensifiers = [...body.matchAll(INTENSIFIERS)].length
+    const intensifierRate = (intensifiers * RATE_WINDOW) / characters
+    if (intensifierRate > INTENSIFIER_RATE_CEILING) {
+      observations.push(
+        `极端词 ${String(intensifiers)} 处（约 ${intensifierRate.toFixed(1)} 处/千字），高于经验值 `
+        + `${String(INTENSIFIER_RATE_CEILING)} 处/千字，删九成，改由动作承担强度`,
+      )
+    }
+  }
+  const stock = STOCK_PHRASES
+    .map((phrase) => ({ phrase, count: body.split(phrase).length - 1 }))
+    .filter((entry) => entry.count >= STOCK_REPEAT_FLOOR)
+    .sort((left, right) => right.count - left.count)
+  if (stock.length > 0) {
+    observations.push(
+      `重复套话：${stock.map((entry) => `「${entry.phrase}」${String(entry.count)} 次`).join('、')}`
+      + '——同一章里每样最多用一次',
+    )
   }
   // The contrast frame and the author's own forbidden phrases are reported after
   // the four thresholds, so the fixed order stays the order the SOP lists.

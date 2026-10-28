@@ -300,8 +300,11 @@
 ### 1.8 写作知识库（配套资料，不是阶段）
 
 SOP 规定「必须有钩子、有爽点、有代价」，但教不了「钩子断在哪一句、爽点怎么蓄、哪句话一眼像 AI」。
-这部分是写作知识库，放在 `docs/craft/`，共六张表：`platforms`（平台与频道节奏）、`hooks`（开篇/章尾/付费点）、
-`payoffs`（爽点与打脸四拍）、`naming`（书名/角色名/标签/简介）、`voice`（去 AI 味与标点）、`submission`（投稿与过审）。
+这部分是写作知识库，放在 `docs/craft/`，共十四张表：`genres`（赛道与题材）、`trends`（趋势与选题调研）、
+`platforms`（平台与频道节奏）、`overseas`（英文出海）、`hooks`（开篇/章尾/付费点）、`payoffs`（爽点与打脸四拍）、
+`rhythm`（句式与节奏）、`naming`（书名/角色名/标签/简介）、`voice`（去 AI 味与标点）、
+`continuity`（时间/人物/信息/物品/规则五本账）、`submission`（投稿与过审）、`fanfic`（同人合规）、
+`script`（剧本与改编）、`teaching`（教学与陪练）。
 运行时可经 `novel_status detail="craft"` 取用；skill 分发包里同一份 Markdown 在 `references/craft/`。
 
 知识库**不写死平台门槛**：平台规则会变，表里只给判断方法与经验区间，投稿前必须核对当期官方公告。

@@ -30,6 +30,7 @@ import {
   castDebt,
   cheatGaps,
   confirmationStanding,
+  CRAFT_TOPICS,
   describeWritingPlan,
   emptyWriting,
   evaluationHint,
@@ -352,8 +353,8 @@ const CONDUCT: Record<WorkspaceVerdict['kind'], string> = {
     + 'the planned and written work, and the blockers are what the next phase still needs. Plan with novel_plan, record '
     + 'cast, world and promises with novel_bible, write with novel_write (reporting which contract fields the draft '
     + 'delivered). Before a chapter, the writing-craft sheets are one call away: novel_status detail="craft" '
-    + 'topic="hooks" (or platforms / payoffs / naming / voice / submission) returns the checklist for the problem at '
-    + 'hand — read only the sheet that matches it, and treat it as a checklist, not platform law. '
+    + 'topic="hooks" returns the checklist for the problem at hand; omitting topic lists every sheet '
+    + `(${CRAFT_TOPICS.join(', ')}). Read only the sheet that matches it, and treat it as a checklist, not platform law. `
     + 'TWO CHECKPOINTS BELONG TO THE AUTHOR, and neither may be closed on their behalf. First the settings: an '
     + 'inspiration is a starting point, so put the setup in front of the user, revise it over recorded rounds '
     + '(novel_confirm operation="discuss" kind="settings", each round carrying their own words) and let them confirm it '

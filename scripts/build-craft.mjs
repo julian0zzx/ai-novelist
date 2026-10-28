@@ -25,7 +25,22 @@ const SOURCE = join(ROOT, 'docs', 'craft')
 const TARGET = join(ROOT, 'packages', 'novelist-skill', 'src', 'core', 'craft.generated.ts')
 
 /** Display order; a sheet not listed here is appended alphabetically. */
-const ORDER = ['platforms', 'hooks', 'payoffs', 'naming', 'voice', 'submission']
+const ORDER = [
+  'genres',
+  'trends',
+  'platforms',
+  'overseas',
+  'hooks',
+  'payoffs',
+  'rhythm',
+  'naming',
+  'voice',
+  'continuity',
+  'submission',
+  'fanfic',
+  'script',
+  'teaching',
+]
 
 /**
  * Read one sheet's heading and one-line summary.

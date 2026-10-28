@@ -265,7 +265,7 @@ export const TOOL_SURFACE = {
     phase: "一/四/六",
     operations: ["character", "world", "link", "review"],
     selector: "kind",
-    purpose: "cast, world facts, reader promises, and their review. A cast entry's `scope` sets what it owes — main (主角/反派/核心伙伴) the full spine, volume (本卷/本地图反复出现或有台词) 身份+欲望+性格+说话方式, cameo (一次性路人) only 「他是谁 + 首次出场章」; the review names the thin ones by tier and keeps walk-ons out of the debt",
+    purpose: "cast, world facts, reader promises, and their review. A cast entry's `scope` sets what it owes — main (主角/反派/核心伙伴) the full spine, volume (本卷/本地图反复出现或有台词) 身份+欲望+性格+说话方式, cameo (一次性路人) only 「他是谁 + 首次出场章」; the review names the thin ones by tier, keeps walk-ons out of the debt, and checks the chapter time anchors for story-time regressions",
     summary:
         'The story bible: cast, world facts, and reader promises. '
         + 'kind="character" takes a `scope` that decides what the entry owes. main（主角/反派/核心伙伴）要全 spine：role、'
@@ -355,7 +355,13 @@ export const TOOL_SURFACE = {
         + 'refused. '
         + 'Marking a chapter final (published) still works but is warned when the contract or the delivery is incomplete. '
         + 'Both write and check also return the SOP\'s 去 AI 化 statistics — paragraph length, dialogue density, repeated '
-        + 'sentence openings — as countable symptoms and never as a verdict. Nothing here edits the prose: revise the '
+        + 'sentence openings, sentence-length swing, simile pile-up and density, intensifier density, repeated stock '
+        + 'phrases, the contrast frame and the author\'s own forbidden phrases — as countable symptoms and never as a '
+        + 'verdict. '
+        + 'An overwrite archives the draft it replaces under `.novel/versions/` and names the file, so a revision is '
+        + 'always recoverable; every write and check also runs the deterministic 校对 pass (fixed spellings such as '
+        + '帐号→账号, and punctuation shapes such as `...`), which reports only what it found and never a "clean" line. '
+        + 'Nothing here edits the prose: revise the '
         + 'draft yourself and send it back through operation="write". '
         + 'operation="read" returns one chapter with its contract and prose; operation="check" returns the delivery report '
         + 'and the same statistics without writing anything.',
@@ -375,7 +381,9 @@ export const TOOL_SURFACE = {
         + 'detail="dashboard" (default) is the operating view; "bible" returns cast, world and promises; "plan" returns '
         + 'pitch, outline, volumes, beats, opening checklist and naming candidates; "chapter" with a chapterId returns one '
         + 'chapter\'s contract, delivery report, the 去 AI 化 statistics and the prose; "craft" returns one writing-craft '
-        + 'sheet (topic=platforms|hooks|payoffs|naming|voice|submission) or the index of them, for the "how it should read" '
+        + 'sheet (topic=genres|trends|platforms|overseas|hooks|payoffs|rhythm|naming|voice|continuity|submission|fanfic|'
+        + 'script|teaching) or the index of them, '
+        + 'for the "how it should read" '
         + 'questions the SOP\'s fields assume but cannot teach.',
   },
   novel_repo: {

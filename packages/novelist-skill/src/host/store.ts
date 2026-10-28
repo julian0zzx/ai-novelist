@@ -52,12 +52,15 @@ import {
   parseVolumeCollectionFile,
   renderChapterPlanFile,
   renderChapterPlanVolumeFile,
+  renderChapterVersion,
   renderVolumeFile,
   serializeMetadata,
   stateOf,
+  type Chapter,
   type Clock,
   type YamlMap,
   systemClock,
+  versionPath,
 } from '../core/index.ts'
 import {
   DEFAULT_STORAGE_LAYOUT,
@@ -464,6 +467,22 @@ export class NovelStore {
     const target = await this.fs.resolve(destination)
     await this.fs.writeText(target, content, undefined, undefined, policy)
     return target.displayPath
+  }
+
+  /**
+   * Archive the body a write is about to replace.
+   *
+   * The prose is the only artefact here that cannot be re-derived from a
+   * conversation, so every overwrite leaves the previous draft on disk under
+   * `.novel/versions/` before the state changes. A write that creates the body
+   * (no previous prose) archives nothing: there is nothing to lose.
+   *
+   * @param chapter - the chapter as it stands, before the overwrite.
+   * @param at - the ISO-8601 write time, also used in the file name.
+   * @returns the absolute display path that was written.
+   */
+  async archiveChapterVersion(chapter: Chapter, at: string): Promise<string> {
+    return this.writeDerived(versionPath(chapter, at), renderChapterVersion(chapter, at))
   }
 
   /**

@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { CRAFT_SHEETS, CRAFT_TOPICS, craftSheet } from '../src/core/index.ts'
+import { CRAFT_SHEETS, CRAFT_TOPICS, craftSheet, TOOL_SURFACE } from '../src/core/index.ts'
 
 /**
  * The craft sheets are the "how it should read" half of the SOP. These specs
@@ -10,8 +10,23 @@ import { CRAFT_SHEETS, CRAFT_TOPICS, craftSheet } from '../src/core/index.ts'
  * in step with the Markdown a contributor actually edits.
  */
 describe('writing-craft sheets', () => {
-  it('ships the six topics the tool advertises, in reading order', () => {
-    expect([...CRAFT_TOPICS]).toEqual(['platforms', 'hooks', 'payoffs', 'naming', 'voice', 'submission'])
+  it('ships the fourteen topics the tool advertises, in reading order', () => {
+    expect([...CRAFT_TOPICS]).toEqual([
+      'genres',
+      'trends',
+      'platforms',
+      'overseas',
+      'hooks',
+      'payoffs',
+      'rhythm',
+      'naming',
+      'voice',
+      'continuity',
+      'submission',
+      'fanfic',
+      'script',
+      'teaching',
+    ])
   })
 
   it('gives every sheet a title, a summary and real body text', () => {
@@ -26,6 +41,13 @@ describe('writing-craft sheets', () => {
   it('resolves a topic and refuses an unknown one', () => {
     expect(craftSheet('hooks')?.body).toContain('章末钩')
     expect(craftSheet('nope')).toBeUndefined()
+  })
+
+  it('names every topic in the novel_status description', () => {
+    const summary = TOOL_SURFACE.novel_status.summary
+    for (const topic of CRAFT_TOPICS) {
+      expect(summary, topic).toContain(topic)
+    }
   })
 
   it('is generated from exactly the Markdown files in docs/craft', async () => {

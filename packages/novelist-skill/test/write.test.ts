@@ -118,6 +118,61 @@ describe('styleObservations', () => {
       `平均句长 ${String(sentence.length)} 字，偏书面；网文语感多用 15–30 字的短句推进`,
     ])
   })
+
+  it('reports a simile pile-up inside one paragraph', () => {
+    // Three comparisons in one breath, in a chapter long enough that the overall
+    // rate stays low: the pile-up is the symptom, not the density.
+    const body = `他像一块石头。天宛如铁。灯仿佛要灭。\n\n${paragraph(1200)}`
+    const lines = styleObservations(body)
+    expect(lines.join(' ')).toContain('有 1 段出现 3 处以上比喻词，比喻连用会显得堆砌，一段留一个最准的')
+    expect(lines.join(' ')).not.toContain('处/千字')
+  })
+
+  it('reports simile density above the experience value', () => {
+    const body = Array.from({ length: 4 }, (_, index) => `他第${String(index)}次像石头`).join('。') + paragraph(400)
+    const line = styleObservations(body).find((entry) => entry.includes('比喻 '))
+    expect(line).toContain('比喻 4 处')
+    expect(line).toContain('高于经验值 3 处/千字')
+  })
+
+  it('reports paragraphs whose sentences are all the same length', () => {
+    const paragraphOfEqualSentences = Array.from({ length: 4 }, () => '他走进山门看了一眼').join('。')
+    const body = `${paragraphOfEqualSentences}\n\n${paragraphOfEqualSentences}`
+    expect(styleObservations(body)).toContain(
+      '有 2 段句长几乎等长（最长不到最短的 2 倍），节奏偏平，拆一句短的出来',
+    )
+  })
+
+  it('reports a chapter with no short sentence at all', () => {
+    const body = Array.from({ length: 20 }, (_, index) => `他第${String(index)}次走进山门去看`).join('。')
+    expect(styleObservations(body)).toContain('全章 20 句里只有 0 句在 8 字以内，缺少碎句节奏')
+  })
+
+  it('reports intensifier density above the experience value', () => {
+    const body = '他非常生气。她极其害怕。天顿时黑了。他立刻走了。' + paragraph(400)
+    const line = styleObservations(body).find((entry) => entry.includes('极端词 '))
+    expect(line).toContain('极端词 4 处')
+    expect(line).toContain('高于经验值 3 处/千字')
+  })
+
+  it('reports a stock phrase repeated in one chapter', () => {
+    expect(styleObservations('他瞳孔一缩。她也瞳孔一缩。')).toContain(
+      '重复套话：「瞳孔一缩」2 次——同一章里每样最多用一次',
+    )
+    // One occurrence is a reaction the author chose, not a tic.
+    expect(styleObservations('他瞳孔一缩。').join(' ')).not.toContain('重复套话')
+  })
+
+  it('splits English sentences, so an 出海 draft is not one huge sentence', () => {
+    // 22 nine-word sentences: the short-sentence check can only see them if the
+    // ASCII terminators split the body. Without that split the whole chapter is
+    // one sentence and every statistic below goes quiet on the draft that needs it.
+    const body = Array.from(
+      { length: 22 },
+      (_, index) => `Sentence number ${String(index)} walks into the cold room slowly.`,
+    ).join(' ')
+    expect(styleObservations(body)).toContain('全章 22 句里只有 0 句在 8 字以内，缺少碎句节奏')
+  })
 })
 
 /**

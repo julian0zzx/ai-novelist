@@ -133,6 +133,7 @@ import {
   outlineStyleValues,
   parseReviewOutput,
   progressOf,
+  proofreadLines,
   proseGate,
   removeChapter,
   removeLink,
@@ -146,6 +147,8 @@ import {
   spaceTimeDebt,
   spaceTimeGaps,
   spaceTimeLabel,
+  timelineLines,
+  timelineReport,
   stageLabel,
   styleGateReached,
   styleObservations,
@@ -625,6 +628,24 @@ function pushStyleHints(body: string[], prose: string, taboos: string): void {
   if (observations.length === 0) return
   body.push('', '## 去 AI 化提示（机械统计，不是评价）')
   for (const observation of observations) body.push(`- ${observation}`)
+}
+
+/**
+ * Append the deterministic 校对 findings to a tool body.
+ *
+ * Separate from the 去 AI 化 hints because it answers a different question: those
+ * count symptoms of machine prose, this one names spellings that are wrong in
+ * every context. Nothing is printed when nothing was found — a "clean" line would
+ * be read as a guarantee this checker cannot give.
+ *
+ * @param body - the accumulator the calling tool is building.
+ * @param prose - the chapter prose.
+ */
+function pushProofreading(body: string[], prose: string): void {
+  const lines = proofreadLines(prose)
+  if (lines.length === 0) return
+  body.push('', '## 校对（确定性规则，可整批替换）')
+  for (const line of lines) body.push(`- ${line}`)
 }
 
 /**
@@ -2491,6 +2512,22 @@ export function registerTools(
             const link = current.links[id]
             if (link !== undefined) body.push(`  - 逾期：${link.note}（应回收于 ${link.dueAt || '未定'}）`)
           }
+          // The 时间账本 is the one book the promise ledger cannot cover: a chapter
+          // can have every promise on schedule and still be dated before the
+          // chapter it follows. Only anchors that can be placed are compared.
+          // Only chapters that are actually on the timeline: a planned chapter with
+          // no anchor is a planning debt `novel_plan` already reports, and counting
+          // three hundred of them would bury the regressions this check exists for.
+          const chapters = Object.values(current.chapters)
+            .filter((chapter) => chapter.body.trim() !== '' || chapter.timeAnchor.trim() !== '')
+          if (chapters.length > 0) {
+            const timeline = timelineReport(chapters)
+            body.push(
+              `- 时间线：已解析 ${String(timeline.parsed)} 章，逆序 ${String(timeline.regressions.length)} 处，`
+              + `缺锚点 ${String(timeline.missing.length)} 章`,
+            )
+            for (const line of timelineLines(timeline)) body.push(line)
+          }
           detail = `复核完成：世界缺口 ${String(world.length)}，人物缺口 ${String(debt.length)}`
             + `${registerGaps.length > 0 ? `（另有 ${String(registerGaps.length)} 位路人登记不全）` : ''}`
             + `，未回收承诺 ${String(progress.openLinks.length)}`
@@ -3179,6 +3216,7 @@ export function registerTools(
           body.push('', report.summary)
           pushLengthReport(body, chapter)
           pushStyleHints(body, chapter.body, current.outline.style.taboos)
+          pushProofreading(body, chapter.body)
           return {
             ok: report.missed.length === 0,
             operation: 'check',
@@ -3203,6 +3241,14 @@ export function registerTools(
           )
         }
 
+        // The prose is the one artefact in this project that cannot be re-derived:
+        // outlines and bibles can be rebuilt from the conversation, a deleted draft
+        // cannot. So an overwrite archives what it is about to replace, before the
+        // state changes, and the result names the file.
+        const previous = current.chapters[chapter.id]
+        const archived = previous !== undefined && previous.body.trim() !== '' && previous.body !== text
+          ? await store.archiveChapterVersion(previous, now())
+          : undefined
         const next = await store.update(
           (state) =>
             upsertChapter(
@@ -3238,6 +3284,8 @@ export function registerTools(
         }
         pushLengthReport(body, written)
         pushStyleHints(body, written.body, next.outline.style.taboos)
+        pushProofreading(body, written.body)
+        if (archived !== undefined) body.push('', `上一版正文已存档：${archived}`)
         if (args.status === 'final') {
           const blockers = blockersToFinal(written)
           if (blockers.length > 0) {

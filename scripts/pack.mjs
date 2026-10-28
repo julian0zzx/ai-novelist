@@ -489,9 +489,12 @@ same text is available through \`novel_status detail="craft"\`:
 |---|---|---|
 ${craftRows}
 
-Read the one sheet that matches the current problem — opening (\`hooks\` +
-\`platforms\`), a chapter that feels flat (\`payoffs\`), a draft that sounds like AI
-(\`voice\`), naming/submission (\`naming\`, \`submission\`). They are checklists, not
+Read the one sheet that matches the current problem — choosing a lane (\`genres\`,
+\`trends\`), platform and market (\`platforms\`, \`overseas\`), a chapter that feels flat
+(\`payoffs\`), one that reads heavy (\`rhythm\`), a draft that sounds like AI (\`voice\`),
+the book contradicting itself (\`continuity\`), the author's own bench (\`naming\`,
+\`submission\`), or a neighbouring form (\`fanfic\`, \`script\`, \`teaching\`). The table
+above is the index; each sheet ends with a checklist. They are checklists, not
 platform law: every platform fact must be re-checked against the current official
 announcement before submission.
 
@@ -629,9 +632,8 @@ reported rather than silently accepted.
   shared result envelope.
 - \`references/thresholds.md\` — the metric keys, the default multipliers, and the
   exact conditions under which each iteration rule fires.
-- \`references/craft/\` — the six writing-craft sheets (platforms, hooks, payoffs,
-  naming, voice, submission). Read the one for the current problem; they are also
-  served by \`novel_status detail="craft"\`.
+- \`references/craft/\` — the writing-craft sheets listed above. Read the one for
+  the current problem; they are also served by \`novel_status detail="craft"\`.
 
 ## What these tools will not do
 

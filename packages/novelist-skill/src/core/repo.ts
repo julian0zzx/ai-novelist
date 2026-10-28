@@ -12,6 +12,7 @@
  */
 
 import { progressOf } from './novel.ts'
+import { proofread } from './proofread.ts'
 import { missingContract } from './plan.ts'
 import type {
   Chapter,
@@ -335,6 +336,49 @@ export function buildSubmissionPackage(state: NovelState, now: () => string): st
   const short = state.writing.chapterWords > 0
     ? written.filter((chapter) => chapter.wordCount < state.writing.chapterWords * 0.85).length
     : 0
+  // A deterministic 校对 pass over everything with prose. It reports what it found
+  // and never says "clean": the rules cover fixed spellings only, and a clean scan
+  // is not a proofread — the sensitive-content check stays in the checklist above
+  // and in the author's own reading.
+  const typos = new Map<string, { right: string; count: number; chapters: number[] }>()
+  const punctuation = new Map<string, number>()
+  for (const chapter of written) {
+    const result = proofread(chapter.body)
+    for (const hit of result.typos) {
+      const entry = typos.get(hit.wrong) ?? { right: hit.right, count: 0, chapters: [] }
+      entry.count += hit.count
+      entry.chapters.push(chapter.number)
+      typos.set(hit.wrong, entry)
+    }
+    for (const hit of result.punctuation) {
+      punctuation.set(hit.label, (punctuation.get(hit.label) ?? 0) + hit.count)
+    }
+  }
+  const typoTotal = [...typos.values()].reduce((sum, entry) => sum + entry.count, 0)
+  const punctuationTotal = [...punctuation.values()].reduce((sum, count) => sum + count, 0)
+  const proofreadLines: string[] = []
+  if (written.length === 0) {
+    proofreadLines.push('- 还没有正文可校对')
+  } else if (typoTotal === 0 && punctuationTotal === 0) {
+    proofreadLines.push(
+      `- 全稿 ${String(written.length)} 章：未命中固定词形错别字与标点异常——`
+      + '规则只覆盖确定性词形，不等于通读通过',
+    )
+  } else {
+    proofreadLines.push(
+      `- 全稿 ${String(written.length)} 章：疑似错别字 ${String(typoTotal)} 处，标点异常 ${String(punctuationTotal)} 处`,
+    )
+    for (const [wrong, entry] of [...typos.entries()].slice(0, 6)) {
+      const where = [...new Set(entry.chapters)].slice(0, 4).map((number) => `第 ${String(number)} 章`).join('、')
+      proofreadLines.push(`- 「${wrong}」→「${entry.right}」×${String(entry.count)}（${where}）`)
+    }
+    if (punctuation.size > 0) {
+      proofreadLines.push(
+        `- 标点：${[...punctuation.entries()].map(([label, count]) => `${label}×${String(count)}`).join('；')}`,
+      )
+    }
+  }
+
   lines.push(
     '',
     '## 四、投稿前自查',
@@ -352,13 +396,17 @@ export function buildSubmissionPackage(state: NovelState, now: () => string): st
     '',
     '> 自查表来自 `docs/craft/submission.md`；工具只汇总状态，不替你判断内容是否合规。',
     '',
-    '## 五、投稿记录',
+    '## 五、自动校对（确定性规则，可整批替换）',
+    '',
+    ...proofreadLines,
+    '',
+    '## 六、投稿记录',
     '',
     '| 日期 | 平台 | 字数 | 结果 | 拒因/反馈（照抄原话） | 下一步 |',
     '|---|---|---|---|---|---|',
     '| | | | | | |',
     '',
-    '## 六、下一步',
+    '## 七、下一步',
     '',
     '- 按 `novel_status detail="craft" topic="submission"` 逐项过一遍；',
     '- 前三章问题用 `novel_review operation="opening"` 复查；',
