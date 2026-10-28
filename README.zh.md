@@ -327,9 +327,10 @@ tarball 里带着构建好的 `lib/`，所以目标机器只需要 Node 和 DSH�
 
 ### 二、SKILL 标准分发包 —— `dist/skill/ai-novelist/`
 
-一个可移植的 Agent Skill 目录包：`SKILL.md` 带 DSH 文件系统 provider 会解析的 frontmatter 与
-**全部九个工具的清单表**，`references/` 放工作流、工具参考、由代码生成的阈值与十四张写作知识表，
-`scripts/` 放安装脚本，`tools/` 放与分发包一相同的那个包。两个分发包都带 AGPL-3.0 的 `LICENSE`。
+一个可移植的 Agent Skill 包，**目录与归档两种形态都给**（`dist/skill/ai-novelist-<版本>.tar.gz`）：
+`SKILL.md` 带 DSH 文件系统 provider 会解析的 frontmatter 与**全部九个工具的清单表**，`README.md` 写安装步骤，
+`references/` 放工作流、工具参考、由代码生成的阈值与十四张写作知识表，`scripts/setup.mjs` 是安装脚本，
+`plugin/` 放分发包一自己的那个 tarball——解压到另一台机器上，工具仍随包带走。两个分发包都带 AGPL-3.0 的 `LICENSE`。
 
 ```sh
 node dist/skill/ai-novelist/scripts/setup.mjs --profile web

@@ -14,7 +14,7 @@
  *    Agent Skill bundle. `SKILL.md` carries the frontmatter DSH's filesystem
  *    provider parses and a table of all nine tools, `references/` holds the
  *    workflow and the generated tool/threshold references, `scripts/` holds the
- *    installer, and `tools/` carries the same package as distribution 1.
+ *    installer, and `plugin/` carries distribution 1's own tarball.
  *
  * Why one merged package instead of a bundle plus a plugin: a distribution has to
  * be one installable artifact, and pnpm's tarball install understands exactly one
@@ -503,7 +503,7 @@ announcement before submission.
 Eight compute, and are registered unconditionally. The ninth, \`novel_review\`,
 asks a model — it appears only in a profile that has a model route, and it is the
 only tool here whose answer is a judgement rather than a derived fact. All nine
-travel in the DSH plugin under \`tools/\` — set it up first (see *Set up the
+travel in the DSH plugin tarball under \`plugin/\` — set it up first (see *Set up the
 tools* below). Nothing here works until they exist.
 
 | tool | operations | what it owns |
@@ -539,11 +539,11 @@ the first rather than overwriting it.
 A skill is instructions plus resources: its frontmatter admits \`name\`,
 \`description\`, \`whenToUse\`, \`metadata\`, \`disable-model-invocation\` and
 \`user-invocable\`, and **nothing that registers a tool**. A tool exists only once
-a plugin registers it on \`ctx.tools\`, so the plugin travels in \`tools/\` and one
+a plugin registers it on \`ctx.tools\`, so the plugin travels in \`plugin/\` and one
 script wires it into a profile:
 
 \`\`\`sh
-node scripts/setup.mjs --profile web      # installs tools/ into the named profile
+node scripts/setup.mjs --profile web      # installs plugin/*.tgz into the named profile
 \`\`\`
 
 Then restart the DSH process. Confirm with \`novel_status\`; if it is missing, the
@@ -755,19 +755,20 @@ async function writePhaseReferences(source, dir) {
  * @param version - the version string.
  * @returns the bundle directory and its content digest.
  */
-async function packSkillDistribution(version) {
+async function packSkillDistribution(version, pluginTarball) {
   const target = join(DIST, 'skill', 'ai-novelist')
   await rm(join(DIST, 'skill'), { recursive: true, force: true })
   await mkdir(target, { recursive: true })
 
-  await copyPackage(join(DIST, 'dsh-plugin', 'stage', STAGE_NAME), join(target, 'tools'), [
-    'cordis.patch.yml',
-    'index.js',
-    'INSTALL.md',
-    'lib',
-    'src',
-  ])
+  // The plugin travels as the very tarball distribution 1 ships, not as an
+  // unpacked copy: a bundle installed from a directory is a live symlink into
+  // wherever the skill happens to sit, so moving the skill (or extracting it on
+  // another machine) leaves a link that resolves to nothing. A tarball is
+  // self-contained, and it is the same artifact that was already verified.
+  await mkdir(join(target, 'plugin'), { recursive: true })
+  await cp(pluginTarball, join(target, 'plugin', basename(pluginTarball)))
   await writeFile(join(target, 'SKILL.md'), await skillDocument(version), 'utf8')
+  await writeFile(join(target, 'README.md'), skillReadme(version), 'utf8')
   await cp(join(ROOT, 'LICENSE'), join(target, 'LICENSE'))
 
   await mkdir(join(target, 'references'), { recursive: true })
@@ -780,9 +781,63 @@ async function packSkillDistribution(version) {
   await cp(join(ROOT, 'docs', 'craft'), join(target, 'references', 'craft'), { recursive: true })
 
   await mkdir(join(target, 'scripts'), { recursive: true })
-  await writeFile(join(target, 'scripts', 'setup.mjs'), setupScript(), 'utf8')
+  await writeFile(join(target, 'scripts', 'setup.mjs'), setupScript(version), 'utf8')
 
-  return { target, digest: hashDirectory(target) }
+  // The archive is the package: one file that carries the skill, its references
+  // and the plugin tarball, alongside the directory so a contributor can read it.
+  const archive = join(DIST, 'skill', `ai-novelist-${version}.tar.gz`)
+  execFileSync('tar', ['-czf', archive, '-C', join(DIST, 'skill'), 'ai-novelist'])
+
+  return { target, archive, digest: hashDirectory(target) }
+}
+
+/**
+ * The install notes the skill bundle carries.
+ *
+ * Short on purpose: the SKILL.md is what a model reads, and this file is what a
+ * person opens when they have extracted the archive and want the three commands
+ * that make the tools exist.
+ *
+ * @param version - the version string.
+ * @returns the Markdown.
+ */
+function skillReadme(version) {
+  return `# ai-novelist — Agent Skill bundle (v${version})
+
+The Skill half of the AI Web Novel Composer: a \`SKILL.md\` index, the workflow
+under \`references/\`, the fourteen craft sheets under \`references/craft/\`, and the
+DSH plugin tarball under \`plugin/\`.
+
+## Install
+
+\`\`\`sh
+# 1. put the tools in a DSH profile
+node scripts/setup.mjs --profile web
+
+# or do it by hand, from this directory
+dsh plugin --profile web add -w "$(pwd)/plugin/ai-novelist-${version}.tgz"
+
+# 2. restart dsh web — the tool set is fixed when the process boots
+\`\`\`
+
+\`scripts/setup.mjs --dry-run\` prints the command without running it.
+
+## What is where
+
+| path | what it is |
+|---|---|
+| \`SKILL.md\` | the skill itself: when to use it, the phase table, the nine tools |
+| \`references/sop.md\` | the whole workflow (SOP 3.9) |
+| \`references/phase-*.md\` | one file per phase, cut from the SOP |
+| \`references/tools.md\` | every tool, operation and parameter |
+| \`references/thresholds.md\` | the metric keys and their default multipliers |
+| \`references/craft/\` | the fourteen writing-craft sheets, also served by \`novel_status detail="craft"\` |
+| \`plugin/ai-novelist-${version}.tgz\` | the DSH distribution the tools ship in |
+| \`scripts/setup.mjs\` | installs that tarball into a profile |
+
+License: AGPL-3.0-only. No registry and no network install — the tarball carries
+the built \`lib/\`.
+`
 }
 
 /**
@@ -790,24 +845,24 @@ async function packSkillDistribution(version) {
  *
  * @returns the script source.
  */
-function setupScript() {
+function setupScript(version) {
   return `#!/usr/bin/env node
 /**
- * Install the bundled composer plugin into a DSH profile.
+ * Install the bundled plugin tarball into a DSH profile.
  *
- * The bundle ships the tools; this script is the seam between the skill's
- * instructions and the harness that can register them.
+ * The skill is instructions; the tools live in plugin/ai-novelist-${version}.tgz.
+ * This script is the seam between the two.
  *
  * Usage: node scripts/setup.mjs [--profile <name>] [--dry-run]
  */
 
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const BUNDLE = resolve(HERE, '..', 'tools')
+const PLUGIN = resolve(HERE, '..', 'plugin', 'ai-novelist-${version}.tgz')
 
 const args = process.argv.slice(2)
 const profileIndex = args.indexOf('--profile')
@@ -818,14 +873,14 @@ if (profile === undefined || profile === '') {
   console.error('setup: --profile needs a name (for example: --profile web)')
   process.exit(2)
 }
-if (!existsSync(join(BUNDLE, 'package.json'))) {
-  console.error(\`setup: the bundled tools are missing at \${BUNDLE}\`)
+if (!existsSync(PLUGIN)) {
+  console.error(\`setup: the bundled plugin is missing at \${PLUGIN}\`)
   process.exit(1)
 }
 
 // A profile directory is itself a pnpm workspace root, so pnpm refuses the add
 // without -w; and dsh forwards these arguments to pnpm verbatim.
-const command = ['plugin', '--profile', profile, 'add', '-w', BUNDLE]
+const command = ['plugin', '--profile', profile, 'add', '-w', PLUGIN]
 console.log(\`setup: dsh \${command.join(' ')}\`)
 if (dryRun) process.exit(0)
 
@@ -945,7 +1000,7 @@ async function main() {
 
   await mkdir(DIST, { recursive: true })
   const plugin = await packPluginDistribution(version)
-  const skill = await packSkillDistribution(version)
+  const skill = await packSkillDistribution(version, plugin.tarball)
 
   // Leave the checkout in its development state: the distribution build above
   // rewrote `lib/` under the shipped registration id.
@@ -964,6 +1019,8 @@ async function main() {
     },
     skillDistribution: {
       directory: relative(ROOT, skill.target),
+      archive: relative(ROOT, skill.archive),
+      archiveBytes: (await stat(skill.archive)).size,
       digest: skill.digest,
     },
   }

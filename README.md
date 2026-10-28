@@ -391,11 +391,13 @@ registry, no network install, no build step.
 
 ### 2. SKILL distribution — `dist/skill/ai-novelist/`
 
-A portable Agent Skill bundle: `SKILL.md` with the frontmatter DSH's filesystem provider
-parses and a table of all nine tools, `references/` with the workflow, the tool reference,
-the generated thresholds and the fourteen writing-craft sheets, `scripts/` with the installer,
-and `tools/` carrying the same package as distribution 1. Both distributions carry the
-AGPL-3.0 `LICENSE`.
+A portable Agent Skill bundle, shipped **both as a directory and as an archive**
+(`dist/skill/ai-novelist-<version>.tar.gz`): `SKILL.md` with the frontmatter DSH's filesystem
+provider parses and a table of all nine tools, `README.md` with the install steps,
+`references/` with the workflow, the tool reference, the generated thresholds and the fourteen
+writing-craft sheets, `scripts/setup.mjs` with the installer, and `plugin/` carrying
+distribution 1's own tarball — so extracting the archive on another machine still has
+everything it needs. Both distributions carry the AGPL-3.0 `LICENSE`.
 
 ```sh
 node dist/skill/ai-novelist/scripts/setup.mjs --profile web
