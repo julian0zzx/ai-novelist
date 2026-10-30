@@ -122,6 +122,18 @@ checks (`castGaps`, `outlineSpineGaps`, …), so the board and `novel_status` ca
 about a document. No React, which is what lets `test/board.test.ts` specify it without a
 browser.
 
+`document-views.ts` is the other half of those cards: `documentViewsOf(state, index, files)`
+returns the readable artefacts behind each document, grouped by the card id and filtered so a
+document with nothing but headings has no entry. File-backed documents return the file text
+(`全书大纲.md`, `人物设定.md`, `世界观设定.md`, `竞品拆解.md`, `分卷大纲/第N卷.md`); a
+document that is one `##` block of a shared file returns that block; documents kept only in
+`.novel/novel.json` are rendered into readable Markdown. A document can own several views —
+one per volume, per chapter-plan rhythm table, per de-AI review, per launch decision, per
+serial record — which the view shows as a list before opening one. The modal closes on its
+close button, the backdrop, or Escape, and `readProject` now carries the raw content files it
+already loaded so opening a card needs no second read. Like `board.ts`, the module is pure and
+is specified without a browser in `test/document-views.test.ts`.
+
 ## The tool surface
 
 One tool per capability, each owning one phase or one kind of state — except `novel_assess`,

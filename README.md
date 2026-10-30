@@ -57,6 +57,17 @@ the Chat and Trajectory tabs it always had. It reads the project through the sam
 host writes with, so it can lag the files but never disagree with them; press *重新读取* to
 re-read after the agent writes.
 
+**A process-document card opens what is behind it.** A document with one readable artefact
+opens its file on click; a document with several (`分卷大纲`, the payoff schedule, the de-AI
+diagnoses, the launch decisions, the serial ledgers) first shows the list, and choosing an
+entry opens it. The dialog carries a close button and also closes on the backdrop or Escape.
+File-backed documents show the file (`全书大纲.md`, `人物设定.md`, `世界观设定.md`,
+`竞品拆解.md`, `分卷大纲/第N卷.md`); a document that is one block of a shared file
+(六要素、写作风格、开篇工程清单) shows that block; documents kept only in
+`.novel/novel.json` (立意、候选书名、上线决策、连载数据、完本复盘) are rendered as readable
+Markdown rather than a raw JSON dump. Untouched documents stay plain cards, so a card never
+opens an empty dialog.
+
 ### Writing craft (the "how it should read" half)
 
 The SOP is good at deciding *what* must be planned and *what counts as a debt*. It cannot

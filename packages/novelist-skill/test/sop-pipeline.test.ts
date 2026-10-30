@@ -437,6 +437,25 @@ describe('phase one: the length plan', () => {
     expect(plannedText).toContain('初稿目标 3750 字')
   })
 
+  it('ignores a chapter-level targetWords instead of retargeting the prose', async () => {
+    await call('novel_init', { title: '青云记', targetWords: 1200000, chapterWords: 4000, volumes: 10 })
+    const planned = await call('novel_plan', {
+      operation: 'chapter',
+      id: 'chapter-1',
+      title: '山门',
+      number: 1,
+      targetWords: 600,
+      plotTask: '抵达山门',
+    })
+    const warnings = (planned['warnings'] as string[]).join(' ')
+    // The chapter still inherits 4000 from novel_init, and its contract target is
+    // 4000/5 = 800 — not the 600 that was passed for the outline layer.
+    expect(warnings).toMatch(/targetWords.*不生效/)
+    expect(warnings).toMatch(/低于目标 800/)
+    expect(warnings).not.toMatch(/低于目标 600/)
+    expect(await callText('novel_status', {})).toMatch(/0 字\/4000/)
+  })
+
   it('warns about a chapter target when the user never gave one', async () => {
     await call('novel_init', { title: '青云记' })
     const planned = await call('novel_plan', { operation: 'chapter', id: 'chapter-1', title: '山门', number: 1 })
@@ -929,6 +948,11 @@ describe('phase five: serialization and iteration', () => {
       premise: '少年携断剑上山。',
       baselines: { followRead10: 0.2, averageReadPerChapter: 0.4, chapterScore: 60 },
       baselineSource: '同榜中位',
+      // The fixture is one 30-character chapter; the chapter target comes from
+      // novel_init's chapterWords, not from a chapter-level targetWords override.
+      targetWords: 30,
+      chapterWords: 30,
+      volumes: 1,
     })
     await call('novel_plan', { operation: 'outline', logline: '少年上山', minimal: '摘要', acts: ['起'] })
     await call('novel_plan', {
@@ -942,7 +966,6 @@ describe('phase five: serialization and iteration', () => {
       infoGap: '为何执意上山',
       beats: ['tension'],
       hook: '山门后传来一声钟响。',
-      targetWords: 30,
     })
     await confirmSettings()
   }

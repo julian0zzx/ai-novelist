@@ -46,6 +46,8 @@ import type { ProjectRead, SessionId } from './project.ts'
 import { clientRemote, NO_REMOTE_MESSAGE } from './remote.ts'
 import { boardOf } from './board.ts'
 import type { BoardCard, DocumentCard, KanbanBoard } from './board.ts'
+import { documentViewsOf } from './document-views.ts'
+import type { DocumentView } from './document-views.ts'
 
 /** Unique identity of this view among the conversation's views. */
 export const KANBAN_VIEW_ID = 'novel-kanban'
@@ -97,6 +99,11 @@ const zh = {
   'board.docVolumes': '卷',
   'board.docChapters': '章',
   'board.docFields': '项',
+  'board.docView': '查看',
+  'board.docViewItems': '查看 · {count} 项',
+  'board.viewerClose': '关闭',
+  'board.viewerBack': '返回列表',
+  'board.viewerSource': '来源',
   'doc.pitch.label': '立意与核心设定',
   'doc.pitch.detail': '一句话记忆点、核心情绪、爽点清单、差异点、精神内核、篇幅四问',
   'doc.pitch.next': 'novel_plan operation="pitch" 写立意；再与用户讨论并确认（novel_confirm kind="settings"）',
@@ -165,7 +172,7 @@ export type KanbanKey = keyof typeof zh | `doc.${string}.${'label' | 'detail' | 
  * view; the `t` seat the framework injects for this namespace satisfies it
  * exactly.
  */
-type Translator = (key: KanbanKey) => string
+type Translator = (key: KanbanKey, params?: Record<string, unknown>) => string
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -212,6 +219,11 @@ const en: Record<KanbanKey, string> = {
   'board.docVolumes': 'vols',
   'board.docChapters': 'ch',
   'board.docFields': 'fields',
+  'board.docView': 'View',
+  'board.docViewItems': 'View · {count} items',
+  'board.viewerClose': 'Close',
+  'board.viewerBack': 'Back to list',
+  'board.viewerSource': 'Source',
   'doc.pitch.label': 'Premise & core settings',
   'doc.pitch.detail': 'The one-sentence memorable point, core emotion, payoff list, differentiators, kernel, and the four length questions',
   'doc.pitch.next': 'novel_plan operation="pitch" for the premise, then discuss and confirm it with the author (novel_confirm kind="settings")',
@@ -363,6 +375,15 @@ const STYLE = {
     opacity: 0.8,
     whiteSpace: 'nowrap' as const,
   },
+  docView: {
+    fontSize: '9px',
+    padding: '0 5px',
+    borderRadius: '999px',
+    background: 'color-mix(in srgb, currentColor 10%, transparent)',
+    opacity: 0.85,
+    whiteSpace: 'nowrap' as const,
+  },
+  docClickable: { cursor: 'pointer' },
   boardHead: { display: 'flex', alignItems: 'center', gap: '8px' },
   board: {
     display: 'flex',
@@ -408,6 +429,83 @@ const STYLE = {
   },
   warn: { fontSize: '10px', color: 'var(--dsh-color-warning, #d08b1a)' },
   error: { color: 'var(--dsh-color-danger, #d9534f)', lineHeight: 1.5, whiteSpace: 'pre-wrap' as const },
+  backdrop: {
+    position: 'fixed' as const,
+    inset: 0,
+    zIndex: 1000,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '16px',
+    background: 'rgba(0, 0, 0, 0.45)',
+  },
+  modal: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    width: 'min(880px, 94vw)',
+    maxHeight: '86vh',
+    minHeight: '160px',
+    overflow: 'hidden',
+    borderRadius: '8px',
+    border: '1px solid color-mix(in srgb, currentColor 24%, transparent)',
+    background: 'var(--dsh-color-bg, Canvas)',
+    color: 'var(--dsh-color-fg, CanvasText)',
+    boxShadow: '0 18px 48px rgba(0, 0, 0, 0.35)',
+  },
+  modalHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '9px 12px',
+    borderBottom: '1px solid color-mix(in srgb, currentColor 16%, transparent)',
+  },
+  modalTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: '13px',
+    fontWeight: 600,
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  modalBody: { minHeight: 0, overflow: 'auto' as const, padding: '12px' },
+  modalClose: {
+    flex: '0 0 auto',
+    width: '26px',
+    height: '26px',
+    padding: 0,
+    fontSize: '16px',
+    lineHeight: 1,
+    borderRadius: '5px',
+    border: '1px solid color-mix(in srgb, currentColor 30%, transparent)',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  viewList: { display: 'flex', flexDirection: 'column' as const, gap: '6px', margin: 0, padding: 0, listStyle: 'none' },
+  viewItem: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'flex-start',
+    gap: '2px',
+    width: '100%',
+    padding: '8px 10px',
+    textAlign: 'left' as const,
+    borderRadius: '5px',
+    border: '1px solid color-mix(in srgb, currentColor 16%, transparent)',
+    background: 'color-mix(in srgb, currentColor 5%, transparent)',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  viewItemLabel: { fontSize: '12px', fontWeight: 600 },
+  viewContent: {
+    margin: 0,
+    whiteSpace: 'pre-wrap' as const,
+    overflowWrap: 'anywhere' as const,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontSize: '11.5px',
+    lineHeight: 1.65,
+  },
   button: {
     alignSelf: 'flex-start' as const,
     padding: '3px 8px',
@@ -469,14 +567,31 @@ function useProject(sessionId: SessionId, workspaceRoot: string | undefined, att
  * how much of it exists, what it still owes, and — when it gates something — that
  * it does.
  *
+ * A card with readable content becomes a button: one click opens the file, or,
+ * when the document owns several files, the list they are chosen from. A card
+ * with nothing to read stays a plain card rather than a button that opens an
+ * empty modal, which is why {@link DocumentView} emptiness is decided before it
+ * reaches here.
+ *
  * `next` is the card's tooltip rather than a line on the face of it: four lines of
  * Chinese action text per card would turn a twelve-card row into a wall, and the
  * tool is named for whoever goes looking.
  *
- * @param props - the document and the panel's translator.
+ * @param props - the document, the views it can open, the open callback, and the
+ * panel's translator.
  * @returns the document card.
  */
-function DocCard({ document, t }: { document: DocumentCard; t: Translator }): React.ReactNode {
+function DocCard({
+  document,
+  views,
+  onOpen,
+  t,
+}: {
+  document: DocumentCard
+  views: readonly DocumentView[]
+  onOpen: () => void
+  t: Translator
+}): React.ReactNode {
   const id = String(document.id)
   const state =
     document.state === 'confirmed'
@@ -491,9 +606,40 @@ function DocCard({ document, t }: { document: DocumentCard; t: Translator }): Re
       : document.gates === 'skeleton'
         ? t('board.docGateSkeleton')
         : undefined
-  const title = [t(`doc.${id}.detail`), `${t('board.docNext')}: ${t(`doc.${id}.next`)}`].join('\n')
+  const viewable = views.length > 0
+  const openHint = viewable
+    ? views.length === 1
+      ? t('board.docView')
+      : t('board.docViewItems', { count: views.length })
+    : undefined
+  const title = [t(`doc.${id}.detail`), `${t('board.docNext')}: ${t(`doc.${id}.next`)}`, openHint]
+    .filter((line): line is string => line !== undefined && line !== '')
+    .join('\n')
+  const open = (): void => {
+    if (viewable) onOpen()
+  }
   return (
-    <div style={{ ...STYLE.doc, ...(document.state === 'confirmed' ? {} : STYLE.docOpen) }} title={title}>
+    <div
+      style={{
+        ...STYLE.doc,
+        ...(document.state === 'confirmed' ? {} : STYLE.docOpen),
+        ...(viewable ? STYLE.docClickable : {}),
+      }}
+      title={title}
+      role={viewable ? 'button' : undefined}
+      tabIndex={viewable ? 0 : undefined}
+      onClick={viewable ? open : undefined}
+      onKeyDown={
+        viewable
+          ? (event): void => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                open()
+              }
+            }
+          : undefined
+      }
+    >
       <div style={STYLE.docFoot}>
         <span style={STYLE.docLabel} title={t(`doc.${id}.label`)}>
           {t(`doc.${id}.label`)}
@@ -511,6 +657,11 @@ function DocCard({ document, t }: { document: DocumentCard; t: Translator }): Re
           {t('board.docGaps')} {document.gaps.slice(0, 3).join('、')}
           {document.gaps.length > 3 ? ` +${String(document.gaps.length - 3)}` : ''}
         </span>
+      )}
+      {viewable && (
+        <div style={STYLE.docFoot}>
+          <span style={STYLE.docView}>{openHint}</span>
+        </div>
       )}
     </div>
   )
@@ -542,26 +693,189 @@ function countLabel(document: DocumentCard, t: Translator): string | undefined {
   return document.done > 0 ? `${String(document.done)} ${unit}` : undefined
 }
 
+/** What the document modal is showing: a list of views, or one view. */
+interface ViewerState {
+  /** The document's display name, used while the list is showing. */
+  readonly title: string
+  /** What this document can open. */
+  readonly views: readonly DocumentView[]
+  /** Index of the open view; `null` while the list is showing. */
+  readonly index: number | null
+}
+
+/**
+ * The document viewer.
+ *
+ * One modal serves both shapes the process documents need. A document with one
+ * artefact opens straight into it; a document with several (`分卷大纲`, the payoff
+ * schedule, the de-AI reviews) opens into a list first, and choosing an item
+ * replaces the list with that artefact's text. The close button is always in the
+ * same place, and Escape or a click on the backdrop closes it too — three ways
+ * out because a modal with only one is the kind authors get stuck behind.
+ *
+ * Rendered inline rather than through a portal: the conversation view is a
+ * normal pane, and `position: fixed` on a full-viewport backdrop is enough for a
+ * dialog that should cover the board without pulling `react-dom` into the
+ * plugin's module surface.
+ *
+ * @param props - the document's name, its views, the open index, the selection
+ * and close callbacks, and the panel's translator.
+ * @returns the dialog, or nothing while it is closed.
+ */
+function DocumentModal({
+  title,
+  views,
+  index,
+  onSelect,
+  onClose,
+  t,
+}: {
+  title: string
+  views: readonly DocumentView[]
+  index: number | null
+  onSelect: (index: number | null) => void
+  onClose: () => void
+  t: Translator
+}): React.ReactNode {
+  const view = index === null ? undefined : views[index]
+  const heading = view?.label ?? title
+  return (
+    <div
+      style={STYLE.backdrop}
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div
+        style={STYLE.modal}
+        role="dialog"
+        aria-modal="true"
+        aria-label={heading}
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation()
+            onClose()
+          }
+        }}
+      >
+        <div style={STYLE.modalHead}>
+          {view !== undefined && views.length > 1 && (
+            <button
+              type="button"
+              style={{ ...STYLE.button, alignSelf: 'center' }}
+              onClick={() => onSelect(null)}
+            >
+              {t('board.viewerBack')}
+            </button>
+          )}
+          <span style={STYLE.modalTitle} title={heading}>
+            {heading}
+          </span>
+          <button
+            type="button"
+            style={STYLE.modalClose}
+            onClick={onClose}
+            aria-label={t('board.viewerClose')}
+            title={t('board.viewerClose')}
+            autoFocus
+          >
+            ×
+          </button>
+        </div>
+        <div style={STYLE.modalBody}>
+          {view === undefined ? (
+            <ul style={STYLE.viewList}>
+              {views.map((entry, entryIndex) => (
+                <li key={entry.id}>
+                  <button type="button" style={STYLE.viewItem} onClick={() => onSelect(entryIndex)}>
+                    <span style={STYLE.viewItemLabel}>{entry.label}</span>
+                    <span style={STYLE.meta} title={entry.source}>
+                      {t('board.viewerSource')}: {entry.source}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <>
+              <div style={STYLE.meta} title={view.source}>
+                {t('board.viewerSource')}: {view.source}
+              </div>
+              <pre style={STYLE.viewContent}>{view.content}</pre>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /**
  * The process documents, as one row.
  *
  * This is the half of the board a project has before it has any chapters, which
  * is why it renders unconditionally: four empty chapter columns say "nothing has
- * been written", and the documents row says what *has* been decided.
+ * been written", and the documents row says what *has* been decided. It also
+ * owns the one piece of state the row needs — which document, if any, is open in
+ * the viewer.
  *
- * @param props - the documents and the panel's translator.
+ * @param props - the documents, the views each can open, and the panel's translator.
  * @returns the section, or nothing when the project has no documents to show.
  */
-function Documents({ documents, t }: { documents: readonly DocumentCard[]; t: Translator }): React.ReactNode {
+function Documents({
+  documents,
+  views,
+  t,
+}: {
+  documents: readonly DocumentCard[]
+  views: Readonly<Record<string, readonly DocumentView[]>>
+  t: Translator
+}): React.ReactNode {
+  const [viewer, setViewer] = useState<ViewerState | null>(null)
+  const close = useCallback(() => {
+    setViewer(null)
+  }, [])
+  const select = useCallback((next: number | null) => {
+    setViewer((current) => (current === null ? null : { ...current, index: next }))
+  }, [])
   if (documents.length === 0) return null
   return (
     <section style={STYLE.docs}>
       <h2 style={STYLE.title}>{t('board.documents')}</h2>
       <div style={STYLE.docRow}>
-        {documents.map((document) => (
-          <DocCard key={document.id} document={document} t={t} />
-        ))}
+        {documents.map((document) => {
+          const found = views[document.id] ?? []
+          return (
+            <DocCard
+              key={document.id}
+              document={document}
+              views={found}
+              t={t}
+              onOpen={() => {
+                setViewer({
+                  title: t(`doc.${document.id}.label`),
+                  views: found,
+                  // One artefact opens directly; several open into the list, so
+                  // the author chooses rather than getting an arbitrary first.
+                  index: found.length === 1 ? 0 : null,
+                })
+              }}
+            />
+          )
+        })}
       </div>
+      {viewer !== null && (
+        <DocumentModal
+          title={viewer.title}
+          views={viewer.views}
+          index={viewer.index}
+          onSelect={select}
+          onClose={close}
+          t={t}
+        />
+      )}
     </section>
   )
 }
@@ -745,8 +1059,18 @@ function KanbanView({
   // not free, and a pane re-renders for reasons that have nothing to do with the
   // project.
   const shown = useMemo(
-    () => (read === undefined ? undefined : { board: boardOf(read.state), at: read.state.updatedAt }),
-    [read?.state],
+    () =>
+      read === undefined
+        ? undefined
+        : {
+            board: boardOf(read.state),
+            // Built once with the board: the viewer reads the same files the state
+            // was assembled from, so opening a card cannot show a different project
+            // than the one the cards were counted from.
+            views: documentViewsOf(read.state, read.metadata.index, read.files),
+            at: read.state.updatedAt,
+          },
+    [read?.state, read?.metadata, read?.files],
   )
 
   const refresh = useCallback(() => {
@@ -778,7 +1102,9 @@ function KanbanView({
           {shown !== undefined && <div style={STYLE.meta}>{t('board.stale')}</div>}
         </div>
       )}
-      {shown !== undefined && <Board board={shown.board} meta={metaOf(shown.at, t)} onRefresh={refresh} t={t} />}
+      {shown !== undefined && (
+        <Board board={shown.board} views={shown.views} meta={metaOf(shown.at, t)} onRefresh={refresh} t={t} />
+      )}
     </div>
   )
 }
@@ -802,11 +1128,13 @@ function metaOf(at: string, t: Translator): string | undefined {
  */
 function Board({
   board,
+  views,
   meta,
   onRefresh,
   t,
 }: {
   board: KanbanBoard
+  views: Readonly<Record<string, readonly DocumentView[]>>
   meta: string | undefined
   onRefresh: () => void
   t: Translator
@@ -822,7 +1150,7 @@ function Board({
         </button>
       </div>
       <Overview board={board} t={t} />
-      <Documents documents={board.documents} t={t} />
+      <Documents documents={board.documents} views={views} t={t} />
       {board.progress.chapters === 0 ? (
         <p style={STYLE.dim}>{t('board.empty')}</p>
       ) : (

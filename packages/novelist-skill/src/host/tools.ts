@@ -1677,9 +1677,10 @@ export function registerTools(
         targetWords: {
           type: 'integer',
           description:
-            'outline/volume/chapter: the target length in characters, overriding the SOP default ratio for that layer '
-            + '(全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50, 章节大纲正文 ≈ 单章字数/5). Ignored for chapter: a chapter '
-            + 'inherits the per-chapter length settled at initialization (novel_init chapterWords).',
+            'outline/volume: the target length in characters, overriding the SOP default ratio for that layer '
+            + '(全书大纲 ≈ 总字数/100, 分卷大纲 ≈ 本卷字数/50). Ignored for chapter: a chapter always inherits the '
+            + 'per-chapter length settled at initialization (novel_init chapterWords), and its contract target is '
+            + 'chapterWords/5. Passing targetWords for a chapter has no effect.',
         },
         number: { type: 'integer', description: 'volume/chapter/beat: the 1-based position.' },
         goal: { type: 'string', description: 'volume: what this volume accomplishes on its own.' },
@@ -2106,10 +2107,12 @@ export function registerTools(
             }
             const chapterId = resolveChapterId({ id: args.id, title: args.title })
             const next = await store.update((state) => {
-              // A chapter that states no target inherits the per-chapter length the
-              // user settled at initialization, so the length check has
-              // something to compare against instead of silently doing nothing.
-              const targetWords = args.targetWords ?? state.writing.chapterWords
+              // A chapter always inherits the per-chapter length the user settled
+              // at initialization. `targetWords` is an outline/volume override; for
+              // a chapter it is documented as ignored, so accepting it here would
+              // silently retarget the prose (and the 1/5 contract check) to a
+              // number the author never gave to `novel_init`.
+              const targetWords = state.writing.chapterWords
               return upsertChapter(
                 state,
                 {
@@ -2135,6 +2138,15 @@ export function registerTools(
               )
             })
             const chapter = next.chapters[chapterId]
+            if (args.targetWords !== undefined && args.targetWords !== next.writing.chapterWords) {
+              const inherited = next.writing.chapterWords
+              warnings.push(
+                `第 ${String(chapter?.number ?? 0)} 章：\`targetWords\` 对章节不生效——章节成稿目标继承 novel_init 的 chapterWords`
+                + `（${inherited > 0 ? `${String(inherited)} 字` : '未设置'}），细纲目标按 1/5 算`
+                + `（${inherited > 0 ? `${String(Math.round(inherited / 5))} 字` : '未定'}）。`
+                + '要改章长，回 novel_init 改 chapterWords；要给细纲定字数，直接写够九字段，不必传这个参数。',
+              )
+            }
             detail = chapter === undefined
               ? '章节已写入'
               : `第 ${String(chapter.number)} 章「${chapter.title || chapterId}」契约已写入`
@@ -2183,7 +2195,6 @@ export function registerTools(
                 'chapter',
                 chapterContractLength(chapter),
                 chapter.targetWords,
-                args.targetWords ?? 0,
               )
               if (contractLength !== undefined) {
                 const suggested = chapterOutlineTarget(chapter.targetWords)

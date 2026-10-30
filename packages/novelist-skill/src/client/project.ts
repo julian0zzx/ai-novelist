@@ -22,6 +22,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import { composeContent, parseMetadata, stateOf } from '../core/index.ts'
 import { METADATA_RELATIVE_PATH } from '../core/paths.ts'
+import type { ContentFiles } from '../core/content.ts'
 import type { NovelMetadata, NovelState } from '../core/types.ts'
 
 /**
@@ -36,7 +37,22 @@ export type SessionId = SessionListState['ids'][number]
 export type ProjectRead =
   | { status: 'loading' }
   | { status: 'none' }
-  | { status: 'ready'; raw: string; metadata: NovelMetadata; state: NovelState }
+  | {
+      status: 'ready'
+      raw: string
+      metadata: NovelMetadata
+      state: NovelState
+      /**
+       * The raw text of every content file the read touched, keyed by path.
+       *
+       * Carried for the document viewer: the board's process-document cards open
+       * the file they stand for, and re-reading it on every click would make the
+       * modal lag the project by a request. The read already loaded these files
+       * to assemble the state, so this is the same bytes rather than a second
+       * read; `index` in the metadata names each one.
+       */
+      files: ContentFiles
+    }
   | { status: 'error'; message: string }
 
 /** The Remote face, as the composer's client half uses it. */
@@ -191,7 +207,7 @@ export async function readProject(
     }
 
     const assembled = composeContent(files, index, metadata.opening, metadata.competitors, legacyVolumeFile)
-    return { status: 'ready', raw, metadata, state: stateOf(metadata, assembled) }
+    return { status: 'ready', raw, metadata, state: stateOf(metadata, assembled), files }
   } catch (error) {
     return { status: 'error', message: describe(error) }
   }

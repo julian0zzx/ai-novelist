@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { NOVEL_SCHEMA_VERSION, NovelStoreError, emptyNovel, hashContent, upsertChapter } from '../src/core/index.ts'
-import { NOVEL_RELATIVE_PATH, NovelConflictError, NovelStore, isRegularFile } from '../src/host/store.ts'
+import { MAX_METADATA_BYTES, NOVEL_RELATIVE_PATH, NovelConflictError, NovelStore, isRegularFile } from '../src/host/store.ts'
 import type { VolumePlan } from '../src/core/types.ts'
 
 /**
@@ -161,6 +161,66 @@ describe('NovelStore', () => {
     ])
     const state = await store.read()
     expect(Object.keys(state?.chapters ?? {}).sort()).toEqual(['a', 'b'])
+  })
+
+  it('keeps chapter prose out of the metadata document', async () => {
+    await store.create(emptyNovel({ title: 'A' }, () => clock))
+    const body = '江'.repeat(400000)
+    await store.update((current) => upsertChapter(current, { id: 'one', number: 1, body }, () => clock))
+    const raw = await readFile(docPath(), 'utf8')
+    // The prose belongs to 章节/, not novel.json. A leak here is what turned a
+    // metadata document into a multi-megabyte re-escaped copy of the manuscript.
+    expect(raw.length).toBeLessThan(200000)
+    expect(raw).not.toContain('江江江江江')
+  })
+
+  it('keeps the metadata small when three chapter writes run together', async () => {
+    await store.create(emptyNovel({ title: 'A' }, () => clock))
+    const body = '江'.repeat(200000)
+    await Promise.all(
+      [1, 2, 3].map((number) =>
+        store.update((current) => upsertChapter(current, { id: `c${number}`, number, body }, () => clock)),
+      ),
+    )
+    const raw = await readFile(docPath(), 'utf8')
+    // The scenario that produced a 25 MB document: three writers, one metadata
+    // file. Content must stay in 章节/, and the metadata must stay an index.
+    expect(raw.length).toBeLessThan(200000)
+  })
+
+  it('refuses an oversized metadata write instead of creating a 25 MB document', async () => {
+    await store.create(emptyNovel({ title: 'A' }, () => clock))
+    const before = await readFile(docPath(), 'utf8')
+    const huge = 'x'.repeat(MAX_METADATA_BYTES + 1024)
+    await expect(
+      store.update((current) => ({ ...current, meta: { ...current.meta, premise: huge } })),
+    ).rejects.toThrow(/refusing to write .*novel\.json/)
+    expect(await readFile(docPath(), 'utf8')).toBe(before)
+  })
+
+  it('rejects a stale write from a second store instead of merging both', async () => {
+    await store.create(emptyNovel({ title: 'A' }, () => clock))
+    const other = new NovelStore(ctx, { workspaceRoot: root, clock: () => clock })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let entered!: () => void
+    const enteredP = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const first = store.update(async (current) => {
+      entered()
+      await gate
+      return upsertChapter(current, { id: 'a', number: 1, body: 'a' }, () => clock)
+    })
+    await enteredP
+    // The second store read the same document and writes before the first one
+    // resumes; the version guard must reject the stale writer, not let both
+    // documents be merged into one.
+    await other.update((current) => upsertChapter(current, { id: 'b', number: 2, body: 'b' }, () => clock))
+    release()
+    await expect(first).rejects.toThrow(NovelConflictError)
   })
 
   it('treats an empty document as uninitialized', async () => {

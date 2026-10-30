@@ -89,6 +89,20 @@ import { currentSandboxPolicy, type CallSandboxPolicy } from './sandbox.ts'
  */
 export const NOVEL_RELATIVE_PATH = METADATA_RELATIVE_PATH
 
+/**
+ * Largest metadata document this build will write, in bytes.
+ *
+ * `.novel/novel.json` is an index plus the evidence ledger: it is expected to
+ * stay in the low hundreds of kilobytes even for a two-million-character book,
+ * because prose, cast, world and volume pacing all live in their own Markdown
+ * files. A document that approaches this bound has almost always had content
+ * leak back into the metadata (the pre-fix `metadataOf` did exactly that), or a
+ * group of writers has been re-escaping one another's strings. Refusing the
+ * write is deliberately loud: a 25 MB `novel.json` is not a project the next
+ * read can repair, and silently writing it is how the file became unrecoverable.
+ */
+export const MAX_METADATA_BYTES = 8 * 1024 * 1024
+
 /** Raised when the document changed underneath the caller's read. */
 export class NovelConflictError extends Error {
   override readonly name = 'NovelConflictError'
@@ -1687,6 +1701,17 @@ export class NovelStore {
     expected: FsVersion | undefined,
     policy: CallSandboxPolicy | undefined,
   ): Promise<FsInfo> {
+    const bytes = Buffer.byteLength(text, 'utf8')
+    if (bytes > MAX_METADATA_BYTES) {
+      const size = `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+      const limit = `${String(MAX_METADATA_BYTES / (1024 * 1024))} MB`
+      throw new NovelStoreError(
+        `refusing to write ${NOVEL_RELATIVE_PATH}: the metadata document would be ${size}, over the ${limit} limit. `
+        + 'Chapter prose, cast, world and volume pacing belong in their Markdown files, not in the metadata document. '
+        + 'This usually means content leaked back into metadata, or several writers raced and re-escaped one another. '
+        + 'Nothing was written; re-read the project and inspect the largest fields before retrying.',
+      )
+    }
     const target = await this.resolve()
     if (expected === undefined) {
       await this.fs.writeText(target, text, { kind: 'createIfAbsent' }, undefined, policy)

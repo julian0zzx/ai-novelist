@@ -104,6 +104,7 @@ src/client/        the browser surface
   index.tsx          the right-Sidebar tab type + its body
   kanban.tsx         the conversation view beside Chat and Trajectory
   board.ts           the board a NovelState projects onto (process documents + chapters), as pure data
+  document-views.ts  what each process document opens: files, file sections, and generated Markdown
   project.ts         the one project reader both surfaces share
   remote.ts          the Remote face captured at activation, and its release
 src/index.ts       the Cordis plugin: Config, resolver construction, tool registration
@@ -454,6 +455,21 @@ scrollable row between the overview and the chapter columns, and each carries th
 sits behind (`卡住正文` for the three the prose gate enforces, `go 之后才做` for the work the
 launch decision authorises) — an open document should say why it matters, not only that it is
 open.
+
+`client/document-views.ts` answers the next question those cards raise: *what is actually in
+this document?* Its `documentViewsOf(state, index, files)` returns one list of readable
+artefacts per card id. The split follows the storage: a document that owns a file returns the
+file text; a document that is one `##` block of a shared file is read through the same
+`splitDocument`/`findSection` parser the codec uses; a document that lives only in
+`.novel/novel.json` is rendered into readable Markdown. A document can own several views — one
+per volume file, one rhythm table per chapter-plan file, one AI-flavour review per chapter, one
+launch decision and one serial record each — which is why the source is a list. The view opens
+one artefact directly, or lists the artefacts first and opens the chosen one; the dialog has a
+close button and also closes on the backdrop or Escape. `readProject` carries the raw content
+files it already loaded for `composeContent`, so a card click opens the text the board was
+built from rather than issuing a second read. Like `board.ts`, this module is pure:
+`test/document-views.test.ts` writes a project through the store, reads it through the client
+reader, and asserts what each card can open.
 
 The 去 AI 化 statistics have the same shape, and grew for the same reason the gate did. The
 mechanical pass in `write.ts` reports what a counter can find — long paragraphs, average length,
