@@ -68,6 +68,13 @@ File-backed documents show the file (`全书大纲.md`, `人物设定.md`, `世�
 Markdown rather than a raw JSON dump. Untouched documents stay plain cards, so a card never
 opens an empty dialog.
 
+**State colour and clickability.** Complete is pine green `#1f7a58`, in progress / awaiting
+sign-off is amber `#9a6207`, not started is slate `#5f6673`; each card carries its state hue
+three ways — a tinted fill, a coloured left rule and a filled state badge. Clickable cards keep
+a solid border and full opacity, deepen their fill on hover or focus, and open when the card
+itself is clicked; non-clickable cards drop to 60% opacity with a dashed border, so the two are
+distinguishable at a glance.
+
 ### Writing craft (the "how it should read" half)
 
 The SOP is good at deciding *what* must be planned and *what counts as a debt*. It cannot

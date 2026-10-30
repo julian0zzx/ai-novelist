@@ -99,8 +99,6 @@ const zh = {
   'board.docVolumes': '卷',
   'board.docChapters': '章',
   'board.docFields': '项',
-  'board.docView': '查看',
-  'board.docViewItems': '查看 · {count} 项',
   'board.viewerClose': '关闭',
   'board.viewerBack': '返回列表',
   'board.viewerSource': '来源',
@@ -219,8 +217,6 @@ const en: Record<KanbanKey, string> = {
   'board.docVolumes': 'vols',
   'board.docChapters': 'ch',
   'board.docFields': 'fields',
-  'board.docView': 'View',
-  'board.docViewItems': 'View · {count} items',
   'board.viewerClose': 'Close',
   'board.viewerBack': 'Back to list',
   'board.viewerSource': 'Source',
@@ -290,6 +286,23 @@ const STAGE_LABELS: Readonly<Record<string, string>> = {
   'full-outline': '完整大纲',
   serializing: '连载中',
   completed: '已完结',
+}
+
+/**
+ * The three standings, as colours.
+ *
+ * One hue per state, chosen to stay distinguishable both as a text colour on a
+ * light background and as a filled chip under white text: a settled document is
+ * green, one still being written is amber, and one nobody has started is slate.
+ * The card carries the hue three ways — a tinted fill, a coloured left rule and a
+ * filled state badge — so the row is readable at a glance without reading every
+ * label. The darker values are deliberate: they are used as chip backgrounds, and
+ * white text on a mid-tone amber would not be legible.
+ */
+const DOC_STATE_TONES: Readonly<Record<DocumentCard['state'], string>> = {
+  confirmed: '#1f7a58',
+  draft: '#9a6207',
+  missing: '#5f6673',
 }
 
 /**
@@ -364,23 +377,15 @@ const STYLE = {
     background: 'color-mix(in srgb, currentColor 5%, transparent)',
     border: '1px solid color-mix(in srgb, currentColor 12%, transparent)',
   },
-  docOpen: { opacity: 0.62 },
+  docMuted: { opacity: 0.6, borderStyle: 'dashed' as const },
   docFoot: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '6px' },
   docLabel: { fontWeight: 600, fontSize: '11px', whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis' },
   docState: {
     fontSize: '9px',
     padding: '0 5px',
     borderRadius: '999px',
-    border: '1px solid currentColor',
-    opacity: 0.8,
-    whiteSpace: 'nowrap' as const,
-  },
-  docView: {
-    fontSize: '9px',
-    padding: '0 5px',
-    borderRadius: '999px',
-    background: 'color-mix(in srgb, currentColor 10%, transparent)',
-    opacity: 0.85,
+    border: '1px solid transparent',
+    color: '#fff',
     whiteSpace: 'nowrap' as const,
   },
   docClickable: { cursor: 'pointer' },
@@ -607,12 +612,14 @@ function DocCard({
         ? t('board.docGateSkeleton')
         : undefined
   const viewable = views.length > 0
-  const openHint = viewable
-    ? views.length === 1
-      ? t('board.docView')
-      : t('board.docViewItems', { count: views.length })
-    : undefined
-  const title = [t(`doc.${id}.detail`), `${t('board.docNext')}: ${t(`doc.${id}.next`)}`, openHint]
+  const [highlighted, setHighlighted] = useState(false)
+  // The state hue is carried by the fill, the left rule and the badge. Mixing
+  // the line toward currentColor keeps it visible on both a light and a dark
+  // shell; the fill stays a tint so the card's own text is never competed with.
+  const tone = DOC_STATE_TONES[document.state]
+  const edge = `color-mix(in srgb, ${tone} 72%, currentColor)`
+  const fill = `color-mix(in srgb, ${tone} ${viewable ? 16 : 8}%, transparent)`
+  const title = [t(`doc.${id}.detail`), `${t('board.docNext')}: ${t(`doc.${id}.next`)}`]
     .filter((line): line is string => line !== undefined && line !== '')
     .join('\n')
   const open = (): void => {
@@ -622,13 +629,43 @@ function DocCard({
     <div
       style={{
         ...STYLE.doc,
-        ...(document.state === 'confirmed' ? {} : STYLE.docOpen),
-        ...(viewable ? STYLE.docClickable : {}),
+        background: highlighted && viewable ? `color-mix(in srgb, ${tone} 25%, transparent)` : fill,
+        borderColor: edge,
+        boxShadow: `inset 3px 0 0 ${edge}`,
+        ...(viewable ? STYLE.docClickable : STYLE.docMuted),
       }}
       title={title}
       role={viewable ? 'button' : undefined}
       tabIndex={viewable ? 0 : undefined}
       onClick={viewable ? open : undefined}
+      onMouseEnter={
+        viewable
+          ? (): void => {
+              setHighlighted(true)
+            }
+          : undefined
+      }
+      onMouseLeave={
+        viewable
+          ? (): void => {
+              setHighlighted(false)
+            }
+          : undefined
+      }
+      onFocus={
+        viewable
+          ? (): void => {
+              setHighlighted(true)
+            }
+          : undefined
+      }
+      onBlur={
+        viewable
+          ? (): void => {
+              setHighlighted(false)
+            }
+          : undefined
+      }
       onKeyDown={
         viewable
           ? (event): void => {
@@ -644,7 +681,7 @@ function DocCard({
         <span style={STYLE.docLabel} title={t(`doc.${id}.label`)}>
           {t(`doc.${id}.label`)}
         </span>
-        <span style={STYLE.docState}>{state}</span>
+        <span style={{ ...STYLE.docState, background: tone, borderColor: tone }}>{state}</span>
       </div>
       {(counts !== undefined || gate !== undefined) && (
         <div style={STYLE.docFoot}>
@@ -657,11 +694,6 @@ function DocCard({
           {t('board.docGaps')} {document.gaps.slice(0, 3).join('、')}
           {document.gaps.length > 3 ? ` +${String(document.gaps.length - 3)}` : ''}
         </span>
-      )}
-      {viewable && (
-        <div style={STYLE.docFoot}>
-          <span style={STYLE.docView}>{openHint}</span>
-        </div>
       )}
     </div>
   )
@@ -743,7 +775,7 @@ function DocumentModal({
     <div
       style={STYLE.backdrop}
       role="presentation"
-      onMouseDown={(event) => {
+      onClick={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
     >

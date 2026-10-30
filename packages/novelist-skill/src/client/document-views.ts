@@ -609,6 +609,15 @@ function renderVolume(volume: VolumePlan): string {
   if (volume.detail.trim() !== '') lines.push('', `## ${VOLUME_DETAIL_HEADING}`, '', volume.detail.trim())
   const spine = renderParts(VOLUME_SPINE_PARTS, volume)
   if (spine !== '') lines.push('', spine)
+  const scalars: readonly (readonly [string, string])[] = [
+    ['本卷目标', volume.goal],
+    ['核心矛盾', volume.conflict],
+    ['阶段性高潮', volume.climax],
+    ['卷末钩子', volume.endHook],
+  ]
+  for (const [heading, value] of scalars) {
+    if (value.trim() !== '') lines.push('', `## ${heading}`, '', value.trim())
+  }
   return lines.join('\n')
 }
 

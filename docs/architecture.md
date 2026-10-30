@@ -471,6 +471,14 @@ built from rather than issuing a second read. Like `board.ts`, this module is pu
 `test/document-views.test.ts` writes a project through the store, reads it through the client
 reader, and asserts what each card can open.
 
+The card's state is also its colour: `DOC_STATE_TONES` in `kanban.tsx` maps `confirmed` to
+pine green, `draft` to amber and `missing` to slate, and each card carries that hue in its
+fill, its left rule and its filled state badge. Clickability is a separate axis and a stronger
+signal: a card with views keeps a solid border and full opacity and deepens its fill on hover
+or focus, while a card with nothing to open is dashed and faded to 60%. Clicking the card
+itself opens the viewer; there is no separate button. Colour therefore says *where the document
+stands*; border style and opacity say *whether there is something to read*.
+
 The 去 AI 化 statistics have the same shape, and grew for the same reason the gate did. The
 mechanical pass in `write.ts` reports what a counter can find — long paragraphs, average length,
 dialogue density, repeated sentence openings — and now also the **对举句 count** and the book's own
