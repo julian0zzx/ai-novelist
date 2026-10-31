@@ -40,6 +40,7 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import type { ComposedProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { CHAPTER_STATUSES } from '../core/types.ts'
 import type { ChapterStatus } from '../core/types.ts'
+import { countWords } from '../core/novel.ts'
 import { draftRatioLabel } from '../core/plan.ts'
 import { describe, readProject } from './project.ts'
 import type { ProjectRead, SessionId } from './project.ts'
@@ -48,6 +49,7 @@ import { boardOf } from './board.ts'
 import type { BoardCard, DocumentCard, KanbanBoard } from './board.ts'
 import { documentViewsOf } from './document-views.ts'
 import type { DocumentView } from './document-views.ts'
+import { saveChapterBody } from './save.ts'
 
 /** Unique identity of this view among the conversation's views. */
 export const KANBAN_VIEW_ID = 'novel-kanban'
@@ -102,6 +104,22 @@ const zh = {
   'board.viewerClose': '关闭',
   'board.viewerBack': '返回列表',
   'board.viewerSource': '来源',
+  // The chapter editor: preview is the default, edit is one click away, and the
+  // save writes through the host's command channel (see ./save.ts).
+  'board.chapterPreview': '正文',
+  'board.edit': '编辑',
+  'board.save': '保存',
+  'board.saving': '保存中…',
+  'board.cancel': '取消',
+  'board.saved': '已保存',
+  'board.emptyBody': '还没有正文。点「编辑」开始写，保存后会直接写回章节文件。',
+  'board.editHint': '保存会直接写回这一章的文件；被替换的上一版自动存档到 .novel/versions/。',
+  'board.noRemote': '界面没有连上 host，暂时不能保存。',
+  'board.unsaved': '有未保存的修改',
+  'board.saveFailed': '保存失败',
+  'board.chapterWordCount': '字数',
+  'board.chapterTarget': '目标',
+  'board.previewOnly': '只读预览',
   'doc.pitch.label': '立意与核心设定',
   'doc.pitch.detail': '一句话记忆点、核心情绪、爽点清单、差异点、精神内核、篇幅四问',
   'doc.pitch.next': 'novel_plan operation="pitch" 写立意；再与用户讨论并确认（novel_confirm kind="settings"）',
@@ -220,6 +238,20 @@ const en: Record<KanbanKey, string> = {
   'board.viewerClose': 'Close',
   'board.viewerBack': 'Back to list',
   'board.viewerSource': 'Source',
+  'board.chapterPreview': 'Prose',
+  'board.edit': 'Edit',
+  'board.save': 'Save',
+  'board.saving': 'Saving…',
+  'board.cancel': 'Cancel',
+  'board.saved': 'Saved',
+  'board.emptyBody': 'No prose yet. Click Edit to write it; Save writes the chapter file directly.',
+  'board.editHint': 'Save writes this chapter’s file directly; the replaced draft is archived under .novel/versions/.',
+  'board.noRemote': 'This surface has no host connection, so it cannot save right now.',
+  'board.unsaved': 'Unsaved changes',
+  'board.saveFailed': 'Save failed',
+  'board.chapterWordCount': 'words',
+  'board.chapterTarget': 'target',
+  'board.previewOnly': 'Read-only preview',
   'doc.pitch.label': 'Premise & core settings',
   'doc.pitch.detail': 'The one-sentence memorable point, core emotion, payoff list, differentiators, kernel, and the four length questions',
   'doc.pitch.next': 'novel_plan operation="pitch" for the premise, then discuss and confirm it with the author (novel_confirm kind="settings")',
@@ -421,6 +453,7 @@ const STYLE = {
     background: 'color-mix(in srgb, currentColor 7%, transparent)',
     border: '1px solid color-mix(in srgb, currentColor 12%, transparent)',
   },
+  cardOpen: { cursor: 'pointer' },
   cardTop: { display: 'flex', alignItems: 'baseline', gap: '5px' },
   cardNumber: { opacity: 0.55, fontSize: '10px', fontVariantNumeric: 'tabular-nums' },
   cardTitle: { flex: 1, minWidth: 0, whiteSpace: 'nowrap' as const, overflow: 'hidden', textOverflow: 'ellipsis' },
@@ -511,6 +544,69 @@ const STYLE = {
     fontSize: '11.5px',
     lineHeight: 1.65,
   },
+  // The chapter reader and editor. Prose is set a little larger than a file
+  // preview because this is the text an author reads for pleasure, not a
+  // document inspected for structure.
+  chapterText: {
+    margin: 0,
+    whiteSpace: 'pre-wrap' as const,
+    overflowWrap: 'anywhere' as const,
+    fontSize: '13px',
+    lineHeight: 1.85,
+  },
+  editorMeta: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap' as const, fontSize: '11px', opacity: 0.75 },
+  // The chapter dialog has one height in both modes: preview and edit are the
+  // same window, and only the text inside it changes. The body is a flex column
+  // with one scrollport, so the textarea and the `<pre>` fill the space below the
+  // meta line instead of each sizing the dialog from its own content.
+  chapterModal: { height: '86vh' },
+  // `flex: 1` is what makes the body fill the dialog below its header. Without
+  // it the body is content-sized, so the textarea's own `flex: 1` grows inside a
+  // box that is already only as tall as the textarea — the doubled frame this
+  // shape exists to avoid.
+  chapterBody: {
+    flex: '1 1 auto' as const,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '8px',
+    overflow: 'hidden' as const,
+  },
+  chapterScroll: { flex: '1 1 auto' as const, minHeight: 0, overflow: 'auto' as const },
+  // No box of its own: the textarea is the dialog's writing surface, not a
+  // control sitting inside it. Border, fill and radius would draw a second frame
+  // inside the modal, so the writing area keeps only the dialog's own edge.
+  editor: {
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    flex: '1 1 auto' as const,
+    minHeight: 0,
+    padding: 0,
+    border: 'none',
+    borderRadius: 0,
+    background: 'transparent',
+    color: 'inherit',
+    outline: 'none',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontSize: '12.5px',
+    lineHeight: 1.8,
+    resize: 'none' as const,
+  },
+  headButton: {
+    flex: '0 0 auto' as const,
+    alignSelf: 'center' as const,
+    padding: '2px 8px',
+    fontSize: '11px',
+    lineHeight: 1.4,
+    borderRadius: '4px',
+    border: '1px solid color-mix(in srgb, currentColor 40%, transparent)',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  headPrimary: { background: 'color-mix(in srgb, currentColor 14%, transparent)', fontWeight: 600 },
+  hint: { marginTop: '8px', fontSize: '11px', lineHeight: 1.5, opacity: 0.65 },
+  notice: { marginTop: '8px', fontSize: '11.5px', lineHeight: 1.5, color: 'var(--dsh-color-success, #1f7a58)' },
   button: {
     alignSelf: 'flex-start' as const,
     padding: '3px 8px',
@@ -845,6 +941,185 @@ function DocumentModal({
 }
 
 /**
+ * One chapter, as a reader and as an editor.
+ *
+ * The prose is the one artefact the workflow expects the author to touch by
+ * hand (去 AI 化 and hand-cutting happen outside the model), so the card opens it
+ * here rather than sending the author to an editor. Preview is the default:
+ * reading a chapter should not put a textarea under the cursor. Editing swaps in
+ * the textarea; Save writes through the host command (`./save.ts`) because the
+ * browser half's file Remote is read-only.
+ *
+ * The save sends the body it opened with as `base`. The host refuses a save
+ * whose base no longer matches the file, so a chapter the agent wrote while the
+ * editor was open is never silently replaced — the author re-reads and edits the
+ * newer text instead.
+ *
+ * @param props - the card, its current body, the session, the close and
+ *   refreshed callbacks, and the panel's translator.
+ * @returns the dialog.
+ */
+function ChapterModal({
+  card,
+  body,
+  sessionId,
+  onClose,
+  onSaved,
+  t,
+}: {
+  card: BoardCard
+  body: string
+  sessionId: SessionId
+  onClose: () => void
+  onSaved: (confirmation: string) => void
+  t: Translator
+}): React.ReactNode {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(body)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const title = card.title.trim() === '' ? `第${String(card.number)}章` : card.title
+  const words = countWords(editing ? draft : body)
+  const dirty = editing && draft !== body
+
+  // A save (or the board's own refresh) replaces the body behind the modal. The
+  // draft follows only while the author is not editing, so an in-flight edit is
+  // never overwritten under the cursor.
+  useEffect(() => {
+    if (!editing) setDraft(body)
+  }, [body, editing])
+
+  const startEdit = (): void => {
+    setDraft(body)
+    setError(null)
+    setEditing(true)
+  }
+  const cancelEdit = (): void => {
+    setDraft(body)
+    setError(null)
+    setEditing(false)
+  }
+  const commit = async (): Promise<void> => {
+    const remote = clientRemote()
+    if (remote === undefined) {
+      setError(t('board.noRemote'))
+      return
+    }
+    setSaving(true)
+    setError(null)
+    const outcome = await saveChapterBody(remote, sessionId, { kind: 'chapter', id: card.id, text: draft, base: body })
+    setSaving(false)
+    if (!outcome.ok) {
+      setError(outcome.message)
+      return
+    }
+    // The board closes the editor and re-reads: keeping it open would leave the
+    // next edit's `base` pointing at the body the save just replaced.
+    onSaved(outcome.text)
+  }
+
+  return (
+    <div
+      style={STYLE.backdrop}
+      role="presentation"
+      onClick={(event) => {
+        // While editing, a stray click outside must not discard the draft; the
+        // explicit close button and Escape still leave.
+        if (event.target === event.currentTarget && !editing) onClose()
+      }}
+    >
+      <div
+        style={{ ...STYLE.modal, ...STYLE.chapterModal }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return
+          event.stopPropagation()
+          if (editing) cancelEdit()
+          else onClose()
+        }}
+      >
+        <div style={STYLE.modalHead}>
+          <span style={STYLE.modalTitle} title={`${String(card.number).padStart(3, '0')} · ${title}`}>
+            {String(card.number).padStart(3, '0')} · {title}
+          </span>
+          {editing ? (
+            <>
+              <button
+                type="button"
+                style={{ ...STYLE.headButton, ...STYLE.headPrimary }}
+                onClick={() => void commit()}
+                disabled={saving || !dirty}
+              >
+                {saving ? t('board.saving') : t('board.save')}
+              </button>
+              <button type="button" style={STYLE.headButton} onClick={cancelEdit} disabled={saving}>
+                {t('board.cancel')}
+              </button>
+            </>
+          ) : (
+            <button type="button" style={STYLE.headButton} onClick={startEdit} autoFocus>
+              {t('board.edit')}
+            </button>
+          )}
+          <span style={STYLE.badge}>{STATUS_LABELS[card.status] ?? card.status}</span>
+          <button
+            type="button"
+            style={STYLE.modalClose}
+            onClick={onClose}
+            aria-label={t('board.viewerClose')}
+            title={t('board.viewerClose')}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ ...STYLE.modalBody, ...STYLE.chapterBody }}>
+          <div style={STYLE.editorMeta}>
+            <span>
+              {t('board.chapterWordCount')} {String(words)}
+              {card.targetWords > 0 ? ` / ${t('board.chapterTarget')} ${String(card.targetWords)}` : ''}
+            </span>
+            <span style={{ flex: 1 }} />
+            {editing ? <span style={STYLE.warn}>{t('board.unsaved')}</span> : <span style={STYLE.meta}>{t('board.previewOnly')}</span>}
+          </div>
+          {card.synopsis.trim() === '' ? null : <div style={STYLE.meta}>{card.synopsis}</div>}
+          {editing ? (
+            <textarea
+              style={STYLE.editor}
+              value={draft}
+              // The client tsconfig does not load lib.dom (the host half shares
+              // it), so the textarea's DOM members are read through this cast
+              // rather than widening the package's lib for one input.
+              onChange={(event) => setDraft((event.currentTarget as unknown as { value: string }).value)}
+              spellCheck={false}
+              autoFocus
+              disabled={saving}
+              aria-label={t('board.chapterPreview')}
+            />
+          ) : body.trim() === '' ? (
+            <div style={STYLE.chapterScroll}>
+              <p style={STYLE.dim}>{t('board.emptyBody')}</p>
+            </div>
+          ) : (
+            <div style={STYLE.chapterScroll}>
+              <pre style={STYLE.chapterText}>{body}</pre>
+            </div>
+          )}
+          {error !== null && (
+            <div style={STYLE.error} role="alert">
+              {t('board.saveFailed')}：{error}
+            </div>
+          )}
+          {editing && <div style={STYLE.hint}>{t('board.editHint')}</div>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
  * The process documents, as one row.
  *
  * This is the half of the board a project has before it has any chapters, which
@@ -915,10 +1190,14 @@ function Documents({
 /**
  * One chapter card.
  *
- * @param props - the card and the panel's translator.
+ * Every column's card opens the chapter, not just the drafting one: reading a
+ * finished chapter is how an author decides what to revise, and a planned
+ * chapter with no prose opens to the editor's empty state.
+ *
+ * @param props - the card, the panel's translator, and the open callback.
  * @returns the card.
  */
-function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode {
+function Card({ card, t, onOpen }: { card: BoardCard; t: Translator; onOpen: () => void }): React.ReactNode {
   const title = card.title.trim() === '' ? `第${String(card.number)}章` : card.title
   // The card shows the length the column is measured against: a first draft
   // runs to the draft ratio of the target so that 去 AI 化 and hand-cutting
@@ -932,7 +1211,19 @@ function Card({ card, t }: { card: BoardCard; t: Translator }): React.ReactNode 
         ? `成稿目标 ${String(card.targetWords)} 字（-5%/+15%）`
         : undefined
   return (
-    <div style={STYLE.card} title={card.synopsis.trim() === '' ? undefined : card.synopsis}>
+    <div
+      style={{ ...STYLE.card, ...STYLE.cardOpen }}
+      title={card.synopsis.trim() === '' ? undefined : card.synopsis}
+      role="button"
+      tabIndex={0}
+      aria-label={`${String(card.number).padStart(3, '0')} ${title}`}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        onOpen()
+      }}
+    >
       <div style={STYLE.cardTop}>
         <span style={STYLE.cardNumber}>{String(card.number).padStart(3, '0')}</span>
         <span style={STYLE.cardTitle}>{title}</span>
@@ -1035,11 +1326,13 @@ function Column({
   cards,
   words,
   t,
+  onOpen,
 }: {
   status: ChapterStatus
   cards: readonly BoardCard[]
   words: number
   t: Translator
+  onOpen: (card: BoardCard) => void
 }): React.ReactNode {
   return (
     <div style={STYLE.column}>
@@ -1050,7 +1343,7 @@ function Column({
         </span>
       </div>
       {cards.map((card) => (
-        <Card key={card.id} card={card} t={t} />
+        <Card key={card.id} card={card} t={t} onOpen={() => onOpen(card)} />
       ))}
     </div>
   )
@@ -1100,6 +1393,12 @@ function KanbanView({
             // was assembled from, so opening a card cannot show a different project
             // than the one the cards were counted from.
             views: documentViewsOf(read.state, read.metadata.index, read.files),
+            // The chapter modal edits the assembled body, not the file text: the
+            // store renders frontmatter and headings around it, and an author
+            // saving prose should never see either.
+            bodies: Object.fromEntries(
+              Object.entries(read.state.chapters).map(([id, chapter]) => [id, chapter.body]),
+            ) as Readonly<Record<string, string>>,
             at: read.state.updatedAt,
           },
     [read?.state, read?.metadata, read?.files],
@@ -1135,7 +1434,15 @@ function KanbanView({
         </div>
       )}
       {shown !== undefined && (
-        <Board board={shown.board} views={shown.views} meta={metaOf(shown.at, t)} onRefresh={refresh} t={t} />
+        <Board
+          board={shown.board}
+          views={shown.views}
+          bodies={shown.bodies}
+          sessionId={sessionId}
+          meta={metaOf(shown.at, t)}
+          onRefresh={refresh}
+          t={t}
+        />
       )}
     </div>
   )
@@ -1161,26 +1468,66 @@ function metaOf(at: string, t: Translator): string | undefined {
 function Board({
   board,
   views,
+  bodies,
+  sessionId,
   meta,
   onRefresh,
   t,
 }: {
   board: KanbanBoard
   views: Readonly<Record<string, readonly DocumentView[]>>
+  bodies: Readonly<Record<string, string>>
+  sessionId: SessionId
   meta: string | undefined
   onRefresh: () => void
   t: Translator
 }): React.ReactNode {
+  // The open chapter is held by id, not by card value: a save re-reads the
+  // project, and the modal should show the fresh card (its word count and
+  // status may have moved) rather than the snapshot that was clicked.
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [savedText, setSavedText] = useState<string | null>(null)
+  const openCard =
+    openId === null
+      ? undefined
+      : board.columns.flatMap((column) => column.cards).find((card) => card.id === openId)
+  const close = useCallback(() => {
+    setOpenId(null)
+  }, [])
+  // A save closes the editor and re-reads: the refresh is what moves the card to
+  // its new column, and keeping the editor open would leave the next edit's
+  // `base` pointing at the body the save just replaced. The confirmation stays
+  // in the header until the next open or refresh.
+  const saved = useCallback(
+    (confirmation: string) => {
+      setOpenId(null)
+      setSavedText(confirmation)
+      onRefresh()
+    },
+    [onRefresh],
+  )
   return (
     <>
       <div style={STYLE.boardHead}>
         <h2 style={STYLE.title}>{t('board.columns')}</h2>
         {meta !== undefined && <span style={STYLE.meta}>{meta}</span>}
         <span style={{ flex: 1 }} />
-        <button type="button" style={STYLE.button} onClick={onRefresh}>
+        <button
+          type="button"
+          style={STYLE.button}
+          onClick={() => {
+            setSavedText(null)
+            onRefresh()
+          }}
+        >
           {t('board.refresh')}
         </button>
       </div>
+      {savedText !== null && (
+        <div style={STYLE.notice}>
+          {t('board.saved')} · {savedText}
+        </div>
+      )}
       <Overview board={board} t={t} />
       <Documents documents={board.documents} views={views} t={t} />
       {board.progress.chapters === 0 ? (
@@ -1188,9 +1535,29 @@ function Board({
       ) : (
         <div style={STYLE.board}>
           {board.columns.map((column) => (
-            <Column key={column.status} status={column.status} cards={column.cards} words={column.words} t={t} />
+            <Column
+              key={column.status}
+              status={column.status}
+              cards={column.cards}
+              words={column.words}
+              t={t}
+              onOpen={(card) => {
+                setSavedText(null)
+                setOpenId(card.id)
+              }}
+            />
           ))}
         </div>
+      )}
+      {openCard !== undefined && (
+        <ChapterModal
+          card={openCard}
+          body={bodies[openCard.id] ?? ''}
+          sessionId={sessionId}
+          onClose={close}
+          onSaved={saved}
+          t={t}
+        />
       )}
     </>
   )

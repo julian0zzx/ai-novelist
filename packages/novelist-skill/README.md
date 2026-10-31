@@ -134,6 +134,18 @@ close button, the backdrop, or Escape, and `readProject` now carries the raw con
 already loaded so opening a card needs no second read. Like `board.ts`, the module is pure and
 is specified without a browser in `test/document-views.test.ts`.
 
+`save.ts` (client) is the one write the board performs. A chapter card opens a preview; `编辑`
+swaps in a textarea; Save dispatches the host's `novel-save` command with the new body and the
+body the editor opened with. The browser half's `workspaceFiles` Remote is read-only, so the
+command plane is the save channel — it runs host code from the Web UI without a model turn — and
+`host/commands.ts` applies the edit through the same `NovelStore.update` every tool uses,
+archiving the replaced draft under `.novel/versions/`. The command refuses a stale `base`, so a
+chapter the agent wrote while the dialog was open is never silently overwritten. The command is
+mounted only where the profile provides a `commands` service (the `ctx.reflect.get` /
+`ctx.inject` trigger pattern the review tool uses for `llm`); without one, the board stays
+read-only. `core/save.ts` holds the shared payload shape and parse, specified in
+`test/save.test.ts` without a host or a browser.
+
 ## The tool surface
 
 One tool per capability, each owning one phase or one kind of state — except `novel_assess`,

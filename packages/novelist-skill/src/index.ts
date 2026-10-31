@@ -25,6 +25,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { adoptableVerdict, hasNovelSignals, type WorkspaceKind, type WorkspaceVerdict } from './core/workspace.ts'
 import type { ReviewSettings } from './host/llm.ts'
 import { DEFAULT_REVIEW_REASONING_EFFORT, REVIEW_REASONING_EFFORTS } from './host/llm.ts'
+import { registerSaveCommand } from './host/commands.ts'
 import { registerWorkspacePrompt } from './host/prompt.ts'
 import { createProjectResolver } from './host/resolver.ts'
 import { registerReviewTool, registerTools } from './host/tools.ts'
@@ -216,6 +217,22 @@ export function apply(ctx: Context, config: ComposerConfig): void {
     reminderTimeZone: config.reminderTimeZone,
   })
   registerWorkspacePrompt(ctx, views)
+
+  // The Kanban board's Save button is a *human* edit, and the Web client has no
+  // write Remote: `workspaceFiles` is read-only and a plugin cannot add a
+  // namespace to the assembly. The command plane is the supported channel for a
+  // human action that must not become a model turn, so the board saves through
+  // `/<SAVE_COMMAND>` and this host half writes through the same store the tools
+  // use. Mounting is optional and guarded: a profile without a command surface
+  // keeps the board read-only rather than failing to load.
+  let saveMounted = false
+  const mountSave = (): void => {
+    if (saveMounted) return
+    saveMounted = true
+    registerSaveCommand(ctx, projects, views)
+  }
+  if (ctx.reflect.get('commands') !== undefined) mountSave()
+  else ctx.inject(['commands'], mountSave)
 
   // The eight tools compute; `novel_review` asks a model. It is mounted only
   // where an `llm` service exists. A profile without one keeps the eight

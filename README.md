@@ -68,6 +68,18 @@ File-backed documents show the file (`全书大纲.md`, `人物设定.md`, `世�
 Markdown rather than a raw JSON dump. Untouched documents stay plain cards, so a card never
 opens an empty dialog.
 
+**A chapter card opens the prose: read it, edit it, save it — no external editor.** Every
+column opens, not only 写作中. Preview comes first; *编辑* swaps in a textarea; Save writes the
+chapter file and the card drops back onto the board with its new word count (a first body on a
+planned chapter moves it to 写作中 by itself). The browser half's file Remote is read-only, so
+the save travels as the host-registered `novel-save` command — the command plane is the one
+Web path that writes to the project without a model turn — and the host applies it through the
+same `NovelStore.update` every tool uses, archiving the replaced draft under `.novel/versions/`.
+The save carries the body the editor opened with as `base`; if the agent wrote that chapter in
+the meantime the save is refused with a "re-read" message instead of silently overwriting it.
+Process documents stay read-only previews: the tools generate them (frontmatter and section
+structure included), so changing one is a `novel_plan` / `novel_bible` call, not a file edit.
+
 **State colour and clickability.** Complete is pine green `#1f7a58`, in progress / awaiting
 sign-off is amber `#9a6207`, not started is slate `#5f6673`; each card carries its state hue
 three ways — a tinted fill, a coloured left rule and a filled state badge. Clickable cards keep
@@ -401,7 +413,7 @@ plugin and the browser half:
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.8.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.11.tgz
 ```
 
 The tarball carries the built `lib/`, so a target machine needs only Node and DSH — no
