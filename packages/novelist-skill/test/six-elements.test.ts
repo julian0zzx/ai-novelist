@@ -388,7 +388,7 @@ describe('the tools write the new elements', () => {
       place: '青云山 外门石阶',
     })
     expect((chapter['warnings'] as string[]).join(' ')).not.toMatch(/缺时空锚点/)
-    const contract = await readFile(join(root, '章节', '第001章-山门.细纲.md'), 'utf8')
+    const contract = await readFile(join(root, '章节大纲', '第001章-山门.细纲.md'), 'utf8')
     expect(contract).toContain('## 时间')
     expect(contract).toContain('第三日 黄昏')
     expect(contract).toContain('## 地点')

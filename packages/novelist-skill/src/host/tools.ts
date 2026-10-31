@@ -52,6 +52,7 @@ import {
   LINK_STATUSES,
   METRIC_KEYS,
   NAMING_MIN_CANDIDATES,
+  DEFAULT_STORAGE_LAYOUT,
   OUTLINE_SPINE_PARTS,
   OUTLINE_STYLE_FIELDS,
   OUTLINE_STYLE_PARTS,
@@ -200,6 +201,7 @@ import {
   type ReviewRecord,
   type SettingsLayer,
   type SettingsLayerKey,
+  type StorageLayout,
   type VerdictLevel,
 } from '../core/index.ts'
 import { CUT_LOSS_MULTIPLIER, DEFAULT_MULTIPLIERS, INEFFECTIVE_ITERATIONS_FOR_CUT } from '../core/metrics.ts'
@@ -290,7 +292,7 @@ function assertSkeletonAuthorised(tool: string, state: NovelState, what: string)
  * @param state - the project.
  * @returns one line per content location, empty when the state has no index yet.
  */
-function contentFileLines(state: NovelState): string[] {
+function contentFileLines(state: NovelState, layout: StorageLayout = DEFAULT_STORAGE_LAYOUT): string[] {
   const index = state.index
   if (index === undefined) return []
   const volumes = Object.values(index.volumes).sort((a, b) => a.number - b.number)
@@ -300,15 +302,22 @@ function contentFileLines(state: NovelState): string[] {
       + `${volumes.map((ref) => ref.file).join('、')}）`
   const plans = Object.values(index.chapterPlans).sort((a, b) => a.volume - b.volume)
   const planLine = plans.length === 0
-    ? `- 章节大纲：${index.chapterPlanFile}（开篇工程清单与索引）+ ${index.chapterPlanDir}/（一卷一个文件，尚无文件）`
-    : `- 章节大纲：${index.chapterPlanFile}（开篇工程清单与索引）+ ${index.chapterPlanDir}/（一卷一个文件，现有 `
-      + `${String(plans.length)} 个：${plans.map((ref) => ref.file).join('、')}）`
+    ? `- 章节大纲：${index.chapterPlanFile}（开篇工程清单与索引）+ ${index.chapterPlanDir}/`
+      + `（一卷一个文件 + 每章细纲，尚无文件）`
+    : `- 章节大纲：${index.chapterPlanFile}（开篇工程清单与索引）+ ${index.chapterPlanDir}/（一卷一个文件 + 每章细纲，`
+      + `现有 ${String(plans.length)} 个分卷文件：${plans.map((ref) => ref.file).join('、')}）`
+  const contracts = Object.values(index.chapters).map((ref) => ref.outlineFile).filter((path) => path !== '')
+  const chapterLine = contracts.length === 0
+    ? `- 章节：${layout.chapterDir}/（每章正文；细纲在 ${index.chapterPlanDir}/）`
+    : `- 章节：${layout.chapterDir}/（每章正文，现有 ${String(contracts.length)} 章；细纲在 ${index.chapterPlanDir}/：`
+      + `${contracts.slice(0, 3).join('、')}${contracts.length > 3 ? ' 等' : ''}）`
   return [
     `- 全书大纲：${index.outlineFile}`,
     `- 世界观设定：${index.worldFile}`,
     `- 人物设定：${index.castFile}`,
     volumeLine,
     planLine,
+    chapterLine,
     `- 竞品拆解：${index.competitorFile}`,
   ]
 }
@@ -3517,7 +3526,7 @@ export function registerTools(
             }`,
             '',
             '## 内容文件',
-            ...contentFileLines(state),
+            ...contentFileLines(state, store.layout),
             '',
             '## 篇幅（初始化四问）',
             describeWritingPlan(state.writing),
@@ -3762,7 +3771,7 @@ export function registerTools(
               '',
               '## 内容文件（可直接编辑；文件为准）',
               `- 元数据与索引：${NOVEL_RELATIVE_PATH}`,
-              ...contentFileLines(state),
+              ...contentFileLines(state, store.layout),
             )
             for (const chapter of Object.values(state.chapters).sort((a, b) => a.number - b.number)) {
               const ref = index.chapters[chapter.id]

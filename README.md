@@ -231,23 +231,32 @@ novel-workspace/
   章节大纲/
     第1卷.md             # this volume's chapter table + its rhythm table (each contract ≈ chapter/5)
     未分卷.md            # chapters filed under no volume yet
+    第001章-山门.细纲.md # the contract: plot task, time, place, key turn, price paid, conflict, payoff, gap, hook
   竞品拆解.md            # one section per comparable title, twelve editable fields (20–50 of them)
   分卷大纲/
     第1卷.md             # ONE FILE PER VOLUME: its own rhythm (≈ volume/50) and the volume's seven
                          # narrative elements as `##` sections; goal/conflict/climax/hook in the frontmatter
     第2卷.md             # a later volume is rewritten without touching the volumes before it
   章节/
-    第001章-山门.md      # prose
-    第001章-山门.细纲.md # the contract: plot task, key turn, price paid, conflict, payoff, gap, beats, hook
+    第001章-山门.md      # prose only — the contracts live under 章节大纲/
   .novel/
     novel.json            # metadata + index (schemaVersion: 5)
     novel.v2.backup.json  # only after a migration; never overwritten
+    duplicates/           # originals folded in from a stray 设定/ folder; never overwritten
     manuscript.md         # written by novel_repo operation="export"
     submission.md         # written by novel_repo operation="submission"
     templates/            # written by novel_repo operation="template"
     reviews/              # model transcripts and rewritten drafts
     versions/             # the body an overwrite replaced: 001-20240501T000000Z.md
 ```
+
+**Each document has exactly one home.** The tool recognises only the paths above. A contract left in
+`章节/` by an older build is moved into `章节大纲/` on the next read, and a stray `设定/` folder is
+folded into the canonical files — missing fields and entries are filled, existing answers are never
+overwritten — with the original archived under `.novel/duplicates/`. Anything else in `设定/` (premise
+notes, research) is left alone. `章节大纲.md` and `章节大纲/` are **not two outlines**: the file holds
+the whole-book opening checklist and per-volume index, the directory holds each volume's chapter/rhythm
+tables and each chapter's contract, and `章节/` holds prose only.
 
 **Each volume keeps its outline, its chapter table and its rhythm table in its own files.** A volume
 gets rewritten while the volumes before it are already being serialized, so the files are named by
@@ -280,8 +289,10 @@ and the collection deleted. A version-4 document has the whole chapter plan in o
 store splits the chapter and rhythm tables into `章节大纲/第N卷.md` by each row's `卷` column,
 leaves the opening checklist and a per-volume index in `章节大纲.md`, and reruns idempotently
 if interrupted. New files are written first and the old collection is removed last, so an
-interrupted migration reruns on the next read. An unsupported version is refused rather than
-guessed at.
+interrupted migration reruns on the next read. A project that still keeps chapter contracts in
+`章节/` has them moved into `章节大纲/` on read (new file first, old one last); two differing copies
+keep the `章节大纲/` one and archive the other under `.novel/duplicates/`. An unsupported version is
+refused rather than guessed at.
 
 ### How a workspace becomes a novel workspace
 
@@ -390,7 +401,7 @@ plugin and the browser half:
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.0.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.8.tgz
 ```
 
 The tarball carries the built `lib/`, so a target machine needs only Node and DSH — no

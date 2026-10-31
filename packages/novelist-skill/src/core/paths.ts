@@ -34,6 +34,44 @@ export const METADATA_RELATIVE_PATH = '.novel/novel.json'
 export const MIGRATION_BACKUP_PATH = '.novel/novel.v2.backup.json'
 
 /**
+ * The directory a model or author may have invented for "the settings".
+ *
+ * The composer has exactly one home per document (the five top-level files and
+ * the two per-item directories), so a numbered `设定/` folder is always a second
+ * copy of something the tool already writes elsewhere. The store folds its
+ * contents into the canonical files and archives the originals instead of
+ * letting two versions of the same outline drift apart. See
+ * {@link settingsDocumentKind}.
+ */
+export const LEGACY_SETTINGS_DIR = '设定'
+
+/** Where a duplicate that was folded into a canonical file is preserved. */
+export const DUPLICATE_BACKUP_DIR = '.novel/duplicates'
+
+/** The canonical documents a `设定/` file can duplicate. */
+export type SettingsDocumentKind = 'outline' | 'cast' | 'world' | 'volumes'
+
+/**
+ * Which canonical settings document a file in {@link LEGACY_SETTINGS_DIR} copies.
+ *
+ * Matched on the basename only, and deliberately loose: the folder is not a
+ * format, it is an accident, and the numbered prefixes (`02-…`) carry no meaning
+ * worth parsing. A file that names none of the four documents is left alone —
+ * the composer does not own everything an author puts in a folder.
+ *
+ * @param fileName - a basename or a path such as `设定/04-全书大纲.md`.
+ * @returns the document it duplicates, or `undefined` when it duplicates none.
+ */
+export function settingsDocumentKind(fileName: string): SettingsDocumentKind | undefined {
+  const base = (fileName.split('/').pop() ?? fileName).toLowerCase()
+  if (/分卷大纲|卷纲/u.test(base)) return 'volumes'
+  if (/全书大纲|总大纲/u.test(base)) return 'outline'
+  if (/人物设定|人设|角色设定/u.test(base)) return 'cast'
+  if (/世界观设定|世界观/u.test(base)) return 'world'
+  return undefined
+}
+
+/**
  * The old single-file home of the volume outlines, kept only so the version-3
  * reader can find it.
  *
@@ -112,6 +150,13 @@ export function chapterStem(number: number, title: string): string {
 /**
  * Both workspace-relative paths of one chapter.
  *
+ * The prose and its contract deliberately live apart: the prose is the
+ * manuscript (`章节/`), while the contract is an outline and belongs with the
+ * rest of the outlines (`章节大纲/`). Keeping two files that describe the same
+ * chapter in one directory made `章节/` read like "everything about chapters" —
+ * so the folder filled with plans a reader of the manuscript never wants, and
+ * the contract was the harder file to find.
+ *
  * @param number - the chapter number.
  * @param title - the chapter title.
  * @param layout - the storage layout.
@@ -122,8 +167,45 @@ export function chapterPaths(
   title: string,
   layout: StorageLayout = DEFAULT_STORAGE_LAYOUT,
 ): { readonly bodyFile: string; readonly outlineFile: string } {
-  const stem = `${layout.chapterDir}/${chapterStem(number, title)}`
-  return { bodyFile: `${stem}.md`, outlineFile: `${stem}.细纲.md` }
+  const stem = chapterStem(number, title)
+  return {
+    bodyFile: `${layout.chapterDir}/${stem}.md`,
+    outlineFile: `${layout.chapterPlanDir}/${stem}.细纲.md`,
+  }
+}
+
+/**
+ * Where a chapter contract lived before it moved into the chapter-plan directory.
+ *
+ * Used only by the read-time migration, which moves every `章节/*.细纲.md` to
+ * its canonical home; a project written by this build never produces this path.
+ *
+ * @param fileName - the old contract path (or basename).
+ * @param layout - the storage layout.
+ * @returns the workspace-relative legacy path.
+ */
+export function legacyChapterOutlinePath(
+  fileName: string,
+  layout: StorageLayout = DEFAULT_STORAGE_LAYOUT,
+): string {
+  const base = fileName.split('/').pop() ?? fileName
+  return `${layout.chapterDir}/${base}`
+}
+
+/**
+ * The canonical path of a chapter contract, for a file that may sit at the
+ * legacy `章节/` location.
+ *
+ * @param fileName - the contract path (or basename).
+ * @param layout - the storage layout.
+ * @returns the workspace-relative canonical path.
+ */
+export function canonicalChapterOutlinePath(
+  fileName: string,
+  layout: StorageLayout = DEFAULT_STORAGE_LAYOUT,
+): string {
+  const base = fileName.split('/').pop() ?? fileName
+  return `${layout.chapterPlanDir}/${base}`
 }
 
 /**

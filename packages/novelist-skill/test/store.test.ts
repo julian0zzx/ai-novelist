@@ -287,7 +287,7 @@ describe('NovelStore content files', () => {
     expect(onDisk['chapters']).toBeUndefined()
     const chapter = await readFile(join(root, '章节/第001章-山门.md'), 'utf8')
     expect(chapter).toContain('山门很高，云雾不散。')
-    const contract = await readFile(join(root, '章节/第001章-山门.细纲.md'), 'utf8')
+    const contract = await readFile(join(root, '章节大纲/第001章-山门.细纲.md'), 'utf8')
     expect(contract).toContain('## 剧情任务')
     expect(contract).toContain('## 章末钩子')
     const state = await store.read()
@@ -298,7 +298,7 @@ describe('NovelStore content files', () => {
 
   it('adopts an edit made in the author\'s own editor, and says which file it claimed', async () => {
     await seeded()
-    const contractPath = join(root, '章节/第001章-山门.细纲.md')
+    const contractPath = join(root, '章节大纲/第001章-山门.细纲.md')
     const before = await readFile(contractPath, 'utf8')
     await writeFile(contractPath, before.replace('山门后传来一声钟响。', '钟声之后，后山传来父亲的剑鸣。'), 'utf8')
 
@@ -345,9 +345,9 @@ describe('NovelStore content files', () => {
     const state = await store.read()
     expect(state?.chapters['chapter-1']?.title).toBe('山门之下')
     expect(await readFile(join(root, '章节/第001章-山门之下.md'), 'utf8')).toContain('山门很高')
-    expect(await readFile(join(root, '章节/第001章-山门之下.细纲.md'), 'utf8')).toContain('## 章末钩子')
+    expect(await readFile(join(root, '章节大纲/第001章-山门之下.细纲.md'), 'utf8')).toContain('## 章末钩子')
     await expect(readFile(join(root, '章节/第001章-山门.md'), 'utf8')).rejects.toThrow()
-    await expect(readFile(join(root, '章节/第001章-山门.细纲.md'), 'utf8')).rejects.toThrow()
+    await expect(readFile(join(root, '章节大纲/第001章-山门.细纲.md'), 'utf8')).rejects.toThrow()
 
     // The index and the chapter plan follow the rename.
     expect(state?.index?.chapters['chapter-1']?.bodyFile).toBe('章节/第001章-山门之下.md')
@@ -487,7 +487,7 @@ describe('NovelStore migration', () => {
     expect(await readFile(join(root, '全书大纲.md'), 'utf8')).toContain('# 全书大纲')
     expect(await readFile(join(root, '人物设定.md'), 'utf8')).toContain('## 林越')
     expect(await readFile(join(root, '章节/第001章-山门.md'), 'utf8')).toContain('山门很高。')
-    expect(await readFile(join(root, '章节/第001章-山门.细纲.md'), 'utf8')).toContain('抵达山门')
+    expect(await readFile(join(root, '章节大纲/第001章-山门.细纲.md'), 'utf8')).toContain('抵达山门')
     // 3. The document is at the current version and carries only metadata plus
     // the index.
     const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as {
@@ -914,6 +914,160 @@ describe('NovelStore volume files', () => {
     }))
     await expect(readFile(join(root, '分卷大纲', '第2卷.md'), 'utf8')).rejects.toThrow()
     expect(await readFile(join(root, '分卷大纲', '第1卷.md'), 'utf8')).toContain('# 第 1 卷 山门')
+  })
+})
+
+describe('one home per document', () => {
+  it('writes a chapter contract into 章节大纲/, and keeps the prose in 章节/', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await store.update((state) =>
+      upsertChapter(
+        state,
+        { id: 'chapter-1', number: 1, title: '山门', plotTask: '抵达山门', body: '山门很高。' },
+        () => clock,
+      ),
+    )
+
+    expect(await readFile(join(root, '章节/第001章-山门.md'), 'utf8')).toContain('山门很高。')
+    expect(await readFile(join(root, '章节大纲/第001章-山门.细纲.md'), 'utf8')).toContain('## 剧情任务')
+    await expect(readFile(join(root, '章节/第001章-山门.细纲.md'), 'utf8')).rejects.toThrow()
+  })
+
+  it('moves a contract left in 章节/ by an older build, and re-points the index', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await store.update((state) =>
+      upsertChapter(state, { id: 'chapter-1', number: 1, title: '山门', body: '山门很高。' }, () => clock),
+    )
+
+    // Recreate the old layout: the contract in 章节/, and the index naming it there.
+    const contract = await readFile(join(root, '章节大纲/第001章-山门.细纲.md'), 'utf8')
+    await rm(join(root, '章节大纲/第001章-山门.细纲.md'))
+    await writeFile(join(root, '章节/第001章-山门.细纲.md'), contract, 'utf8')
+    const document = JSON.parse(await readFile(docPath(), 'utf8')) as {
+      index: { chapters: Record<string, { outlineFile: string }> }
+    }
+    document.index.chapters['chapter-1']!.outlineFile = '章节/第001章-山门.细纲.md'
+    await writeFile(docPath(), `${JSON.stringify(document, null, 2)}\n`, 'utf8')
+
+    const loaded = await store.readVersioned()
+    expect(loaded?.migration).toMatch(/章节细纲已移到 章节大纲\//u)
+    expect(await readFile(join(root, '章节大纲/第001章-山门.细纲.md'), 'utf8')).toContain('## 剧情任务')
+    await expect(readFile(join(root, '章节/第001章-山门.细纲.md'), 'utf8')).rejects.toThrow()
+    expect(loaded?.state.index?.chapters['chapter-1']?.outlineFile)
+      .toBe('章节大纲/第001章-山门.细纲.md')
+  })
+
+  it('claims a contract dropped into 章节大纲/ by hand', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await mkdir(join(root, '章节大纲'), { recursive: true })
+    await writeFile(
+      join(root, '章节大纲/第002章-石阶.细纲.md'),
+      '---\nid: "chapter-2"\nnumber: 2\n---\n\n## 剧情任务\n\n他在石阶上跪了一夜。\n',
+      'utf8',
+    )
+
+    const loaded = await store.readVersioned()
+    expect(loaded?.warnings.join(' ')).toMatch(/认领了未登记的细纲 章节大纲\/第002章-石阶\.细纲\.md/u)
+    expect(loaded?.state.chapters['chapter-2']?.plotTask).toBe('他在石阶上跪了一夜。')
+    expect(loaded?.state.index?.chapters['chapter-2']?.bodyFile).toBe('章节/第002章-石阶.md')
+  })
+
+  it('folds a duplicate 设定/ outline into the canonical file and archives the copy', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await mkdir(join(root, '设定'), { recursive: true })
+    const duplicate = [
+      '# 全书大纲',
+      '',
+      '## 一句话',
+      '',
+      '少年持断剑上山，问一桩旧案的死因。',
+      '',
+      '## 故事六要素',
+      '',
+      '### 时间',
+      '',
+      '大胤三十七年秋',
+      '',
+    ].join('\n')
+    await writeFile(join(root, '设定/04-全书大纲.md'), duplicate, 'utf8')
+    await writeFile(join(root, '设定/01-创意.md'), '# 创意\n\n不算设定文件，别动它。\n', 'utf8')
+
+    const loaded = await store.readVersioned()
+    expect(loaded?.warnings.join(' ')).toMatch(/发现重复的设定文件 设定\/04-全书大纲\.md/u)
+    expect(await readFile(join(root, '全书大纲.md'), 'utf8')).toContain('少年持断剑上山，问一桩旧案的死因。')
+    expect(await readFile(join(root, '全书大纲.md'), 'utf8')).toContain('大胤三十七年秋')
+    await expect(readFile(join(root, '设定/04-全书大纲.md'), 'utf8')).rejects.toThrow()
+    expect(await readFile(join(root, '.novel/duplicates/04-全书大纲.md'), 'utf8')).toBe(duplicate)
+    // The composer owns four settings documents, not the whole folder.
+    expect(await readFile(join(root, '设定/01-创意.md'), 'utf8')).toContain('别动它')
+    expect(loaded?.state.outline.logline).toContain('少年持断剑上山')
+  })
+
+  it('keeps an unrecognised 设定/ outline instead of archiving a hand-written draft', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await mkdir(join(root, '设定'), { recursive: true })
+    const draft = '# 全书大纲\n\n少年持断剑上山，问一桩旧案的死因。\n'
+    await writeFile(join(root, '设定/04-全书大纲.md'), draft, 'utf8')
+
+    const loaded = await store.readVersioned()
+    expect(loaded?.warnings.join(' ')).toMatch(/不是工具格式的《全书大纲》/u)
+    // A file the tool cannot read is not a duplicate it may delete.
+    expect(await readFile(join(root, '设定/04-全书大纲.md'), 'utf8')).toBe(draft)
+    await expect(readFile(join(root, '.novel/duplicates/04-全书大纲.md'), 'utf8')).rejects.toThrow()
+  })
+
+  it('folds a duplicate 设定/ cast and volume collection into their own files', async () => {
+    await store.create(emptyNovel({ title: '青云记', premise: '少年上山' }, () => clock))
+    await mkdir(join(root, '设定'), { recursive: true })
+    await writeFile(
+      join(root, '设定/03-人物设定.md'),
+      [
+        '# 人物设定',
+        '',
+        '## 林越',
+        '',
+        '```yaml',
+        'id: "lin-yue"',
+        'name: "林越"',
+        'role: "protagonist"',
+        'scope: "main"',
+        '```',
+        '',
+        '十六岁，瘦，断剑不离手。',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    await writeFile(
+      join(root, '设定/05-分卷大纲.md'),
+      [
+        '# 分卷大纲',
+        '',
+        '## 第 1 卷',
+        '',
+        '```yaml',
+        'number: 1',
+        'title: "山门"',
+        'goal: "立住脚"',
+        '```',
+        '',
+        '### 本卷梗概',
+        '',
+        '林越拜入外门。',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+
+    const loaded = await store.readVersioned()
+    expect(await readFile(join(root, '人物设定.md'), 'utf8')).toContain('## 林越')
+    const volume = await readFile(join(root, '分卷大纲/第1卷.md'), 'utf8')
+    expect(volume).toContain('goal: "立住脚"')
+    expect(volume).toContain('林越拜入外门。')
+    expect(loaded?.state.characters['lin-yue']?.name).toBe('林越')
+    expect(loaded?.state.outline.volumes.map((entry) => entry.number)).toEqual([1])
+    expect(loaded?.warnings.join(' ')).toMatch(/设定\/03-人物设定\.md/u)
+    expect(loaded?.warnings.join(' ')).toMatch(/设定\/05-分卷大纲\.md/u)
   })
 })
 

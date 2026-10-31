@@ -44,18 +44,25 @@ import {
   frontNumber,
   hashContent,
   metadataOf,
+  parseCastFile,
   parseChapterPlanCollectionFile,
   parseChapterPlanVolumeFile,
   parseDocument,
   parseMetadata,
+  parseOutlineFile,
+  parseVolumeFile,
   planVolumesOf,
   parseVolumeCollectionFile,
+  renderCastFile,
   renderChapterPlanFile,
   renderChapterPlanVolumeFile,
   renderChapterVersion,
+  renderOutlineFile,
   renderVolumeFile,
+  renderWorldFile,
   serializeMetadata,
   stateOf,
+  parseWorldFile,
   type Chapter,
   type Clock,
   type YamlMap,
@@ -64,18 +71,32 @@ import {
 } from '../core/index.ts'
 import {
   DEFAULT_STORAGE_LAYOUT,
+  DUPLICATE_BACKUP_DIR,
+  LEGACY_SETTINGS_DIR,
   METADATA_RELATIVE_PATH,
   MIGRATION_BACKUP_PATH,
+  canonicalChapterOutlinePath,
   chapterPaths,
   chapterPlanPath,
   chapterPlanVolumeFromFileName,
   isMarkdownFile,
   isOutlineFile,
+  legacyChapterOutlinePath,
+  settingsDocumentKind,
   topLevelPaths,
   volumeNumberFromFileName,
   volumePath,
 } from '../core/paths.ts'
-import type { BeatSlot, NovelMetadata, NovelState, StorageIndex, StorageLayout } from '../core/types.ts'
+import type {
+  BeatSlot,
+  Character,
+  NovelMetadata,
+  NovelState,
+  StorageIndex,
+  StorageLayout,
+  VolumePlan,
+  WorldEntry,
+} from '../core/types.ts'
 import type { ChapterPlanGroup, ChapterPlanRow } from '../core/content.ts'
 import { NOVEL_DIR, classifyWorkspace, type WorkspaceVerdict } from '../core/workspace.ts'
 import { currentSandboxPolicy, type CallSandboxPolicy } from './sandbox.ts'
@@ -140,6 +161,14 @@ export interface WriteReport {
   readonly warnings: readonly string[]
   /** True when this write created the project document. */
   readonly created: boolean
+}
+
+/** What folding one `设定/` duplicate did, and whether the original can go. */
+interface FoldResult {
+  /** What happened, for the warning line. */
+  readonly note: string
+  /** Whether the original was understood and can be archived and removed. */
+  readonly archive: boolean
 }
 
 /**
@@ -560,12 +589,24 @@ export class NovelStore {
     const warnings: string[] = []
     const metadata = parsed.metadata
 
+    // A second copy of a settings document is folded into the canonical file
+    // before anything is read. It has to run first: the volume case *creates*
+    // per-volume files, and `claimVolumes` is what adopts them.
+    await this.consolidateDuplicateSettings(metadata.index, warnings, policy)
+
     // Directory hygiene: put back whatever the index lost, and report files that
     // cannot be claimed at all rather than deleting or ignoring them silently.
     const claimed = await this.claim({ ...metadata.index }, warnings)
     const volumeClaim = await this.claimVolumes(claimed.index, warnings)
+    // Contracts now live in `章节大纲/`, so this pass claims a hand-written one
+    // there as well as the per-volume tables — one directory listing for both.
     const planClaim = await this.claimChapterPlans(volumeClaim.index, warnings)
-    const indexed = planClaim.index
+    // Chapter contracts moved from `章节/` to `章节大纲/` in 0.3.8. The move is
+    // done on read so a project written by an older build keeps working without
+    // a version bump: the index ends up naming the new path, and the old file is
+    // deleted only after the new one has landed.
+    const movedContracts = await this.migrateChapterContracts(planClaim.index, warnings, policy)
+    const indexed = movedContracts.index
     const outlineFallback = metadata.opening
 
     const files: Record<string, string> = {}
@@ -607,7 +648,14 @@ export class NovelStore {
     // document written by an older build is rewritten even when the index it
     // produced matches, because the version and the index's own shape are part
     // of what this write brings up to date.
-    if (refreshed.changed || claimed.changed || volumeClaim.changed || planClaim.changed || upgrade) {
+    if (
+      refreshed.changed
+      || claimed.changed
+      || volumeClaim.changed
+      || planClaim.changed
+      || movedContracts.changed
+      || upgrade
+    ) {
       const written = await this.writeMetadataText(
         serializeMetadata(metadataOf(state, refreshed.index)),
         info.version,
@@ -813,12 +861,42 @@ export class NovelStore {
 
     const known = new Set(Object.values(index.chapterPlans).map((ref) => ref.file))
     const knownNumbers = new Set(Object.values(index.chapters).map((ref) => ref.number))
+    const knownOutlines = new Set(Object.values(index.chapters).map((ref) => ref.outlineFile))
     const chapterPlans = { ...index.chapterPlans }
+    const chapters = { ...index.chapters }
     let changed = false
+    let chaptersChanged = false
     for (const entry of entries) {
       if (entry.type !== 'file') continue
       const path = `${index.chapterPlanDir}/${entry.name}`
-      if (known.has(path) || !isMarkdownFile(path)) continue
+      if (!isMarkdownFile(path)) continue
+      // Chapter contracts share this directory with the per-volume tables. One
+      // dropped in by hand is claimed against its chapter id — the same rule the
+      // prose directory has — instead of being read as a volume's plan.
+      if (isOutlineFile(path)) {
+        if (knownOutlines.has(path)) continue
+        const front = await this.claimFrontmatter(path)
+        const id = front === undefined ? undefined : frontId(front)
+        if (front === undefined || id === undefined) {
+          warnings.push(`${path} 没有 frontmatter id，无法认领；已保留原文件未做改动`)
+          continue
+        }
+        const existing = chapters[id]
+        const stem = entry.name.replace(/\.细纲\.md$/u, '')
+        chapters[id] = {
+          number: existing?.number ?? frontNumber(front, 'number', 0),
+          title: existing?.title ?? '',
+          bodyFile: existing?.bodyFile ?? `${this.layout.chapterDir}/${stem}.md`,
+          outlineFile: path,
+          bodyHash: existing?.bodyHash ?? '',
+          outlineHash: hashContent((await this.readContent(path)) ?? ''),
+        }
+        knownOutlines.add(path)
+        chaptersChanged = true
+        warnings.push(`认领了未登记的细纲 ${path}`)
+        continue
+      }
+      if (known.has(path)) continue
       const text = await this.readContent(path)
       if (text === undefined) continue
       const volume = chapterPlanVolumeFromFileName(path)
@@ -861,7 +939,412 @@ export class NovelStore {
       changed = true
       warnings.push(`认领了未登记的章节大纲 ${path}`)
     }
-    return { index: { ...index, chapterPlans }, changed }
+    return {
+      index: chaptersChanged ? { ...index, chapterPlans, chapters } : { ...index, chapterPlans },
+      changed: changed || chaptersChanged,
+    }
+  }
+
+  /**
+   * Move every chapter contract that still lives in `章节/` into `章节大纲/`.
+   *
+   * Chapter contracts are outlines, so they belong beside the per-volume chapter
+   * tables rather than beside the prose they describe. The move is per chapter
+   * and path-driven: the file is written at its new home first and the old copy
+   * removed second, so an interrupted run leaves the contract recoverable.
+   *
+   * A contract that is already missing is not an error — a planned chapter with
+   * no contract yet is ordinary — so the index is simply re-pointed at the new
+   * directory and the next write creates the file there. Two copies with
+   * different bytes are a conflict the author has to see: the canonical copy is
+   * adopted, the legacy one is kept under `.novel/duplicates/`, never deleted.
+   *
+   * @param index - the index as recorded.
+   * @param warnings - collector for the duplicates it had to report.
+   * @param policy - sandbox policy for this call.
+   * @returns the re-pointed index and whether any path moved.
+   */
+  private async migrateChapterContracts(
+    index: StorageIndex,
+    warnings: string[],
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<{ readonly index: StorageIndex; readonly changed: boolean }> {
+    const chapters: Record<string, StorageIndex['chapters'][string]> = {}
+    const legacyPrefix = `${this.layout.chapterDir}/`
+    let changed = false
+    let moved = 0
+    for (const [id, ref] of Object.entries(index.chapters)) {
+      if (!ref.outlineFile.startsWith(legacyPrefix) || !isOutlineFile(ref.outlineFile)) {
+        chapters[id] = ref
+        continue
+      }
+      const legacy = legacyChapterOutlinePath(ref.outlineFile, this.layout)
+      const target = canonicalChapterOutlinePath(ref.outlineFile, this.layout)
+      const legacyText = await this.readContent(legacy)
+      if (legacyText !== undefined) {
+        if (await this.contentExists(target)) {
+          const targetText = (await this.readContent(target)) ?? ''
+          if (hashContent(targetText) === hashContent(legacyText)) {
+            await this.remove(legacy)
+          } else {
+            const archived = await this.archiveDuplicate(legacy, legacyText, policy)
+            const line = `${legacy} 与 ${target} 都是同一章的细纲：已采用 ${target}，旧文件备份到 ${archived}`
+            warnings.push(line)
+            this.report(line)
+          }
+        } else {
+          const destination = await this.fs.resolve(this.contain(target))
+          await this.writeGuarded(destination, legacyText, policy)
+          await this.remove(legacy)
+          moved += 1
+        }
+      }
+      chapters[id] = { ...ref, outlineFile: target }
+      changed = true
+    }
+    if (moved > 0) {
+      this.report(
+        `章节细纲已移到 ${this.layout.chapterPlanDir}/：${String(moved)} 个文件`
+        + `（章节/ 现在只放正文）`,
+      )
+    }
+    return { index: changed ? { ...index, chapters } : index, changed }
+  }
+
+  /**
+   * Fold a duplicate `设定/` directory into the canonical settings files.
+   *
+   * The tool has one home per document; a numbered `设定/` folder is a *second*
+   * copy, and two copies of an outline is how a project ends up with a root
+   * outline nobody edited and a `设定/` outline everybody did. Rather than
+   * reporting the duplicate on every read and leaving the author to reconcile
+   * it, the content is folded in — missing fields and entries are filled, never
+   * overwritten — and the original file is archived under `.novel/duplicates/`.
+   *
+   * Only the four settings documents are touched. Anything else in `设定/`
+   * (premise notes, research) is left exactly where it is: the composer owns a
+   * fixed set of files, not every note an author keeps in a folder.
+   *
+   * @param index - the canonical paths to fold into.
+   * @param warnings - collector for what was folded and what could not be.
+   * @param policy - sandbox policy for this call.
+   */
+  private async consolidateDuplicateSettings(
+    index: StorageIndex,
+    warnings: string[],
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<void> {
+    const directory = await this.fs.resolve(this.contain(LEGACY_SETTINGS_DIR))
+    const info = await this.fs.stat(directory)
+    if (info === undefined || info.type !== 'directory') return
+
+    let entries: FsDirEntry[] = []
+    try {
+      entries = await this.fs.listDir(directory)
+    } catch {
+      return
+    }
+    const canonical = (kind: ReturnType<typeof settingsDocumentKind>): string =>
+      kind === 'outline' ? index.outlineFile
+        : kind === 'cast' ? index.castFile
+          : kind === 'world' ? index.worldFile
+            : `${index.volumeDir}/`
+    for (const entry of entries) {
+      if (entry.type !== 'file') continue
+      const kind = settingsDocumentKind(entry.name)
+      if (kind === undefined) continue
+      const source = `${LEGACY_SETTINGS_DIR}/${entry.name}`
+      const raw = await this.readContent(source)
+      if (raw === undefined) continue
+      let folded: FoldResult
+      try {
+        folded = kind === 'outline' ? await this.foldOutlineDuplicate(index.outlineFile, raw, source, policy)
+          : kind === 'cast' ? await this.foldCastDuplicate(index.castFile, raw, source, policy)
+            : kind === 'world' ? await this.foldWorldDuplicate(index.worldFile, raw, source, policy)
+              : await this.foldVolumeDuplicate(index, raw, source, policy)
+      } catch (error) {
+        warnings.push(
+          `${source} 与 ${canonical(kind)} 是同一种设定，但内容合并失败（${describe(error)}）：`
+          + `原文件已保留，请手工把它的内容并进 ${canonical(kind)} 后删除它`,
+        )
+        continue
+      }
+      if (!folded.archive) {
+        warnings.push(`${source}：${folded.note}；原文件已原样保留`)
+        continue
+      }
+      const archived = await this.archiveDuplicate(source, raw, policy)
+      const line = `发现重复的设定文件 ${source}：${folded.note}；原文件已备份到 ${archived}`
+      warnings.push(line)
+      this.report(line)
+    }
+  }
+
+  /**
+   * Fold one duplicate outline into the canonical `全书大纲.md`.
+   *
+   * Missing fields are filled from the duplicate; a field the canonical file
+   * already answers is never overwritten, because two versions of a synopsis
+   * merged field-by-field would be a third synopsis nobody wrote.
+   *
+   * @param target - the canonical outline path.
+   * @param raw - the duplicate's text.
+   * @param source - the duplicate's path, for errors.
+   * @param policy - sandbox policy for this call.
+   * @returns what happened, and whether the original can be archived.
+   */
+  private async foldOutlineDuplicate(
+    target: string,
+    raw: string,
+    source: string,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<FoldResult> {
+    const duplicate = parseOutlineFile(raw, source)
+    if (!outlineHasContent(duplicate)) {
+      if (raw.trim() === '') return { note: '空文件，已归档', archive: true }
+      return {
+        note: `看起来不是工具格式的《全书大纲》（没有 ## 一句话 / ## 故事六要素 等小节），未折并；`
+          + `如需保留其中内容，请手工并进 ${target}`,
+        archive: false,
+      }
+    }
+    const existingText = await this.readContent(target)
+    if (existingText === undefined) {
+      await this.writeAt(target, renderOutlineFile(duplicate), policy)
+      return { note: `其内容已写入 ${target}`, archive: true }
+    }
+    const existing = parseOutlineFile(existingText, target)
+    const story = fillRecord(existing.story, duplicate.story)
+    const spine = fillRecord(existing.spine, duplicate.spine)
+    const style = fillRecord(existing.style, duplicate.style)
+    const cheat = fillRecord(existing.cheat, duplicate.cheat)
+    const logline = fillText(existing.logline, duplicate.logline)
+    const fullOutline = fillText(existing.fullOutline, duplicate.fullOutline)
+    const minimal = fillText(existing.minimal, duplicate.minimal)
+    const acts = existing.acts.length === 0 && duplicate.acts.length > 0
+      ? duplicate.acts
+      : existing.acts
+    const filled = story.filled + spine.filled + style.filled + cheat.filled
+      + logline.filled + fullOutline.filled + minimal.filled
+    const conflicts = story.conflicts + spine.conflicts + style.conflicts + cheat.conflicts
+      + logline.conflicts + fullOutline.conflicts + minimal.conflicts
+    if (filled === 0) {
+      return {
+        note: conflicts === 0
+          ? `与 ${target} 内容一致`
+          : `与 ${target} 有 ${String(conflicts)} 处不同，以 ${target} 为准（差异在备份里）`,
+        archive: true,
+      }
+    }
+    const merged = {
+      ...existing,
+      logline: logline.value,
+      story: story.value,
+      spine: spine.value,
+      style: style.value,
+      cheat: cheat.value,
+      fullOutline: fullOutline.value,
+      minimal: minimal.value,
+      acts,
+      fullOutlineDone: existing.fullOutlineDone || duplicate.fullOutlineDone,
+    }
+    const rendered = renderOutlineFile(merged)
+    if (rendered !== existingText) await this.writeAt(target, rendered, policy)
+    return {
+      note: `补进了 ${target} 空着的 ${String(filled)} 项`
+        + (conflicts === 0 ? '' : `（${String(conflicts)} 处两边都有内容，保留了 ${target}）`),
+      archive: true,
+    }
+  }
+
+  /**
+   * Fold one duplicate cast file into the canonical `人物设定.md`.
+   *
+   * @param target - the canonical cast path.
+   * @param raw - the duplicate's text.
+   * @param source - the duplicate's path, for errors.
+   * @param policy - sandbox policy for this call.
+   * @returns what happened, and whether the original can be archived.
+   */
+  private async foldCastDuplicate(
+    target: string,
+    raw: string,
+    source: string,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<FoldResult> {
+    const duplicate = parseCastFile(raw, source)
+    const count = Object.keys(duplicate).length
+    if (count === 0) return { note: '没有可识别的人物条目，已归档', archive: true }
+    const existingText = await this.readContent(target)
+    if (existingText === undefined) {
+      await this.writeAt(target, renderCastFile(duplicate), policy)
+      return { note: `其 ${String(count)} 位人物已写入 ${target}`, archive: true }
+    }
+    const existing = parseCastFile(existingText, target)
+    const merged: Record<string, Character> = { ...existing }
+    let added = 0
+    let conflicts = 0
+    for (const [id, character] of Object.entries(duplicate)) {
+      if (merged[id] === undefined) {
+        merged[id] = character
+        added += 1
+      } else if (JSON.stringify(merged[id]) !== JSON.stringify(character)) {
+        conflicts += 1
+      }
+    }
+    if (added > 0) await this.writeAt(target, renderCastFile(merged), policy)
+    return {
+      note: added === 0
+        ? (conflicts === 0
+            ? `与 ${target} 内容一致`
+            : `与 ${target} 有 ${String(conflicts)} 位人物不同，以 ${target} 为准（差异在备份里）`)
+        : `补进了 ${target} 缺的 ${String(added)} 位人物`
+          + (conflicts === 0 ? '' : `（${String(conflicts)} 位两边都有，保留了 ${target}）`),
+      archive: true,
+    }
+  }
+
+  /**
+   * Fold one duplicate world file into the canonical `世界观设定.md`.
+   *
+   * @param target - the canonical world path.
+   * @param raw - the duplicate's text.
+   * @param source - the duplicate's path, for errors.
+   * @param policy - sandbox policy for this call.
+   * @returns what happened, and whether the original can be archived.
+   */
+  private async foldWorldDuplicate(
+    target: string,
+    raw: string,
+    source: string,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<FoldResult> {
+    const duplicate = parseWorldFile(raw, source)
+    const count = Object.keys(duplicate).length
+    if (count === 0) return { note: '没有可识别的世界设定条目，已归档', archive: true }
+    const existingText = await this.readContent(target)
+    if (existingText === undefined) {
+      await this.writeAt(target, renderWorldFile(duplicate), policy)
+      return { note: `其 ${String(count)} 条设定已写入 ${target}`, archive: true }
+    }
+    const existing = parseWorldFile(existingText, target)
+    const merged: Record<string, WorldEntry> = { ...existing }
+    let added = 0
+    let conflicts = 0
+    for (const [id, entry] of Object.entries(duplicate)) {
+      if (merged[id] === undefined) {
+        merged[id] = entry
+        added += 1
+      } else if (JSON.stringify(merged[id]) !== JSON.stringify(entry)) {
+        conflicts += 1
+      }
+    }
+    if (added > 0) await this.writeAt(target, renderWorldFile(merged), policy)
+    return {
+      note: added === 0
+        ? (conflicts === 0
+            ? `与 ${target} 内容一致`
+            : `与 ${target} 有 ${String(conflicts)} 条不同，以 ${target} 为准（差异在备份里）`)
+        : `补进了 ${target} 缺的 ${String(added)} 条设定`
+          + (conflicts === 0 ? '' : `（${String(conflicts)} 条两边都有，保留了 ${target}）`),
+      archive: true,
+    }
+  }
+
+  /**
+   * Fold a duplicate volume collection into one canonical file per volume.
+   *
+   * A duplicate may be the pre-version-4 collection (`## 第 1 卷` entries) or a
+   * single volume's own file; both are accepted. Volumes the canonical directory
+   * already has are kept as they are, because the per-volume file is the one the
+   * author edits while writing that volume.
+   *
+   * @param index - the canonical paths.
+   * @param raw - the duplicate's text.
+   * @param source - the duplicate's path, for errors.
+   * @param policy - sandbox policy for this call.
+   * @returns what happened, and whether the original can be archived.
+   */
+  private async foldVolumeDuplicate(
+    index: StorageIndex,
+    raw: string,
+    source: string,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<FoldResult> {
+    let volumes: VolumePlan[]
+    try {
+      volumes = parseVolumeCollectionFile(raw, source)
+    } catch {
+      volumes = [parseVolumeFile(raw, source)]
+    }
+    if (volumes.length === 0) return { note: '空文件，已归档', archive: true }
+    let added = 0
+    const kept: number[] = []
+    for (const volume of volumes) {
+      const path = index.volumes[String(volume.number)]?.file ?? volumePath(volume.number, index)
+      if (await this.contentExists(path)) {
+        kept.push(volume.number)
+        continue
+      }
+      await this.writeAt(path, renderVolumeFile(volume), policy)
+      added += 1
+    }
+    const keptNote = kept.length === 0 ? '' : `（第 ${kept.join('、')} 卷已有自己的文件，保留原文件）`
+    return {
+      note: added === 0
+        ? `与 ${index.volumeDir}/ 中已有的卷重复${keptNote}`
+        : `补写了 ${index.volumeDir}/ 中缺的 ${String(added)} 卷${keptNote}`,
+      archive: true,
+    }
+  }
+
+  /**
+   * Preserve a duplicate under `.novel/duplicates/` and remove the original.
+   *
+   * The archive is written **before** the delete: a failure to keep the copy
+   * aborts the operation, because "we removed the other copy" must never be the
+   * last thing that happened to an author's text.
+   *
+   * @param source - the duplicate's workspace-relative path.
+   * @param raw - its text.
+   * @param policy - sandbox policy for this call.
+   * @returns the archive path.
+   */
+  private async archiveDuplicate(
+    source: string,
+    raw: string,
+    policy: CallSandboxPolicy | undefined,
+  ): Promise<string> {
+    const base = source.split('/').pop() ?? 'duplicate.md'
+    const stem = base.replace(/\.md$/u, '')
+    let target = `${DUPLICATE_BACKUP_DIR}/${base}`
+    for (let n = 2; await this.contentExists(target); n += 1) {
+      target = `${DUPLICATE_BACKUP_DIR}/${stem}-${n}.md`
+    }
+    await this.writeAt(target, raw, policy)
+    await this.remove(source)
+    return target
+  }
+
+  /**
+   * Write one content file by its workspace-relative path.
+   *
+   * @param path - the destination.
+   * @param text - the full content.
+   * @param policy - sandbox policy for this call.
+   */
+  private async writeAt(path: string, text: string, policy: CallSandboxPolicy | undefined): Promise<void> {
+    const target = await this.fs.resolve(this.contain(path))
+    await this.writeGuarded(target, text, policy)
+  }
+
+  /**
+   * Append a line to the one-shot migration report.
+   *
+   * @param line - the report line.
+   */
+  private report(line: string): void {
+    this.pendingReport = this.pendingReport === undefined ? line : `${this.pendingReport}；${line}`
   }
 
   /**
@@ -1885,6 +2368,69 @@ function sameVolumes(
   return true
 }
 
+
+/**
+ * Whether a parsed outline answered anything at all.
+ *
+ * Used to tell "this is a duplicate of the outline, written in the tool's own
+ * dialect" from "this is a prose outline the author wrote by hand": the second
+ * parses to an empty record, and folding it would archive a real draft while
+ * reporting it as identical. An unrecognised file is named and left alone.
+ *
+ * @param outline - the parsed duplicate.
+ * @returns true when at least one named field carries text.
+ */
+function outlineHasContent(outline: ReturnType<typeof parseOutlineFile>): boolean {
+  if (outline.logline.trim() !== '' || outline.fullOutline.trim() !== '' || outline.minimal.trim() !== '') return true
+  if (outline.fullOutlineDone || outline.acts.length > 0) return true
+  return [outline.story, outline.spine, outline.style, outline.cheat]
+    .some((record) => Object.values(record).some((value) => value.trim() !== ''))
+}
+
+/**
+ * Fill one empty string from a duplicate, without ever overwriting an answer.
+ *
+ * @param base - the canonical value.
+ * @param extra - the duplicate's value.
+ * @returns the value to keep, how many characters were filled, and whether both
+ *   sides had a non-empty but different answer.
+ */
+function fillText(base: string, extra: string): { value: string; filled: number; conflicts: number } {
+  const current = base.trim()
+  const other = extra.trim()
+  if (current === '' && other !== '') return { value: extra, filled: 1, conflicts: 0 }
+  if (current !== '' && other !== '' && base !== extra) return { value: base, filled: 0, conflicts: 1 }
+  return { value: base, filled: 0, conflicts: 0 }
+}
+
+/**
+ * Fill a record's empty fields from a duplicate document.
+ *
+ * Deliberately field-by-field rather than a whole-document overwrite: an outline
+ * that answered its logline but not its synopsis should gain the synopsis, not
+ * become the other file's version of the logline.
+ *
+ * @param base - the canonical record.
+ * @param extra - the duplicate's record.
+ * @returns the merged record, how many fields were filled, and how many disagreed.
+ */
+function fillRecord<Field extends string>(
+  base: Readonly<Record<Field, string>>,
+  extra: Readonly<Record<Field, string>>,
+): { value: Record<Field, string>; filled: number; conflicts: number } {
+  const value: Record<Field, string> = { ...base }
+  let filled = 0
+  let conflicts = 0
+  for (const key of Object.keys(extra) as Field[]) {
+    const merged = fillText(value[key] ?? '', extra[key] ?? '')
+    if (merged.filled > 0) {
+      value[key] = merged.value
+      filled += 1
+    }
+    conflicts += merged.conflicts
+  }
+  return { value, filled, conflicts }
+}
 
 /**
  * Consume a one-shot message into a spreadable object.

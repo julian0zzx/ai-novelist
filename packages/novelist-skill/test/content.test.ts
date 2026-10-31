@@ -454,10 +454,10 @@ describe('content codec file naming', () => {
     expect(sanitizeTitle('   ')).toBe('')
   })
 
-  it('puts both chapter files in the chapter directory', () => {
+  it('keeps the prose in 章节/ and puts the contract in 章节大纲/', () => {
     expect(chapterPaths(1, '山门')).toEqual({
       bodyFile: '章节/第001章-山门.md',
-      outlineFile: '章节/第001章-山门.细纲.md',
+      outlineFile: '章节大纲/第001章-山门.细纲.md',
     })
   })
 

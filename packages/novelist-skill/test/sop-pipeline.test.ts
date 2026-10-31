@@ -1239,7 +1239,7 @@ describe('the file is the source of truth', () => {
     // plugin; the next read simply finds it.
     // A chapter with no volume yet keeps its row in the 未分卷 file.
     const planPath = join(root, '章节大纲', '未分卷.md')
-    const contractPath = join(root, '章节/第001章-山门.细纲.md')
+    const contractPath = join(root, '章节大纲/第001章-山门.细纲.md')
     const contract = await readFile(contractPath, 'utf8')
 
     // The check reports contract completeness, computed from the file — so an
@@ -1261,7 +1261,7 @@ describe('the file is the source of truth', () => {
     const stored = JSON.parse(await readFile(join(root, '.novel/novel.json'), 'utf8')) as {
       index: { chapters: Record<string, { outlineFile: string }> }
     }
-    expect(stored.index.chapters['chapter-1']?.outlineFile).toBe('章节/第001章-山门.细纲.md')
+    expect(stored.index.chapters['chapter-1']?.outlineFile).toBe('章节大纲/第001章-山门.细纲.md')
     expect(await readFile(contractPath, 'utf8')).toContain('钟声之后，后山传来父亲的剑鸣。')
     // The chapter plan file itself is untouched: the edit was in the contract.
     expect(await readFile(planPath, 'utf8')).toContain('山门')
