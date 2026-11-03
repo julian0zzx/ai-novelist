@@ -53,6 +53,7 @@ import {
 } from './types.ts'
 import {
   MarkdownError,
+  escapeProse,
   findSection,
   frontBool,
   frontMap,
@@ -1329,7 +1330,7 @@ function chapterFieldOf(chapter: Chapter, section: string): string {
  * @returns the subsection text, with no trailing newline.
  */
 function renderSubsection(title: string, body: string): string {
-  const text = body.replace(/^\s+|\s+$/gu, '')
+  const text = escapeProse(body.replace(/^\s+|\s+$/gu, ''))
   return text === '' ? `### ${title}` : `### ${title}\n\n${text}`
 }
 

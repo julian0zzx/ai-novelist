@@ -1404,9 +1404,12 @@ export function registerTools(
         // The sign-off records how many rounds had been held when it was given,
         // which is what makes "rounds since the sign-off" a subtraction. For the
         // premise that is both spellings of its kind, so it must be counted the
-        // same way {@link confirmationStanding} counts it.
+        // same way {@link confirmationStanding} counts it; the voice review has
+        // its own ledger and must not be charged for the settings conversation
+        // (doing so reset its round count to zero on the first sign-off, which
+        // made a second voice review impossible to complete).
         const total =
-          layer?.key === 'premise' || layer === undefined
+          layer?.key === 'premise'
             ? current.discussions.filter((item) => item.kind === 'settings' || item.kind === 'premise').length
             : current.discussions.filter((item) => item.kind === recordKind).length
         const confirmation = {
@@ -2102,9 +2105,26 @@ export function registerTools(
             if (args.remove === true) {
               if (args.id === undefined) throw new NovelInputError('operation="chapter" with remove needs an `id`')
               const id = args.id
-              const next = await store.update((state) => removeChapter(state, id, now))
+              // The prose is the one artefact a delete cannot re-derive, so a
+              // written chapter is archived before its files are unlinked — the
+              // same rule `novel_write` follows when it replaces a body. The
+              // archive runs inside the mutation so it sees the same read the
+              // removal does.
+              let archived: string | undefined
+              await store.update(async (state) => {
+                const chapter = state.chapters[normalizeId(id)]
+                if (chapter !== undefined && chapter.body.trim() !== '') {
+                  archived = await store.archiveChapterVersion(chapter, now())
+                }
+                return removeChapter(state, id, now)
+              })
               detail = `已删除章节 ${id}`
-              void next
+              if (archived !== undefined) {
+                detail += `（正文已存档到 ${archived}）`
+                warnings.push(`删除前已归档正文：${archived}——这一章的文字还能从那里取回`)
+              } else {
+                detail += '（该章没有正文，未产生存档）'
+              }
               break
             }
             if (args.id === undefined && args.title === undefined) {

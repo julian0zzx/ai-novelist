@@ -1383,7 +1383,7 @@ function KanbanView({
   // Projected once per read rather than once per render: the board is cheap but
   // not free, and a pane re-renders for reasons that have nothing to do with the
   // project.
-  const shown = useMemo(
+  const built = useMemo(
     () =>
       read === undefined
         ? undefined
@@ -1403,6 +1403,18 @@ function KanbanView({
           },
     [read?.state, read?.metadata, read?.files],
   )
+
+  // A re-read keeps the last good projection on screen. Swapping it out for the
+  // loading state unmounted the board on every 重新读取 and every save — which
+  // destroyed the save's own confirmation line, the open chapter dialog and the
+  // document viewer, and turned a transient read failure into a blank screen
+  // with no way back. The projection is keyed by root so a different workspace
+  // never inherits it.
+  const [lastGood, setLastGood] = useState<{ readonly root: string; readonly data: NonNullable<typeof built> }>()
+  useEffect(() => {
+    if (built !== undefined && workspaceRoot !== undefined) setLastGood({ root: workspaceRoot, data: built })
+  }, [built, workspaceRoot])
+  const shown = lastGood !== undefined && lastGood.root === workspaceRoot ? lastGood.data : undefined
 
   const refresh = useCallback(() => {
     setAttempt((value) => value + 1)
@@ -1426,11 +1438,20 @@ function KanbanView({
 
   return (
     <div style={STYLE.root}>
-      {project.status === 'loading' && <div style={STYLE.dim}>{t('board.reading')}</div>}
+      {project.status === 'loading' && shown === undefined && <div style={STYLE.dim}>{t('board.reading')}</div>}
       {project.status === 'error' && (
         <div>
           <div style={STYLE.error}>{project.message}</div>
-          {shown !== undefined && <div style={STYLE.meta}>{t('board.stale')}</div>}
+          {shown !== undefined ? (
+            <div style={STYLE.meta}>{t('board.stale')}</div>
+          ) : (
+            // The board's own refresh control lives inside it, and the board is
+            // not rendered on a first failed read — so the error state carries
+            // one of its own rather than leaving the pane unrecoverable.
+            <button type="button" style={STYLE.button} onClick={refresh}>
+              {t('board.refresh')}
+            </button>
+          )}
         </div>
       )}
       {shown !== undefined && (

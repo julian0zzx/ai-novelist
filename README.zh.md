@@ -331,7 +331,7 @@ rm -rf <那个目录>/.novel
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.11.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.4.0.tgz
 ```
 
 tarball 里带着构建好的 `lib/`，所以目标机器只需要 Node 和 DSH——不用连仓库、不用联网安装、

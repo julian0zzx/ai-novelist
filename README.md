@@ -413,7 +413,7 @@ plugin and the browser half:
 
 ```sh
 pnpm run dist
-dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.3.11.tgz
+dsh plugin --profile web add -w dist/dsh-plugin/ai-novelist-0.4.0.tgz
 ```
 
 The tarball carries the built `lib/`, so a target machine needs only Node and DSH — no

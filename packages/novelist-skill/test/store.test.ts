@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
-import { NOVEL_SCHEMA_VERSION, NovelStoreError, emptyNovel, hashContent, upsertChapter } from '../src/core/index.ts'
+import { NOVEL_SCHEMA_VERSION, NovelStoreError, emptyNovel, hashContent, upsertChapter, upsertCharacter } from '../src/core/index.ts'
 import { MAX_METADATA_BYTES, NOVEL_RELATIVE_PATH, NovelConflictError, NovelStore, isRegularFile } from '../src/host/store.ts'
 import type { VolumePlan } from '../src/core/types.ts'
 
@@ -426,6 +426,38 @@ describe('NovelStore content files', () => {
     await expect(store.read()).rejects.toThrow(/人物设定\.md.*duplicate character id/u)
   })
 
+  it('reads a CRLF-saved content file instead of treating it as empty', async () => {
+    await seeded()
+    await store.update((state) =>
+      upsertCharacter(state, { id: 'lin-yue', name: '林越', role: '主角', goal: '上山', voice: '短句' }, () => clock),
+    )
+    const castPath = join(root, '人物设定.md')
+    const lf = await readFile(castPath, 'utf8')
+    await writeFile(castPath, lf.replace(/\n/gu, '\r\n'), 'utf8')
+
+    // A Windows editor save must not read as an empty cast.
+    const read = await store.read()
+    expect(read?.characters['lin-yue']?.name).toBe('林越')
+
+    // And the next unrelated write must not replace the file with that empty read.
+    await store.update((state) => ({ ...state, meta: { ...state.meta, title: '青云记 2' }, updatedAt: clock }))
+    const after = await readFile(castPath, 'utf8')
+    expect(after).toContain('林越')
+    expect(after).not.toContain('\r')
+    expect((await store.read())?.characters['lin-yue']?.name).toBe('林越')
+  })
+
+  it('refuses to write derived output over a document the project owns', async () => {
+    await seeded()
+    const document = await readFile(docPath(), 'utf8')
+    await expect(store.writeDerived(NOVEL_RELATIVE_PATH, '# 覆盖\n')).rejects.toThrow(/refusing to write derived/u)
+    await expect(store.writeDerived('章节/第001章-山门.md', '# 覆盖\n')).rejects.toThrow(/refusing to write derived/u)
+    await expect(store.writeDerived('人物设定.md', '# 覆盖\n')).rejects.toThrow(/refusing to write derived/u)
+    // The document is untouched, and a derived path of its own still works.
+    expect(await readFile(docPath(), 'utf8')).toBe(document)
+    await expect(store.writeDerived('.novel/manuscript.md', '# 成稿\n')).resolves.toContain('manuscript.md')
+  })
+
   it('leaves the metadata document untouched when a check finds nothing to change', async () => {
     await seeded()
     const before = await readFile(docPath(), 'utf8')
@@ -522,8 +554,14 @@ describe('NovelStore migration', () => {
   it('never overwrites a backup an earlier session already kept', async () => {
     await mkdir(join(root, '.novel'), { recursive: true })
     await writeFile(join(root, '.novel/novel.v2.backup.json'), 'the author\'s own copy\n', 'utf8')
-    await store.read()
+    // An older backup is the author's copy, not a reason to skip the migration:
+    // the document is still version 2, so its content files were never written.
+    const loaded = await store.read()
     expect(await readFile(join(root, '.novel/novel.v2.backup.json'), 'utf8')).toBe('the author\'s own copy\n')
+    expect(loaded?.characters['lin-yue']?.growthArc).toBe('外门→执剑')
+    expect(loaded?.chapters['chapter-1']?.body).toBe('山门很高。')
+    const migrated = JSON.parse(await readFile(docPath(), 'utf8')) as { schemaVersion: number }
+    expect(migrated.schemaVersion).toBe(NOVEL_SCHEMA_VERSION)
   })
 })
 

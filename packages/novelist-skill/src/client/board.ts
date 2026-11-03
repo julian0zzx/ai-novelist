@@ -306,7 +306,10 @@ function documentsOf(
       }),
       done: PITCH_TOTAL - pitchGaps.length,
       total: PITCH_TOTAL,
-      gates: layer('premise')?.gatesProse === true ? 'prose' : '',
+      // The gate is open once the author has signed the layer off; a card that
+      // still says 卡住正文 after its own 已完成 badge is the board contradicting
+      // `novel_status`, which prints the gate only while it is shut.
+      gates: layer('premise')?.confirmed === true ? '' : 'prose',
       gaps: pitchGaps.map((gap) => gap.key),
     },
     // 竞品拆解、候选物料 — the SOP's own counts, with no checkpoint of their own:
@@ -389,7 +392,9 @@ function documentsOf(
       }),
       done: standing.deAi.done ? 1 : 0,
       total: 1,
-      gates: standing.deAi.gatesProse ? 'prose' : '',
+      // Held back only while the receipt is missing *and* the chapters exist;
+      // once the review is on the ledger the gate is open whatever it found.
+      gates: standing.deAi.due && !standing.deAi.done ? 'prose' : '',
       gaps: standing.deAi.unreviewed.map((number) => `第 ${String(number)} 章`),
     },
     // 故事六要素 — the traditional frame the outline owns. 人物 is derived from the
@@ -452,7 +457,9 @@ function documentsOf(
       }),
       done: OUTLINE_STYLE_TOTAL - styleGaps.length,
       total: OUTLINE_STYLE_TOTAL,
-      gates: 'prose',
+      // Writing the seven elements is what *opens* the gate, so a complete
+      // style block carries no badge.
+      gates: styleGaps.length === 0 ? '' : 'prose',
       gaps: styleGaps.map((gap) => SPINE_LABELS[gap.key]),
     },
     // 分卷大纲与节拍表 — the work the SOP explicitly postpones until a human has

@@ -1941,7 +1941,9 @@ export function nextLayerBlocker(standing: ConfirmationStanding): string | undef
 export function confirmationStanding(state: NovelState): ConfirmationStanding {
   const settings = latestConfirmation(state, 'settings')
   const style = latestConfirmation(state, 'style')
-  const settingsRounds = roundsSince(state, 'settings', settings)
+  // The premise layer answers to both spellings; counting only `settings` here
+  // made a project discussed under `kind="premise"` look untouched.
+  const settingsRounds = settingsLayerRounds(state, 'premise', settings)
   const styleRounds = roundsSince(state, 'style', style)
   const settingsReady = settingsRounds >= CONFIRMATION_MIN_ROUNDS.settings
   const styleReady = styleRounds >= CONFIRMATION_MIN_ROUNDS.style
@@ -2128,7 +2130,12 @@ export function proseGate(state: NovelState, chapterNumber: number): ProseGate {
     next.push(`novel_plan operation="outline" ${OUTLINE_STYLE_FIELDS.map((field) => `${styleParamName(field)}=…`).join(' ')}`)
     next.push('写作风格写完后，与用户讨论并确认「全书大纲」这一层（novel_confirm kind="outline"）')
   }
-  if (!standing.styleConfirmed && chapterNumber > STYLE_GATE_CHAPTER) {
+  // The review can only be asked for once there is something to read. Without
+  // this condition a project whose chapter 4 is written first was refused with
+  // "the golden three are written" while they were not — and the refusal could
+  // not be cleared either, because confirming the voice needs those three
+  // chapters. The 去 AI 化 receipt below already keys on `due` the same way.
+  if (!standing.styleConfirmed && chapterNumber > STYLE_GATE_CHAPTER && styleGateReached(state)) {
     reasons.push(
       `黄金三章（第 1–${String(STYLE_GATE_CHAPTER)} 章）已经成稿，第 ${String(STYLE_GATE_CHAPTER + 1)} 章之前要先让用户复核文风：`
       + '把这三章交给用户读，问清表达方式与遣词用句要不要调整；要调就先改风格与已写章节，再确认，'
@@ -2362,18 +2369,25 @@ export function assessStage(state: NovelState): StageAssessment {
   if (competitors < COMPETITOR_TARGET) {
     planningBlockers.push(`竞品拆解不足 ${String(COMPETITOR_TARGET)} 本，当前 ${String(competitors)} 本`)
   }
-  if (!standing.settingsConfirmed) {
-    const missing = CONFIRMATION_MIN_ROUNDS.settings - standing.settingsRounds
+  // The premise is the one layer `novel_write` hard-gates on, so its round
+  // count is reported while it is open. Once it is signed off, the useful line
+  // is the *next* layer, which `nextLayerBlocker` supplies — asking for rounds
+  // against a closed checkpoint is how the stage report used to tell a model to
+  // re-discuss a decision the author had already made.
+  const premiseLayer = standing.layers.find((layer) => layer.key === 'premise')
+  if (premiseLayer !== undefined && !premiseLayer.confirmed) {
+    const missing = premiseLayer.roundsRequired - premiseLayer.rounds
     planningBlockers.push(
       missing > 0
         ? `设定还差 ${String(missing)} 轮与用户讨论（novel_confirm operation="discuss" kind="settings"）`
         : '设定已讨论但用户尚未确认（novel_confirm operation="confirm" kind="settings"）',
     )
+  } else {
+    // Which layer of the settings is next in turn, so "按顺序" is visible from
+    // the stage report and not only from `novel_confirm`'s own status call.
+    const nextLayer = nextLayerBlocker(standing)
+    if (nextLayer !== undefined) planningBlockers.push(nextLayer)
   }
-  // Which layer of the settings is next in turn, so "按顺序" is visible from the
-  // stage report and not only from `novel_confirm`'s own status call.
-  const nextLayer = nextLayerBlocker(standing)
-  if (nextLayer !== undefined) planningBlockers.push(nextLayer)
   if (planningBlockers.length > 0) return { stage: 'planning', blockers: gated(planningBlockers), satisfied }
   satisfied.push('记忆点、竞品拆解与用户确认的设定已就绪')
 

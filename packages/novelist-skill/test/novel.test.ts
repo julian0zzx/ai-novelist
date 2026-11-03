@@ -554,6 +554,41 @@ describe('assessStage', () => {
     expect(assessStage(signSettingsOff(pitchedWithCompetitors())).stage).toBe('opening-package')
   })
 
+  it('stops asking for settings rounds once the author has signed the premise off', () => {
+    const signed = signPremiseOff(pitchedWithCompetitors())
+    const assessment = assessStage(signed)
+    expect(assessment.stage).toBe('planning')
+    const blockers = assessment.blockers.join(' ')
+    // The premise is closed; what is left names the layer in turn, not a closed
+    // checkpoint the model would be told to re-discuss.
+    expect(blockers).not.toMatch(/设定还差/u)
+    expect(blockers).toMatch(/世界观设定/u)
+  })
+
+  it('counts discussion rounds recorded under the `premise` spelling', () => {
+    let state = emptyNovel()
+    for (const [index, feedback] of ['房租线要一直在', '就这个'].entries()) {
+      state = addDiscussionRound(
+        state,
+        { id: `p${String(index)}`, kind: 'premise', at: '', proposal: '立意第一版', feedback, topics: [] },
+        at('2024-01-01T00:00:00.000Z'),
+      )
+    }
+    const standing = confirmationStanding(state)
+    expect(standing.settingsRounds).toBe(2)
+    expect(standing.settingsReady).toBe(true)
+    expect(assessStage(state).blockers.join(' ')).not.toMatch(/设定还差/u)
+  })
+
+  it('does not demand the voice review before the golden three exist', () => {
+    // Chapter 4 written first: the review has nothing to read, so the gate must
+    // not claim it is due — and must not be unanswerable, as it was when the
+    // refusal said the golden three were finished.
+    const state = signSettingsOff(pitchedWithCompetitors())
+    expect(proseGate(state, 4).allowed).toBe(true)
+    expect(proseGate(state, 4).reasons.join(' ')).not.toMatch(/文风/u)
+  })
+
   it('holds serialization at the 文风复核 once the golden three have prose', () => {
     let state = withPitchAndCompetitors()
     // A complete skeleton answers the narrative spine as well as the structural
@@ -748,11 +783,18 @@ describe('proseGate', () => {
   })
 
   it('lets the golden three chapters through once the style is written, and holds chapter 4 at the review', () => {
-    const signed = signSettingsOff(emptyNovel({ title: '青云记' }))
+    let signed = signSettingsOff(emptyNovel({ title: '青云记' }))
     expect(proseGate(signed, 1).allowed).toBe(true)
     expect(proseGate(signed, 2).allowed).toBe(true)
     expect(proseGate(signed, 3).allowed).toBe(true)
+    // The review is due once the three chapters exist, not merely once the
+    // position is past them: a chapter written out of order has nothing to
+    // review, so the gate stays open (see the out-of-order spec below).
+    expect(proseGate(signed, 4).allowed).toBe(true)
 
+    for (const number of [1, 2, 3]) {
+      signed = upsertChapter(signed, { id: `c${String(number)}`, number, body: '山门很高。' }, at('2024-01-01T04:00:00.000Z'))
+    }
     const fourth = proseGate(signed, 4)
     expect(fourth.allowed).toBe(false)
     expect(fourth.reasons.join(' ')).toMatch(/复核文风/)

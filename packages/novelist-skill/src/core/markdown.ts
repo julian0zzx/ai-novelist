@@ -43,6 +43,30 @@ export type YamlValue = YamlScalar | YamlScalar[] | Record<string, YamlScalar>
 /** A parsed frontmatter block, in the order the keys appeared. */
 export type YamlMap = Record<string, YamlValue>
 
+// ── line endings ──────────────────────────────────────────────────────────────
+
+/**
+ * Normalize a file's line endings to `\n`.
+ *
+ * The dialect is line-based and every heading is matched as `/^## …$/`, an
+ * anchor a trailing `\r` defeats. A content file saved by a Windows editor, or
+ * checked out with `core.autocrlf=true`, therefore parsed as **one empty
+ * document** — headings invisible, frontmatter still readable, no error — and
+ * the next unrelated write replaced the file with that empty document. That is
+ * how one CRLF save could erase the cast, the world, the outline and every
+ * contract in the project.
+ *
+ * Normalizing once at the parse boundary makes the codec line-ending-agnostic.
+ * Files this build writes are LF, so an external CRLF file is normalized on its
+ * next write — a difference the author can see, rather than a loss they cannot.
+ *
+ * @param text - the file text, from any backend.
+ * @returns the text with `\r\n` and lone `\r` collapsed to `\n`.
+ */
+export function normalizeLineEndings(text: string): string {
+  return text.replace(/\r\n?/gu, '\n')
+}
+
 // ── hashing ───────────────────────────────────────────────────────────────────
 
 /**
@@ -72,8 +96,9 @@ export function hashContent(content: string): string {
  * @returns the frontmatter body (without the `---` fences) and the remaining text.
  */
 export function splitFrontmatter(raw: string): { readonly found: boolean; readonly frontmatter: string; readonly body: string } {
-  const lines = raw.split('\n')
-  if ((lines[0] ?? '').trim() !== '---') return { found: false, frontmatter: '', body: raw }
+  const text = normalizeLineEndings(raw)
+  const lines = text.split('\n')
+  if ((lines[0] ?? '').trim() !== '---') return { found: false, frontmatter: '', body: text }
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index] ?? ''
     if (line.trim() === '---' || line.trim() === '...') {
@@ -197,7 +222,16 @@ function splitInlineList(inner: string): string[] {
   const parts: string[] = []
   let current = ''
   let quote: '"' | "'" | undefined
-  for (const char of inner) {
+  for (let index = 0; index < inner.length; index += 1) {
+    const char = inner[index] ?? ''
+    // A backslash escapes the next character, so `\"` inside a quoted item is
+    // that item's own quote and must not close the quote state (which would let
+    // the following comma split the value in two).
+    if (char === '\\' && index + 1 < inner.length) {
+      current += char + (inner[index + 1] ?? '')
+      index += 1
+      continue
+    }
     if (quote !== undefined) {
       current += char
       if (char === quote) quote = undefined
@@ -220,7 +254,61 @@ function splitInlineList(inner: string): string[] {
 }
 
 /**
+ * Reversal of the escapes {@link quote} writes.
+ *
+ * Exactly the four sequences the writer emits are decoded, in one pass — which
+ * is what makes `\\n` (a literal backslash followed by `n`) decode to `\n` and
+ * not to a newline. Any other `\x` is left alone: this dialect never writes it,
+ * so it came from a hand-written value, and a Windows path must keep its
+ * backslashes.
+ *
+ * @param text - the quoted value's text without its outer quotes.
+ * @returns the original value.
+ */
+function unquote(text: string): string {
+  let out = ''
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index] ?? ''
+    if (char !== '\\') {
+      out += char
+      continue
+    }
+    const next = text[index + 1]
+    switch (next) {
+      case undefined:
+        out += '\\'
+        break
+      case '\\':
+        out += '\\'
+        index += 1
+        break
+      case '"':
+        out += '"'
+        index += 1
+        break
+      case 'n':
+        out += '\n'
+        index += 1
+        break
+      case 'r':
+        out += '\r'
+        index += 1
+        break
+      default:
+        // Not an escape this dialect emits; keep the backslash and move on.
+        out += '\\'
+    }
+  }
+  return out
+}
+
+/**
  * Coerce one written token to a scalar, stripping one layer of matching quotes.
+ *
+ * A double-quoted value is also unescaped with {@link unquote}. Skipping that
+ * step used to make every quoted value with a `"`, a `\` or a newline gain a
+ * backslash per read-write cycle, and a value carrying a line break became
+ * unparseable on the next read.
  *
  * @param text - the raw token.
  * @returns the scalar.
@@ -230,17 +318,31 @@ function toScalar(text: string): YamlScalar {
   if (trimmed === '' || trimmed === '~' || trimmed === 'null') return null
   if (trimmed === 'true') return true
   if (trimmed === 'false') return false
-  const quoted =
-    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
-  if (quoted) return trimmed.slice(1, -1)
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return unquote(trimmed.slice(1, -1))
+  }
+  if (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1)
+  }
   if (/^-?\d+$/u.test(trimmed)) return Number.parseInt(trimmed, 10)
   return trimmed
 }
 
-/** Escape a value so it survives a double-quoted YAML scalar. */
+/**
+ * Escape a value so it survives a double-quoted YAML scalar.
+ *
+ * The escapes are exactly those {@link unquote} decodes; anything else (a tab,
+ * a Chinese quote) is written raw and read back verbatim.
+ *
+ * @param text - the value.
+ * @returns the quoted scalar, escapes applied.
+ */
 function quote(text: string): string {
-  const escaped = text.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"').replace(/\n/gu, '\\n')
+  const escaped = text
+    .replace(/\\/gu, '\\\\')
+    .replace(/"/gu, '\\"')
+    .replace(/\r/gu, '\\r')
+    .replace(/\n/gu, '\\n')
   return `"${escaped}"`
 }
 
@@ -405,7 +507,7 @@ export interface MdSection {
  * @returns the preamble and the sections, both in file order.
  */
 export function splitDocument(body: string): { readonly preamble: string; readonly sections: MdSection[] } {
-  const lines = body.split('\n')
+  const lines = normalizeLineEndings(body).split('\n')
   const sections: MdSection[] = []
   const preamble: string[] = []
   let fence: string | undefined
@@ -482,7 +584,7 @@ function fenceMarker(line: string): string | undefined {
  * @returns the preamble text and one entry per `###` subsection, in file order.
  */
 export function splitSubsections(body: string): { readonly preamble: string; readonly subsections: MdSection[] } {
-  const lines = body.split('\n')
+  const lines = normalizeLineEndings(body).split('\n')
   const subsections: MdSection[] = []
   const preamble: string[] = []
   let fence: string | undefined
@@ -527,6 +629,70 @@ export function findSection(sections: readonly MdSection[], title: string): MdSe
 }
 
 /**
+ * Escape the heading markers a field value may legitimately start a line with.
+ *
+ * A field value is prose, and prose may contain a line like `## 口头禅` — a model
+ * writing a detailed outline, or an author annotating a character, will produce
+ * one. Written verbatim, that line would become a real `##` section: the value
+ * was truncated at it on the next read, the tail was dropped on the following
+ * write, and in `人物设定.md`/`世界观设定.md` it even became a phantom entry.
+ *
+ * The escape is a single backslash before the marker: visible in the file, and
+ * reversible by {@link unescapeProse}. Only `##`–`######` are escaped — a lone
+ * `#` is not a section heading in this dialect and needs no protection.
+ *
+ * @param text - a value about to be rendered into a section or sub-section.
+ * @returns the text with each heading-like line prefixed by `\`.
+ */
+export function escapeProse(text: string): string {
+  return text.replace(/^(#{2,6}[ \t])/gmu, '\\$1')
+}
+
+/**
+ * Escape only the `##` markers that would start a new top-level section.
+ *
+ * A section body is either a plain value or a composed block of `###`
+ * sub-sections ({@link renderSection} is used for both). Its own `###` headings
+ * are structure, so escaping them would turn the spine into one paragraph; only
+ * a `##` line — which would end the section — has to be protected here. Values
+ * inside a sub-section are protected separately by {@link escapeProse}.
+ *
+ * @param text - the rendered section body.
+ * @returns the text with each `##`-leading line prefixed by `\`.
+ */
+export function escapeSectionBody(text: string): string {
+  return text.replace(/^(##[ \t])/gmu, '\\$1')
+}
+
+/**
+ * The inverse of {@link escapeProse}.
+ *
+ * Applied wherever a value is read back out of a section, so `\## 口头禅`
+ * returns as `## 口头禅` and a value never accumulates escape characters across
+ * read-write cycles.
+ *
+ * @param text - the rendered field text.
+ * @returns the original value.
+ */
+export function unescapeProse(text: string): string {
+  return text.replace(/^\\(#{2,6}[ \t])/gmu, '$1')
+}
+
+/**
+ * Fold a heading's text onto one line.
+ *
+ * A heading is one line by construction, so a value carrying a newline (a title
+ * pasted from elsewhere, a name with a stray line break) must not split the
+ * heading it is rendered into. Collapsing whitespace is the only change made.
+ *
+ * @param text - the heading text.
+ * @returns the text with whitespace runs collapsed.
+ */
+function headingText(text: string): string {
+  return text.replace(/\s+/gu, ' ').trim()
+}
+
+/**
  * Read the body of one section as a text field.
  *
  * @param sections - the sections to search.
@@ -535,7 +701,8 @@ export function findSection(sections: readonly MdSection[], title: string): MdSe
  *   is the documented meaning of a missing contract section ("未写").
  */
 export function sectionText(sections: readonly MdSection[], title: string): string {
-  return findSection(sections, title)?.body.trim() ?? ''
+  const body = findSection(sections, title)?.body.trim() ?? ''
+  return body === '' ? '' : unescapeProse(body)
 }
 
 /**
@@ -572,8 +739,8 @@ export function sectionList(sections: readonly MdSection[], title: string): stri
  * @returns the section, with a blank line between heading and body.
  */
 export function renderSection(title: string, body: string): string {
-  const text = body.replace(/\s+$/u, '')
-  return text === '' ? `## ${title}\n` : `## ${title}\n\n${text}\n`
+  const text = escapeSectionBody(body.replace(/\s+$/u, ''))
+  return text === '' ? `## ${headingText(title)}\n` : `## ${headingText(title)}\n\n${text}\n`
 }
 
 /**
@@ -584,8 +751,8 @@ export function renderSection(title: string, body: string): string {
  * @returns the section.
  */
 export function renderListSection(title: string, items: readonly string[]): string {
-  if (items.length === 0) return `## ${title}\n`
-  return `## ${title}\n\n${items.map((item, index) => `${String(index + 1)}. ${item}`).join('\n')}\n`
+  if (items.length === 0) return `## ${headingText(title)}\n`
+  return `## ${headingText(title)}\n\n${items.map((item, index) => `${String(index + 1)}. ${escapeProse(item)}`).join('\n')}\n`
 }
 
 // ── fenced yaml blocks ────────────────────────────────────────────────────────
@@ -646,7 +813,7 @@ export function readEntries(sections: readonly MdSection[], where: string): Entr
     return {
       title: section.title,
       fields: fields.trim() === '' ? {} : parseFrontmatter(fields, where),
-      prose,
+      prose: unescapeProse(prose),
     }
   })
 }
@@ -660,9 +827,9 @@ export function readEntries(sections: readonly MdSection[], where: string): Entr
  * @returns the section text.
  */
 export function renderEntry(title: string, fields: Readonly<Record<string, YamlValue | undefined>>, prose: string): string {
-  const head = `## ${title}\n`
+  const head = `## ${headingText(title)}\n`
   const block = serializeFrontmatter(fields)
-  const text = prose.replace(/\s+$/u, '')
+  const text = escapeProse(prose.replace(/\s+$/u, ''))
   const parts = [head]
   if (block !== '') parts.push(`\n\`\`\`yaml\n${block}\n\`\`\`\n`)
   if (text !== '') parts.push(`\n${text}\n`)
@@ -807,7 +974,7 @@ export function renderDocument(
   // empty `---` pair is noise a human has to read past, and the parser treats
   // "absent" and "empty" identically.
   const head = entries === '' ? '' : `---\n${entries}\n---\n`
-  const heading = title === '' ? '' : `\n# ${title}\n`
+  const heading = title === '' ? '' : `\n# ${headingText(title)}\n`
   const body = sections.map((section) => `\n${section.replace(/\s+$/u, '')}\n`).join('')
   return `${head}${heading}${body}`
 }

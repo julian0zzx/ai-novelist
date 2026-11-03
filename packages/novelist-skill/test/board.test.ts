@@ -4,7 +4,7 @@ import { CHAPTER_STATUSES, COMPETITOR_TARGET, NAMING_MIN_CANDIDATES } from '../s
 import type { Chapter, ConfirmationKind, NovelState } from '../src/core/types.ts'
 import { boardOf } from '../src/client/board.ts'
 import type { BoardCard, DocumentCard } from '../src/client/board.ts'
-import { upsertCharacter, upsertWorld } from '../src/core/novel.ts'
+import { addReview, upsertCharacter, upsertWorld } from '../src/core/novel.ts'
 
 /**
  * Kanban board specs.
@@ -295,6 +295,66 @@ describe('boardOf documents', () => {
     })
     expect(doc(boardOf(written), 'style')?.state).toBe('confirmed')
     expect(doc(boardOf(written), 'style')?.gaps).toEqual([])
+  })
+
+  it('opens the prose badge once the gated document is done', () => {
+    // The badge says "this is what holds the prose back", so it may only be on a
+    // card whose gate is actually shut — otherwise 已完成 and 卡住正文 appear on
+    // the same card, contradicting `novel_status`.
+    const fresh = boardOf(emptyNovel())
+    expect(doc(fresh, 'pitch')?.gates).toBe('prose')
+    expect(doc(fresh, 'style')?.gates).toBe('prose')
+
+    const pitched = over(emptyNovel(), {
+      pitch: {
+        memorablePoint: '少年上山',
+        coreEmotion: '不甘',
+        shuangPoints: ['打脸'],
+        differentiators: ['本土神话'],
+        kernel: '执念',
+      },
+      confirmations: [signOff('settings')],
+    })
+    expect(doc(boardOf(pitched), 'pitch')?.state).toBe('confirmed')
+    expect(doc(boardOf(pitched), 'pitch')?.gates).toBe('')
+
+    const styled = over(emptyNovel(), {
+      outline: {
+        ...emptyNovel().outline,
+        style: {
+          tone: '冷硬',
+          perspective: '第三人称限知',
+          rhythm: '短句为主',
+          diction: '书面语',
+          dialogue: '对话四成',
+          emotion: '落在他数钱的沉默上',
+          taboos: '禁翻译腔',
+        },
+      },
+    })
+    expect(doc(boardOf(styled), 'style')?.gates).toBe('')
+
+    // The 去 AI 化 card gates only while the receipt is missing and due.
+    const golden = stateOf(
+      chapter({ number: 1, body: '甲。' }),
+      chapter({ number: 2, body: '乙。' }),
+      chapter({ number: 3, body: '丙。' }),
+    )
+    expect(doc(boardOf(golden), 'de-ai')?.gates).toBe('prose')
+    const reviewed = addReview(golden, {
+      id: 'review-1',
+      at: '2026-01-01T00:00:00.000Z',
+      kind: 'ai-flavor',
+      target: 'chapter-1',
+      provider: 'test',
+      model: 'test',
+      promptVersion: 'review-rubric-2',
+      summary: '对举句偏多',
+      findings: [],
+      artifact: '.novel/reviews/review-1-ai-flavor.md',
+    })
+    expect(doc(boardOf(reviewed), 'de-ai')?.state).toBe('confirmed')
+    expect(doc(boardOf(reviewed), 'de-ai')?.gates).toBe('')
   })
 
   it('names the parts the outline and the cast still owe', () => {

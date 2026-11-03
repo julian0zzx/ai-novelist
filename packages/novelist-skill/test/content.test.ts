@@ -20,8 +20,10 @@ import {
   parseVolumeCollectionFile,
   parseVolumeFile,
   planVolumesOf,
+  renderCastFile,
   renderVolumeFile,
   sanitizeTitle,
+  upsertCharacter,
   upsertChapter,
   volumeFileName,
   volumeNumberFromFileName,
@@ -889,5 +891,40 @@ describe('chapter plan table ownership', () => {
     expect(hook?.note).toBe('开篇已写')
     // `setOpeningCheck` addresses items by key, so a suffixed key would break it.
     expect(back.outline.opening.map((check) => check.key)).toEqual(defaultOpeningChecks().map((check) => check.key))
+  })
+})
+
+describe('heading markers inside a cast description', () => {
+  it('keeps them as prose and does not invent a second character', () => {
+    const state = upsertCharacter(emptyNovel({ title: '青云记' }), {
+      id: 'lin',
+      name: '林砚',
+      description: '清瘦，左手有旧伤。\n## 口头禅\n「先交房租。」',
+    })
+    const file = renderCastFile(state.characters)
+    const back = parseCastFile(file, '人物设定.md')
+    // The `##` line used to become a real section, which parsed as a phantom
+    // character named after the heading and truncated the description.
+    expect(Object.keys(back)).toEqual(['lin'])
+    expect(back['lin']?.description).toBe('清瘦，左手有旧伤。\n## 口头禅\n「先交房租。」')
+  })
+})
+
+describe('quotes and line breaks in a cast entry', () => {
+  it('round-trips them exactly, cycle after cycle', () => {
+    const state = upsertCharacter(emptyNovel({ title: '青云记' }), {
+      id: 'lin',
+      name: '林砚',
+      voice: '口头禅："老子"',
+      notes: '第一行\n第二行',
+      personality: '外冷内倔',
+    })
+    let file = renderCastFile(state.characters)
+    for (let round = 0; round < 3; round += 1) {
+      const back = parseCastFile(file, '人物设定.md')
+      expect(back['lin']?.voice).toBe('口头禅："老子"')
+      expect(back['lin']?.notes).toBe('第一行\n第二行')
+      file = renderCastFile(back)
+    }
   })
 })

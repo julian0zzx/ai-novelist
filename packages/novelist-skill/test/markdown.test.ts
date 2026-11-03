@@ -306,3 +306,84 @@ describe('documents and hashing', () => {
     expect(hashContent('abc')).toMatch(/^sha256:[0-9a-f]{64}$/u)
   })
 })
+
+describe('line endings', () => {
+  it('parses a CRLF file exactly like an LF one', () => {
+    const lf = renderDocument({}, '人物设定', [renderEntry('林越', { id: 'lin-yue' }, '十六岁，瘦。')])
+    const crlf = lf.replace(/\n/gu, '\r\n')
+    const doc = parseDocument(crlf, '人物设定.md')
+    const entries = readEntries(splitSections(doc.body), '人物设定.md')
+    expect(entries.map((entry) => entry.title)).toEqual(['林越'])
+    expect(entries[0]?.prose).toBe('十六岁，瘦。')
+    // The normalized body is LF, so a caller comparing rendered text sees one form.
+    expect(doc.body).not.toContain('\r')
+  })
+
+  it('normalizes a lone carriage return as well', () => {
+    const doc = parseDocument('---\r---\r# 书\r\r## 一句话\r\r山门。', 'x.md')
+    expect(sectionText(splitSections(doc.body), '一句话')).toBe('山门。')
+  })
+})
+
+describe('heading markers inside a field', () => {
+  it('escapes a heading-like line and restores it exactly on read', () => {
+    const body = '第一幕：入山。\n\n## 第二幕\n\n转折。\n\n### 细节'
+    const rendered = renderSection('完整大纲', body)
+    // Only `##` ends a section; a `###` inside a plain section is prose already.
+    expect(rendered).toContain('\\## 第二幕')
+    expect(rendered).toContain('### 细节')
+    const sections = splitSections(`# 全书大纲\n\n${rendered}`)
+    expect(sectionText(sections, '完整大纲')).toBe(body)
+    // Escaping twice would be a different value; rendering the parsed value is stable.
+    expect(renderSection('完整大纲', sectionText(sections, '完整大纲'))).toBe(rendered)
+  })
+
+  it('keeps a heading-looking line in entry prose instead of splitting the entry', () => {
+    const prose = '清瘦，左手有旧伤。\n## 口头禅\n「先交房租。」'
+    const text = renderDocument({}, '人物设定', [renderEntry('林砚', { id: 'lin' }, prose)])
+    const entries = readEntries(splitSections(parseDocument(text, 'x.md').body), 'x.md')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.title).toBe('林砚')
+    expect(entries[0]?.prose).toBe(prose)
+  })
+
+  it('leaves a single # alone, because it is not a section heading', () => {
+    expect(renderSection('备注', '# 不是标题')).toContain('\n# 不是标题')
+    expect(sectionText(splitSections(renderSection('备注', '# 不是标题')), '备注')).toBe('# 不是标题')
+  })
+})
+
+describe('quoted scalars', () => {
+  /** Quotes, a backslash, a newline, a carriage return and a tab in one value. */
+  const NASTY = '她说"走"，然后\\离开。\n第二行\r第三行\t制表'
+
+  it('round-trips quotes, backslashes and line breaks without accumulating escapes', () => {
+    const text = renderDocument({ voice: NASTY }, '人物设定', [])
+    // The value stays on one frontmatter line: an embedded line break must not
+    // split the block it lives in.
+    expect(text.split('\n').filter((line) => line.startsWith('voice: '))).toHaveLength(1)
+    let doc = parseDocument(text, 'x.md')
+    expect(frontString(doc.frontmatter, 'voice', '')).toBe(NASTY)
+    // Three read-write cycles: the value is identical every time, so no escape
+    // layer is being added or dropped.
+    for (let round = 0; round < 3; round += 1) {
+      doc = parseDocument(renderDocument(doc.frontmatter, '人物设定', []), 'x.md')
+      expect(frontString(doc.frontmatter, 'voice', '')).toBe(NASTY)
+    }
+  })
+
+  it('keeps an inline list item that contains a comma and a quote in one piece', () => {
+    const values = ['他说"走", 然后离开', 'a,b']
+    const text = renderDocument({ tags: values }, 'x.md', [])
+    expect(frontStringArray(parseDocument(text, 'x.md').frontmatter, 'tags')).toEqual(values)
+  })
+
+  it('unescapes a hand-written block list item', () => {
+    const map = parseFrontmatter(['tags:', '  - "他说\\"走\\", 然后离开"'].join('\n'), 'x.md')
+    expect(map['tags']).toEqual(['他说"走", 然后离开'])
+  })
+
+  it('leaves an unknown escape alone, so a Windows path keeps its backslash', () => {
+    expect(parseScalarToken('"C:\\dir"')).toBe('C:\\dir')
+  })
+})

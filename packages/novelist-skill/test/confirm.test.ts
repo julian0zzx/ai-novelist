@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -427,6 +427,45 @@ describe('the 文风复核 after the golden three chapters', () => {
     const open = await call('novel_write', { operation: 'check', chapterId: 'chapter-4' })
     expect((open['blockers'] as string[]).join(' ')).not.toMatch(/复核文风/u)
   })
+
+  it('can be reviewed again without being charged for the settings rounds', async () => {
+    await seeded()
+    await writeGoldenThree()
+    await call('novel_confirm', {
+      operation: 'discuss',
+      kind: 'style',
+      proposal: '黄金三章成稿。',
+      feedback: '短句可以。',
+    })
+    await call('novel_confirm', { operation: 'confirm', kind: 'style', summary: '短句为主', note: '不错。' })
+
+    // The sign-off counts style rounds only: one round was held, so zero remain.
+    const status = await call('novel_confirm', { operation: 'status', kind: 'style' })
+    expect(String((status['body'] as string[]).join('\n'))).toMatch(/当前 0 轮/u)
+
+    // A second review needs one fresh round — not one per settings round.
+    await call('novel_confirm', {
+      operation: 'discuss',
+      kind: 'style',
+      proposal: '再调一版：形容词再少一点。',
+      feedback: '对，就少一点形容词。',
+    })
+    const again = await call('novel_confirm', {
+      operation: 'confirm',
+      kind: 'style',
+      summary: '更克制的短句。',
+      note: '这版可以。',
+    })
+    expect(String(again['detail'])).toMatch(/文风复核已确认/u)
+  })
+
+  it('does not promise a voice review the golden three cannot clear yet', async () => {
+    // Chapter 4 written first used to be refused with a message saying the
+    // golden three were finished — false and impossible to act on.
+    await seeded()
+    const written = await call('novel_write', { chapterId: 'chapter-4', body: '旧账翻开了。' })
+    expect(String(written['detail'])).toMatch(/第 4 章已写入/u)
+  })
 })
 
 describe('the settings layers, settled one at a time in order', () => {
@@ -638,5 +677,22 @@ describe('the settings layers, settled one at a time in order', () => {
 
     const world = await call('novel_confirm', { operation: 'status', kind: 'world' })
     expect(String((world['body'] as string[]).join('\n'))).toMatch(/力量体系、代价、限制/u)
+  })
+})
+
+describe('deleting a chapter', () => {
+  it('archives the prose before the files are unlinked', async () => {
+    await seeded()
+    await call('novel_write', { chapterId: 'chapter-1', body: '山门很高，云雾不散。'.repeat(40) })
+    const result = await call('novel_plan', { operation: 'chapter', id: 'chapter-1', remove: true })
+    expect(String(result['detail'])).toMatch(/正文已存档/u)
+    const versions = await readdir(join(root, '.novel', 'versions'))
+    expect(versions.length).toBe(1)
+    const archived = await readFile(join(root, '.novel', 'versions', versions[0] ?? ''), 'utf8')
+    expect(archived).toContain('山门很高')
+    // The chapter is gone from the project, so a delete is visible, not a soft hide.
+    await expect(
+      call('novel_write', { operation: 'read', chapterId: 'chapter-1' }),
+    ).rejects.toThrow(/no chapter matches/u)
   })
 })

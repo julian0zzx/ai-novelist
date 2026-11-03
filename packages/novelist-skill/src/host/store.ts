@@ -496,10 +496,18 @@ export class NovelStore {
    * a character sheet. Paths are resolved against the same workspace root as the
    * content files, so an export can never land outside the project directory.
    *
+   * Containment is not ownership: an export path may be inside the workspace and
+   * still name a file this store owns. Overwriting `novel.json` with Markdown
+   * makes the project unreadable and unrepairable through the tools, and
+   * overwriting a chapter body destroys prose no export can regenerate — so the
+   * project's own documents are refused here, and derived output goes to a path
+   * of its own (the defaults all live under `.novel/`).
+   *
    * @param relativePath - destination relative to the workspace root.
    * @param content - the full text to write.
    * @returns the absolute display path that was written.
-   * @throws {NovelStoreError} when the path escapes the workspace root.
+   * @throws {NovelStoreError} when the path escapes the workspace root, or names
+   *   a document the project owns.
    */
   async writeDerived(
     relativePath: string,
@@ -507,9 +515,36 @@ export class NovelStore {
     policy: CallSandboxPolicy | undefined = currentSandboxPolicy(),
   ): Promise<string> {
     const destination = this.contain(relativePath)
+    this.assertDerivedPath(relativePath)
     const target = await this.fs.resolve(destination)
     await this.fs.writeText(target, content, undefined, undefined, policy)
     return target.displayPath
+  }
+
+  /**
+   * Refuse a derived-output path that names a document the project owns.
+   *
+   * @param relativePath - the caller-supplied destination.
+   * @throws {NovelStoreError} when the path is the metadata document, a content
+   *   file, or inside one of the content directories.
+   */
+  private assertDerivedPath(relativePath: string): void {
+    const path = relativePath.replace(/\\/gu, '/').replace(/^(?:\.\/)+/u, '')
+    const owned = new Set<string>([
+      METADATA_RELATIVE_PATH,
+      MIGRATION_BACKUP_PATH,
+      ...topLevelPaths(this.layout),
+    ])
+    const directories = [this.layout.chapterDir, this.layout.chapterPlanDir, this.layout.volumeDir]
+    const insideOwnedDirectory = directories.some(
+      (directory) => path === directory || path.startsWith(`${directory.replace(/\/+$/u, '')}/`),
+    )
+    if (owned.has(path) || insideOwnedDirectory) {
+      throw new NovelStoreError(
+        `refusing to write derived output over ${path}: it is a document the project owns `
+        + '(edit it through the tools, or export to a different path)',
+      )
+    }
   }
 
   /**
@@ -579,6 +614,17 @@ export class NovelStore {
     if (parsed.version !== NOVEL_SCHEMA_VERSION) {
       document = (await this.migrateDocument(before.raw, before.info, policy)) ?? before
       parsed = parseMetadata(document.raw)
+    }
+    // A legacy document whose migration did not complete is a document whose
+    // content files were never produced. Writing the current version over it
+    // would replace the project with the empty state the missing files compose
+    // to, so refuse instead: the failure stays visible and the original bytes
+    // are still on disk.
+    if (parsed.version !== NOVEL_SCHEMA_VERSION && parsed.legacy !== undefined) {
+      throw new NovelStoreError(
+        `novel.json is still a version-${String(parsed.version)} document and its migration did not run; `
+        + `refusing to overwrite it with an empty project (the pre-migration copy is ${MIGRATION_BACKUP_PATH})`,
+      )
     }
     // A document the migration could not bring to the current version — a
     // version-3 project with no collection file to split — is upgraded by the
@@ -1543,7 +1589,11 @@ export class NovelStore {
     if (version === NOVEL_SCHEMA_VERSION) return undefined
     let migrated = false
     if (legacy !== undefined) {
-      if (!(await this.backup(raw, policy))) return undefined
+      // An earlier backup is not a reason to skip the migration: the document
+      // is still the old version, so the content files were never produced. The
+      // copy already on disk is the author's and is left untouched; the write
+      // below is what makes the project readable again.
+      await this.backup(raw, policy)
       const chapters = Object.keys(legacy.chapters).length
       await this.writeAll(legacy, info.version, policy, { forceRewrite: true })
       this.pendingReport = `novel.json 已升级 v${String(version)} → v${String(NOVEL_SCHEMA_VERSION)}：` +
@@ -1669,24 +1719,24 @@ export class NovelStore {
   }
 
   /**
-   * Keep the pre-migration document, and report whether this call is the one
-   * that migrated the project.
+   * Keep the pre-migration document, if it is not already kept.
+   *
+   * The backup is a preservation step, not a lock: a copy written by an earlier
+   * attempt (or by the author) means the *bytes* are already safe, so this call
+   * writes nothing and still lets the migration proceed. Returning "already
+   * backed up" instead is what once made a legacy project skip its migration and
+   * then be overwritten by an empty current-version document.
    *
    * @param raw - the original document's text.
-   * @returns true when the project still needs migrating, false when an earlier
-   *   session already kept a backup.
    */
-  private async backup(raw: string, policy: CallSandboxPolicy | undefined): Promise<boolean> {
+  private async backup(raw: string, policy: CallSandboxPolicy | undefined): Promise<void> {
     const target = await this.fs.resolve(this.contain(MIGRATION_BACKUP_PATH))
-    if ((await this.fs.stat(target)) !== undefined) return false
+    if ((await this.fs.stat(target)) !== undefined) return
     try {
       await this.fs.writeText(target, raw, { kind: 'createIfAbsent' }, undefined, policy)
-      return true
     } catch (error) {
-      // A concurrent migration won the race and is doing the work; this read
-      // simply follows it.
-      if (isFsErrorCode(error, 'FS_NOT_OBSERVED')) return false
-      throw error
+      // A concurrent migration created it first; the bytes are the same document.
+      if (!isFsErrorCode(error, 'FS_NOT_OBSERVED')) throw error
     }
   }
 
